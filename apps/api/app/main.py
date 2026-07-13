@@ -8,8 +8,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.clients.amap_client import AmapClient
 from app.clients.flyai_client import FlyAIClient
 from app.core.model_registry import ModelRegistry
+from app.core.request_context import RequestContextMiddleware
 from app.core.settings import Settings, get_settings
 from app.db.session import create_database
 from app.services.chat_service import ChatService
@@ -30,9 +32,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database_engine, session_factory = create_database(current_settings.database_url)
         conversation_service = ConversationService(session_factory)
 
+    amap_client = None
+    if current_settings.amap_api_key:
+        amap_client = AmapClient(
+            current_settings.amap_api_key,
+            base_url=current_settings.amap_base_url,
+            timeout_seconds=current_settings.amap_timeout_seconds,
+            max_retries=current_settings.amap_max_retries,
+        )
+    else:
+        logging.getLogger(__name__).warning(
+            "Amap tools are disabled because AMAP_API_KEY is not configured."
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        if amap_client is not None:
+            await amap_client.aclose()
         if database_engine is not None:
             await database_engine.dispose()
 
@@ -50,6 +67,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
+    application.add_middleware(
+        RequestContextMiddleware,
+        trusted_proxy_cidrs=current_settings.trusted_proxy_cidrs,
+        timezone=current_settings.app_timezone,
+    )
 
     registry = ModelRegistry(current_settings.model_config_path)
     flyai_client = FlyAIClient(
@@ -61,7 +83,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.chat_service = ChatService(registry)
     application.state.conversation_service = conversation_service
     application.state.flyai_client = flyai_client
-    application.state.travel_tools = build_travel_tools(flyai_client)
+    application.state.amap_client = amap_client
+    application.state.travel_tools = build_travel_tools(flyai_client, amap_client)
     application.include_router(router)
     return application
 

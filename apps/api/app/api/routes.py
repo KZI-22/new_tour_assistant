@@ -19,7 +19,6 @@ from app.schemas.chat import ChatRequest, HealthResponse, ModelListResponse
 from app.schemas.conversation import ConversationDetailResponse, ConversationSummaryResponse
 from app.services.conversation_service import ConversationNotFoundError, ConversationService
 
-
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
 
@@ -94,7 +93,10 @@ async def get_conversation(conversation_id: UUID, request: Request) -> Conversat
     try:
         return await _conversation_service(request).get_conversation(conversation_id)
     except ConversationNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found.",
+        ) from exc
 
 
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -102,7 +104,10 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     try:
         await _conversation_service(request).delete_conversation(conversation_id)
     except ConversationNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found.",
+        ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -116,7 +121,10 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
             payload.message,
         )
     except ConversationNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found.",
+        ) from exc
     except Exception as exc:
         logger.exception("Could not start persisted conversation turn")
         raise HTTPException(
@@ -129,19 +137,13 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
         stream = service.stream(payload.model_id, turn.messages)
         first_chunk = await anext(stream, None)
     except UnknownModelError as exc:
-        await _finish_safely(
-            conversation_service, turn.assistant_message_id, "", "failed"
-        )
+        await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except UnavailableModelError as exc:
-        await _finish_safely(
-            conversation_service, turn.assistant_message_id, "", "failed"
-        )
+        await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:
-        await _finish_safely(
-            conversation_service, turn.assistant_message_id, "", "failed"
-        )
+        await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
         logger.exception("Chat request failed before streaming")
         raise _provider_http_exception(exc) from exc
 
@@ -202,4 +204,3 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
             "X-Accel-Buffering": "no",
         },
     )
-

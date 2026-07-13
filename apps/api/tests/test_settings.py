@@ -32,3 +32,23 @@ def test_get_settings_reads_flyai_runtime_limits(monkeypatch: pytest.MonkeyPatch
     assert settings.flyai_cli_path == "C:\\tools\\flyai.cmd"
     assert settings.flyai_timeout_seconds == 90
     assert settings.flyai_max_concurrency == 2
+
+
+def test_get_settings_reads_amap_and_request_context_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AMAP_API_KEY", "test-key")
+    monkeypatch.setenv("AMAP_BASE_URL", "https://restapi.amap.test/")
+    monkeypatch.setenv("AMAP_TIMEOUT_SECONDS", "20")
+    monkeypatch.setenv("AMAP_MAX_RETRIES", "2")
+    monkeypatch.setenv("APP_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 2001:db8::/32")
+
+    settings = get_settings()
+
+    assert settings.amap_api_key == "test-key"
+    assert settings.amap_base_url == "https://restapi.amap.test"
+    assert settings.amap_timeout_seconds == 20
+    assert settings.amap_max_retries == 2
+    assert settings.app_timezone == "Asia/Shanghai"
+    assert settings.trusted_proxy_cidrs == ("10.0.0.0/8", "2001:db8::/32")

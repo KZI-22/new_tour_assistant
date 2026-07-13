@@ -6,11 +6,13 @@
 - OpenAI、Anthropic、Google GenAI 及 OpenAI-compatible 接口接入方式。
 - FastAPI + LangChain 的 SSE 流式聊天接口。
 - Python FlyAI CLI 客户端，以及航班、火车、酒店、POI 四个结构化 LangChain Tool。
+- 高德 Web Service 异步客户端，以及 IP 城市推测、POI、路线、距离矩阵、天气五个结构化 Tool。
+- 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
 - Next.js + TypeScript + Tailwind CSS 的响应式聊天界面。
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
-航班、酒店、天气、地图和多 Agent 编排等能力会在后续里程碑接入。
+当前仍未接入 LangGraph、多 Agent 编排和自动行程生成；FlyAI 与高德工具也不会自动串联。
 
 ## 项目结构
 
@@ -18,7 +20,7 @@
 apps/
 ├── api/                    # FastAPI 后端
 │   └── app/
-│       ├── clients/        # FlyAI 等外部客户端
+│       ├── clients/        # FlyAI、高德等外部客户端
 │       ├── schemas/        # API 与 Tool 的结构化输入输出
 │       └── tools/          # 可供后续 LangGraph 绑定的旅游工具
 └── web/                    # Next.js 前端
@@ -54,7 +56,32 @@ Copy-Item .env.example .env
 MIMO_API_KEY=your-mimo-api-key
 ```
 
-阿里百炼模型共用 `DASHSCOPE_API_KEY`。`AMAP_API_KEY` 预留给后续高德地图工具。
+阿里百炼模型共用 `DASHSCOPE_API_KEY`。
+
+高德工具使用 Web Service 类型的 Key。未配置 `AMAP_API_KEY` 时，应用仍可启动，但只注册
+原有四个 FlyAI Tool；配置后会额外注册五个高德 Tool：
+
+```dotenv
+AMAP_API_KEY=your-web-service-key
+AMAP_BASE_URL=https://restapi.amap.com
+AMAP_TIMEOUT_SECONDS=15
+AMAP_MAX_RETRIES=1
+```
+
+高德返回的坐标统一标记为 GCJ-02。外部 WGS84、BD-09 或 Mapbar 坐标可通过客户端内部
+转换接口显式转换；项目不会猜测 FlyAI 数据的坐标系。Key 不会写入工具结果、异常或应用日志。
+
+请求时间和代理配置如下：
+
+```dotenv
+APP_TIMEZONE=Asia/Shanghai
+TRUSTED_PROXY_CIDRS=
+```
+
+默认不信任任何 `X-Forwarded-For` 或 `X-Real-IP`。只有直接连接来自
+`TRUSTED_PROXY_CIDRS` 中的 Nginx/CDN/反向代理时，后端才会沿可信代理链提取客户端 IP。
+IP 只保存在请求级上下文中，不作为 Tool 参数暴露给模型；回环、局域网、IPv6 或其他不可定位
+地址会得到明确的“不可定位”结果。每次 HTTP 请求还会动态生成带时区的当前日期、时间和星期上下文。
 
 FlyAI 认证继续使用 FlyAI CLI 自己已经保存的配置，项目不会读取或记录密钥。默认会在
 应用启动时从 `PATH` 自动查找 Windows 的 `flyai.cmd`（其次为 `flyai`），也可以配置：
@@ -171,6 +198,18 @@ python -m pytest -m flyai
 
 出发日期必须是执行测试当天或之后。真实测试默认跳过；它会使用 FlyAI CLI 已配置的认证，
 最长等待 90 秒，并消耗一次 FlyAI 查询额度。
+
+高德单元测试同样全部使用 mock。若要执行真实高德冒烟测试（POI、天气、驾车路线和小规模
+距离矩阵），先填入 `AMAP_API_KEY`，再显式启用：
+
+```powershell
+$env:RUN_AMAP_TESTS="1"
+python -m pytest -m amap
+```
+
+该测试会访问真实高德接口并消耗调用配额；默认测试流程会跳过它。内部
+`normalize_travel_dates` / `validate_travel_dates` 当前支持今天、明天、后天、明确中英文日期格式、
+“住 N 晚”和基础日期关系校验，不处理节假日、调休或复杂多段行程语义。
 
 前端：
 

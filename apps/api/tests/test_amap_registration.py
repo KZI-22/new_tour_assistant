@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.core.request_context import get_request_context
+from app.core.settings import Settings
+from app.main import create_app
+from fastapi import Request
+from fastapi.testclient import TestClient
+
+
+def settings(tmp_path: Path, *, api_key: str | None) -> Settings:
+    config_path = tmp_path / "models.yaml"
+    config_path.write_text("default_model: null\nmodels: []\n", encoding="utf-8")
+    return Settings(
+        app_name="Test API",
+        model_config_path=config_path,
+        cors_origins=("http://localhost:3000",),
+        log_level="WARNING",
+        amap_api_key=api_key,
+    )
+
+
+def test_missing_amap_key_keeps_the_existing_four_flyai_tools(tmp_path: Path) -> None:
+    application = create_app(settings(tmp_path, api_key=None))
+
+    assert application.state.amap_client is None
+    assert {tool.name for tool in application.state.travel_tools} == {
+        "search_flight",
+        "search_train",
+        "search_hotel",
+        "search_poi",
+    }
+
+
+def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: Path) -> None:
+    application = create_app(settings(tmp_path, api_key="test-key"))
+    names = [tool.name for tool in application.state.travel_tools]
+
+    assert len(names) == len(set(names)) == 9
+    assert set(names) == {
+        "search_flight",
+        "search_train",
+        "search_hotel",
+        "search_poi",
+        "amap_get_current_city",
+        "amap_search_places",
+        "amap_plan_route",
+        "amap_travel_time_matrix",
+        "amap_get_weather",
+    }
+
+
+def test_fastapi_middleware_injects_trusted_ip_and_time_context(tmp_path: Path) -> None:
+    configured = settings(tmp_path, api_key=None)
+    configured = Settings(
+        app_name=configured.app_name,
+        model_config_path=configured.model_config_path,
+        cors_origins=configured.cors_origins,
+        log_level=configured.log_level,
+        app_timezone="Asia/Shanghai",
+        trusted_proxy_cidrs=("10.0.0.0/8",),
+    )
+    application = create_app(configured)
+
+    @application.get("/_test/request-context")
+    async def show_context(request: Request) -> dict[str, object]:
+        context = get_request_context()
+        assert context is request.state.travel_context
+        assert context is not None
+        return context.model_dump(mode="json")
+
+    with TestClient(application, client=("10.0.0.2", 12345)) as client:
+        response = client.get(
+            "/_test/request-context",
+            headers={"X-Forwarded-For": "8.8.8.8, 10.0.0.3"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["client_ip"] == "8.8.8.8"
+    assert response.json()["client_ip_is_public_ipv4"] is True
+    assert response.json()["time"]["timezone"] == "Asia/Shanghai"

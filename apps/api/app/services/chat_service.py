@@ -8,7 +8,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app.core.model_registry import ModelRegistry
 from app.schemas.chat import ChatMessage
 
-
 DEFAULT_SYSTEM_PROMPT = """You are a helpful travel assistant. Answer clearly and honestly.
 When current travel facts such as prices, schedules, availability, weather, or opening hours
 have not been retrieved from a tool, explicitly say that they need verification. Never invent
@@ -53,12 +52,9 @@ class ChatService:
     def __init__(self, registry: ModelRegistry) -> None:
         self._registry = registry
 
-    async def stream(
-        self, model_id: str, messages: list[ChatMessage]
-    ) -> AsyncIterator[str]:
+    async def stream(self, model_id: str, messages: list[ChatMessage]) -> AsyncIterator[str]:
         model = self._registry.create_model(model_id)
         langchain_messages = _to_langchain_messages(messages)
         async for chunk in model.astream(langchain_messages):
             if text := _chunk_text(chunk):
                 yield text
-

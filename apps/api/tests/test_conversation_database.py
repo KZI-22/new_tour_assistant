@@ -3,11 +3,10 @@ from __future__ import annotations
 import os
 
 import pytest
-from dotenv import load_dotenv
-
 from app.core.settings import PROJECT_ROOT
 from app.db.session import create_database
 from app.services.conversation_service import ConversationService
+from dotenv import load_dotenv
 
 
 @pytest.mark.database
@@ -46,4 +45,3 @@ async def test_conversation_round_trip_in_postgres() -> None:
         if conversation_id is not None:
             await service.delete_conversation(conversation_id)
         await engine.dispose()
-

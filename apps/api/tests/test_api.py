@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-import uuid
-
-from fastapi.testclient import TestClient
 
 from app.core.settings import Settings
 from app.main import create_app
 from app.schemas.chat import ChatMessage
 from app.services.conversation_service import TurnContext
+from fastapi.testclient import TestClient
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -120,7 +119,8 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert f'event: conversation\ndata: {{"id":"{conversation_id}","title":"你好"}}' in response.text
+    conversation_event = f'event: conversation\ndata: {{"id":"{conversation_id}","title":"你好"}}'
+    assert conversation_event in response.text
     assert 'event: token\ndata: {"delta":"你"}' in response.text
     assert 'event: token\ndata: {"delta":"好"}' in response.text
     assert f'event: done\ndata: {{"conversation_id":"{conversation_id}"}}' in response.text
