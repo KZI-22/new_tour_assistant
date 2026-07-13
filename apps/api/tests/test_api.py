@@ -7,7 +7,10 @@ from pathlib import Path
 from app.core.settings import Settings
 from app.main import create_app
 from app.schemas.chat import ChatMessage
+from app.schemas.tool_execution import MessageDeltaEvent, ToolCallEvent, ToolResultEvent
+from app.services.agent_executor import ToolLoopLimitError
 from app.services.conversation_service import TurnContext
+from app.services.tool_execution import ToolExecutionContext
 from fastapi.testclient import TestClient
 
 
@@ -78,11 +81,19 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assistant_message_id = uuid.uuid4()
 
     class FakeChatService:
-        async def stream(self, model_id: str, messages: object) -> AsyncIterator[str]:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            execution_context: ToolExecutionContext,
+        ) -> AsyncIterator[MessageDeltaEvent]:
             assert model_id == "test-model"
             assert messages
-            yield "你"
-            yield "好"
+            assert execution_context.conversation_id == conversation_id
+            assert execution_context.assistant_message_id == assistant_message_id
+            yield MessageDeltaEvent(delta="你")
+            yield MessageDeltaEvent(delta="好")
 
     class FakeConversationService:
         finished: tuple[uuid.UUID, str, str] | None = None
@@ -121,10 +132,156 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assert response.headers["content-type"].startswith("text/event-stream")
     conversation_event = f'event: conversation\ndata: {{"id":"{conversation_id}","title":"你好"}}'
     assert conversation_event in response.text
-    assert 'event: token\ndata: {"delta":"你"}' in response.text
-    assert 'event: token\ndata: {"delta":"好"}' in response.text
+    assert 'event: message_start\ndata: {"type":"message_start"' in response.text
+    assert 'event: message_delta\ndata: {"type":"message_delta","delta":"你"}' in response.text
+    assert 'event: message_delta\ndata: {"type":"message_delta","delta":"好"}' in response.text
+    assert 'event: message_end\ndata: {"type":"message_end"' in response.text
     assert f'event: done\ndata: {{"conversation_id":"{conversation_id}"}}' in response.text
     assert conversation_service.finished == (assistant_message_id, "你好", "completed")
+
+
+def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    conversation_id = uuid.uuid4()
+    assistant_message_id = uuid.uuid4()
+
+    class FakeChatService:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            execution_context: ToolExecutionContext,
+        ) -> AsyncIterator[ToolCallEvent | ToolResultEvent | MessageDeltaEvent]:
+            del model_id, messages, execution_context
+            yield ToolCallEvent(
+                tool_call_id="flight-call",
+                tool_name="search_flight",
+                display_name="正在查询航班",
+                arguments={"origin": "上海", "destination": "北京"},
+            )
+            yield ToolCallEvent(
+                tool_call_id="train-call",
+                tool_name="search_train",
+                display_name="正在查询火车",
+                arguments={"origin": "上海", "destination": "北京"},
+            )
+            yield ToolResultEvent(
+                tool_call_id="flight-call",
+                tool_name="search_flight",
+                success=True,
+                summary="已完成查询航班。",
+                duration_ms=10,
+            )
+            yield ToolResultEvent(
+                tool_call_id="train-call",
+                tool_name="search_train",
+                success=False,
+                summary="查询火车服务暂时不可用。",
+                duration_ms=12,
+                error_code="PROVIDER_ERROR",
+            )
+            yield MessageDeltaEvent(delta="航班查询成功，火车查询暂不可用。")
+
+    class FakeConversationService:
+        async def start_turn(
+            self, requested_id: uuid.UUID | None, model_id: str, content: str
+        ) -> TurnContext:
+            del requested_id, model_id
+            return TurnContext(
+                conversation_id=conversation_id,
+                conversation_title=content,
+                assistant_message_id=assistant_message_id,
+                messages=[ChatMessage(role="user", content=content)],
+            )
+
+        async def finish_turn(
+            self, message_id: uuid.UUID, content: str, message_status: str
+        ) -> None:
+            assert message_id == assistant_message_id
+            assert content == "航班查询成功，火车查询暂不可用。"
+            assert message_status == "completed"
+
+    client.app.state.chat_service = FakeChatService()
+    client.app.state.conversation_service = FakeConversationService()
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={"model_id": "test-model", "message": "比较飞机和高铁"},
+    )
+
+    assert response.status_code == 200
+    event_names = [
+        line.removeprefix("event: ")
+        for line in response.text.splitlines()
+        if line.startswith("event: ")
+    ]
+    assert event_names == [
+        "conversation",
+        "message_start",
+        "tool_call",
+        "tool_call",
+        "tool_result",
+        "tool_result",
+        "message_delta",
+        "message_end",
+        "done",
+    ]
+
+
+def test_stream_chat_returns_controlled_error_when_tool_loop_limit_is_reached(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    conversation_id = uuid.uuid4()
+    assistant_message_id = uuid.uuid4()
+
+    class FakeChatService:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            execution_context: ToolExecutionContext,
+        ) -> AsyncIterator[ToolCallEvent]:
+            del model_id, messages, execution_context
+            yield ToolCallEvent(
+                tool_call_id="loop-call",
+                tool_name="search_flight",
+                display_name="正在查询航班",
+            )
+            raise ToolLoopLimitError
+
+    class FakeConversationService:
+        finished: tuple[uuid.UUID, str, str] | None = None
+
+        async def start_turn(
+            self, requested_id: uuid.UUID | None, model_id: str, content: str
+        ) -> TurnContext:
+            del requested_id, model_id
+            return TurnContext(
+                conversation_id=conversation_id,
+                conversation_title=content,
+                assistant_message_id=assistant_message_id,
+                messages=[ChatMessage(role="user", content=content)],
+            )
+
+        async def finish_turn(
+            self, message_id: uuid.UUID, content: str, message_status: str
+        ) -> None:
+            self.finished = (message_id, content, message_status)
+
+    conversation_service = FakeConversationService()
+    client.app.state.chat_service = FakeChatService()
+    client.app.state.conversation_service = conversation_service
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={"model_id": "test-model", "message": "重复查询"},
+    )
+
+    assert response.status_code == 200
+    assert 'event: error\ndata: {"type":"error","code":"TOOL_LOOP_LIMIT"' in response.text
+    assert "message_end" not in response.text
+    assert conversation_service.finished == (assistant_message_id, "", "failed")
 
 
 def test_chat_requires_non_empty_message(tmp_path: Path) -> None:

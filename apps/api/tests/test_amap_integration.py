@@ -42,6 +42,7 @@ async def test_real_amap_web_service_smoke() -> None:
     )
     destination = MatrixLocation(id="gate", name="中山陵", longitude=118.848812, latitude=32.057537)
     try:
+        current_city = await client.ip_location(os.getenv("AMAP_TEST_IP", "220.181.38.148"))
         places = await client.search_places(
             SearchPlacesInput(keywords="南京博物院", adcode="320100", limit=1)
         )
@@ -63,6 +64,7 @@ async def test_real_amap_web_service_smoke() -> None:
         await client.aclose()
 
     assert places.pois
+    assert current_city.locatable, current_city.model_dump(mode="json")
     assert weather.city
     assert route.distance_meters > 0
     assert len(matrix.matrix) == 2

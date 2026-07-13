@@ -7,12 +7,15 @@
 - FastAPI + LangChain 的 SSE 流式聊天接口。
 - Python FlyAI CLI 客户端，以及航班、火车、酒店、POI 四个结构化 LangChain Tool。
 - 高德 Web Service 异步客户端，以及 IP 城市推测、POI、路线、距离矩阵、天气五个结构化 Tool。
+- 单 Agent 工具调用闭环，支持多轮决策、同轮并发、统一错误和最大轮数限制。
+- SSE 工具调用状态与前端进度展示，以及脱敏的 PostgreSQL 工具调用审计日志。
 - 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
 - Next.js + TypeScript + Tailwind CSS 的响应式聊天界面。
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
-当前仍未接入 LangGraph、多 Agent 编排和自动行程生成；FlyAI 与高德工具也不会自动串联。
+当前仍未接入 LangGraph、多 Agent 编排和自动行程生成。模型可以根据上下文串联或并发调用
+FlyAI 与高德工具，但尚未形成完整的多 Agent 行程规划图。
 
 ## 项目结构
 
@@ -22,7 +25,8 @@ apps/
 │   └── app/
 │       ├── clients/        # FlyAI、高德等外部客户端
 │       ├── schemas/        # API 与 Tool 的结构化输入输出
-│       └── tools/          # 可供后续 LangGraph 绑定的旅游工具
+│       ├── services/       # 聊天、工具执行、审计日志等应用服务
+│       └── tools/          # 已绑定到聊天模型的旅游工具
 └── web/                    # Next.js 前端
 config/
 └── models.yaml             # 模型注册表（不存密钥）
@@ -90,7 +94,13 @@ FlyAI 认证继续使用 FlyAI CLI 自己已经保存的配置，项目不会读
 FLYAI_CLI_PATH=C:\path\to\flyai.cmd
 FLYAI_TIMEOUT_SECONDS=60
 FLYAI_MAX_CONCURRENCY=3
+MAX_TOOL_ROUNDS=5
+TOOL_EXECUTION_TIMEOUT_SECONDS=130
 ```
+
+`MAX_TOOL_ROUNDS` 限制一次助手回复最多执行多少轮工具，避免模型重复调用失控。
+`TOOL_EXECUTION_TIMEOUT_SECONDS` 是单个工具调用的外层安全超时；它应略大于供应商客户端自身的
+超时与重试总时长。
 
 `.env` 已被 Git 忽略，不要把真实密钥写入 `config/models.yaml` 或提交到仓库。
 
@@ -211,6 +221,17 @@ python -m pytest -m amap
 `normalize_travel_dates` / `validate_travel_dates` 当前支持今天、明天、后天、明确中英文日期格式、
 “住 N 晚”和基础日期关系校验，不处理节假日、调休或复杂多段行程语义。
 
+若 FlyAI、高德、PostgreSQL 和至少一个工具调用模型均已配置，可以显式运行完整聊天闭环场景：
+
+```powershell
+$env:RUN_TOOL_CALL_E2E="1"
+$env:TOOL_CALL_E2E_MODEL="qwen3.7-plus"
+python -m pytest -m e2e
+```
+
+该组测试会覆盖航班、火车、酒店、天气、路线、交通对比、缺少日期追问和普通聊天，
+会消耗模型与供应商调用额度，因此默认跳过。
+
 前端：
 
 ```powershell
@@ -232,6 +253,7 @@ TOUR_ASSISTANT_NO_PROXY_HOSTS=dashscope.aliyuncs.com
 
 ## 当前数据边界
 
-会话和消息由 PostgreSQL 保存，前端刷新后可以加载并继续历史对话。助手消息会记录
+会话、消息和脱敏后的工具调用摘要由 PostgreSQL 保存，前端刷新后可以加载并继续历史对话。
+工具原始结果和 API Key 不入库；前端工具进度当前不随历史会话恢复。助手消息会记录
 `streaming`、`completed`、`failed` 或 `interrupted` 状态。当前尚未实现用户账号和数据隔离，
 因此本地实例中的所有会话对访问该后端的客户端可见；在对外部署前必须加入身份认证与用户归属。

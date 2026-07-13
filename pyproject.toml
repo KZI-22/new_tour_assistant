@@ -38,6 +38,7 @@ testpaths = ["apps/api/tests"]
 markers = [
   "amap: consumes the configured Amap Web Service API quota",
   "database: requires the local PostgreSQL test database",
+  "e2e: consumes configured model and travel-provider quotas",
   "flyai: consumes the configured FlyAI request quota",
 ]
 

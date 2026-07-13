@@ -50,6 +50,8 @@ class Settings:
     flyai_cli_path: str | None = None
     flyai_timeout_seconds: float = 60
     flyai_max_concurrency: int = 3
+    max_tool_rounds: int = 5
+    tool_execution_timeout_seconds: float = 130
     amap_api_key: str | None = None
     amap_base_url: str = "https://restapi.amap.com"
     amap_timeout_seconds: float = 15
@@ -80,6 +82,8 @@ def get_settings() -> Settings:
         flyai_cli_path=os.getenv("FLYAI_CLI_PATH") or None,
         flyai_timeout_seconds=float(os.getenv("FLYAI_TIMEOUT_SECONDS", "60")),
         flyai_max_concurrency=int(os.getenv("FLYAI_MAX_CONCURRENCY", "3")),
+        max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "5")),
+        tool_execution_timeout_seconds=float(os.getenv("TOOL_EXECUTION_TIMEOUT_SECONDS", "130")),
         amap_api_key=os.getenv("AMAP_API_KEY") or None,
         amap_base_url=os.getenv("AMAP_BASE_URL", "https://restapi.amap.com").rstrip("/"),
         amap_timeout_seconds=float(os.getenv("AMAP_TIMEOUT_SECONDS", "15")),

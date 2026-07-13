@@ -26,12 +26,16 @@ def test_get_settings_reads_flyai_runtime_limits(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("FLYAI_CLI_PATH", "C:\\tools\\flyai.cmd")
     monkeypatch.setenv("FLYAI_TIMEOUT_SECONDS", "90")
     monkeypatch.setenv("FLYAI_MAX_CONCURRENCY", "2")
+    monkeypatch.setenv("MAX_TOOL_ROUNDS", "4")
+    monkeypatch.setenv("TOOL_EXECUTION_TIMEOUT_SECONDS", "95")
 
     settings = get_settings()
 
     assert settings.flyai_cli_path == "C:\\tools\\flyai.cmd"
     assert settings.flyai_timeout_seconds == 90
     assert settings.flyai_max_concurrency == 2
+    assert settings.max_tool_rounds == 4
+    assert settings.tool_execution_timeout_seconds == 95
 
 
 def test_get_settings_reads_amap_and_request_context_configuration(

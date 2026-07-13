@@ -36,9 +36,26 @@ export type ConversationDetail = ConversationSummary & {
   messages: PersistedMessage[];
 };
 
+export type ToolCallUpdate = {
+  tool_call_id: string;
+  tool_name: string;
+  display_name: string;
+};
+
+export type ToolResultUpdate = {
+  tool_call_id: string;
+  tool_name: string;
+  success: boolean;
+  summary: string;
+  duration_ms: number;
+  error_code: string | null;
+};
+
 type StreamCallbacks = {
   onToken: (delta: string) => void;
   onConversation?: (conversation: { id: string; title: string }) => void;
+  onToolCall?: (update: ToolCallUpdate) => void;
+  onToolResult?: (update: ToolResultUpdate) => void;
   onDone?: () => void;
 };
 
@@ -153,9 +170,32 @@ export async function streamChat(
     if (parsed.event === "conversation") {
       const data = parsed.data as { id?: string; title?: string };
       if (data.id && data.title) callbacks.onConversation?.({ id: data.id, title: data.title });
-    } else if (parsed.event === "token") {
+    } else if (parsed.event === "message_delta" || parsed.event === "token") {
       const data = parsed.data as { delta?: string };
       if (data.delta) callbacks.onToken(data.delta);
+    } else if (parsed.event === "tool_call") {
+      const data = parsed.data as Partial<ToolCallUpdate>;
+      if (data.tool_call_id && data.tool_name && data.display_name) {
+        callbacks.onToolCall?.(data as ToolCallUpdate);
+      }
+    } else if (parsed.event === "tool_result") {
+      const data = parsed.data as Partial<ToolResultUpdate>;
+      if (
+        data.tool_call_id &&
+        data.tool_name &&
+        typeof data.success === "boolean" &&
+        data.summary &&
+        typeof data.duration_ms === "number"
+      ) {
+        callbacks.onToolResult?.({
+          tool_call_id: data.tool_call_id,
+          tool_name: data.tool_name,
+          success: data.success,
+          summary: data.summary,
+          duration_ms: data.duration_ms,
+          error_code: data.error_code ?? null,
+        });
+      }
     } else if (parsed.event === "done") {
       callbacks.onDone?.();
     } else if (parsed.event === "error") {

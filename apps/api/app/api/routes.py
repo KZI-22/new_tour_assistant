@@ -17,7 +17,10 @@ from app.core.model_registry import (
 )
 from app.schemas.chat import ChatRequest, HealthResponse, ModelListResponse
 from app.schemas.conversation import ConversationDetailResponse, ConversationSummaryResponse
+from app.schemas.tool_execution import ChatStreamEvent, MessageDeltaEvent
+from app.services.agent_executor import AgentExecutionError
 from app.services.conversation_service import ConversationNotFoundError, ConversationService
+from app.services.tool_execution import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
@@ -26,6 +29,19 @@ router = APIRouter(prefix="/api/v1")
 def _sse(event: str, payload: dict[str, object]) -> str:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {data}\n\n"
+
+
+def _chat_event_sse(event: ChatStreamEvent | str) -> str:
+    normalized = MessageDeltaEvent(delta=event) if isinstance(event, str) else event
+    return _sse(normalized.type, normalized.model_dump(mode="json"))
+
+
+def _event_text(event: ChatStreamEvent | str) -> str | None:
+    if isinstance(event, str):
+        return event
+    if isinstance(event, MessageDeltaEvent):
+        return event.delta
+    return None
 
 
 def _conversation_service(request: Request) -> ConversationService:
@@ -133,15 +149,41 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
         ) from exc
 
     service = request.app.state.chat_service
+    stream = None
     try:
-        stream = service.stream(payload.model_id, turn.messages)
-        first_chunk = await anext(stream, None)
+        stream = service.stream(
+            payload.model_id,
+            turn.messages,
+            execution_context=ToolExecutionContext(
+                conversation_id=turn.conversation_id,
+                assistant_message_id=turn.assistant_message_id,
+            ),
+        )
+        first_event = await anext(stream, None)
+    except asyncio.CancelledError:
+        if stream is not None:
+            await asyncio.shield(stream.aclose())
+        await asyncio.shield(
+            _finish_safely(
+                conversation_service,
+                turn.assistant_message_id,
+                "",
+                "interrupted",
+            )
+        )
+        raise
     except UnknownModelError as exc:
         await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except UnavailableModelError as exc:
         await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except AgentExecutionError as exc:
+        await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=exc.user_message,
+        ) from exc
     except Exception as exc:
         await _finish_safely(conversation_service, turn.assistant_message_id, "", "failed")
         logger.exception("Chat request failed before streaming")
@@ -158,19 +200,53 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                     "title": turn.conversation_title,
                 },
             )
-            if first_chunk:
-                chunks.append(first_chunk)
-                yield _sse("token", {"delta": first_chunk})
-            async for chunk in stream:
-                chunks.append(chunk)
-                yield _sse("token", {"delta": chunk})
+            yield _sse(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message_id": str(turn.assistant_message_id),
+                },
+            )
+            if first_event is not None:
+                if text := _event_text(first_event):
+                    chunks.append(text)
+                yield _chat_event_sse(first_event)
+            async for event in stream:
+                if text := _event_text(event):
+                    chunks.append(text)
+                yield _chat_event_sse(event)
             await conversation_service.finish_turn(
                 turn.assistant_message_id,
                 "".join(chunks),
                 "completed",
             )
             finalized = True
+            yield _sse(
+                "message_end",
+                {
+                    "type": "message_end",
+                    "message_id": str(turn.assistant_message_id),
+                    "status": "completed",
+                },
+            )
             yield _sse("done", {"conversation_id": str(turn.conversation_id)})
+        except AgentExecutionError as exc:
+            logger.warning("Agent execution stopped code=%s", exc.code)
+            await _finish_safely(
+                conversation_service,
+                turn.assistant_message_id,
+                "".join(chunks),
+                "failed",
+            )
+            finalized = True
+            yield _sse(
+                "error",
+                {
+                    "type": "error",
+                    "code": exc.code,
+                    "message": exc.user_message,
+                },
+            )
         except Exception:
             logger.exception("Chat stream failed")
             await _finish_safely(
@@ -182,7 +258,11 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
             finalized = True
             yield _sse(
                 "error",
-                {"message": "The model provider interrupted the response."},
+                {
+                    "type": "error",
+                    "code": "MODEL_STREAM_INTERRUPTED",
+                    "message": "The model provider interrupted the response.",
+                },
             )
         finally:
             if not finalized:

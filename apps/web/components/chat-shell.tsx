@@ -29,9 +29,21 @@ import {
   fetchModels,
   ModelInfo,
   streamChat,
+  ToolCallUpdate,
+  ToolResultUpdate,
 } from "@/lib/api";
 
-type ChatMessage = ApiChatMessage;
+type ToolStatus = {
+  id: string;
+  toolName: string;
+  label: string;
+  state: "running" | "success" | "failed";
+  summary?: string;
+};
+
+type ChatMessage = ApiChatMessage & {
+  tools?: ToolStatus[];
+};
 
 const suggestions = [
   "帮我规划一趟 5 天的东京美食之旅",
@@ -183,7 +195,12 @@ export function ChatShell() {
 
     const userMessage: ChatMessage = { id: newId(), role: "user", content: trimmed };
     const assistantId = newId();
-    const assistantMessage: ChatMessage = { id: assistantId, role: "assistant", content: "" };
+    const assistantMessage: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      tools: [],
+    };
     const requestMessages = [...messages, userMessage];
     const controller = new AbortController();
 
@@ -210,6 +227,48 @@ export function ChatShell() {
                   ? { ...message, content: message.content + delta }
                   : message,
               ),
+            );
+          },
+          onToolCall: (update: ToolCallUpdate) => {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== assistantId) return message;
+                const tools = message.tools ?? [];
+                const nextStatus: ToolStatus = {
+                  id: update.tool_call_id,
+                  toolName: update.tool_name,
+                  label: update.display_name,
+                  state: "running",
+                };
+                return {
+                  ...message,
+                  tools: tools.some((tool) => tool.id === update.tool_call_id)
+                    ? tools.map((tool) => (tool.id === update.tool_call_id ? nextStatus : tool))
+                    : [...tools, nextStatus],
+                };
+              }),
+            );
+          },
+          onToolResult: (update: ToolResultUpdate) => {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== assistantId) return message;
+                const tools = message.tools ?? [];
+                const existing = tools.find((tool) => tool.id === update.tool_call_id);
+                const nextStatus: ToolStatus = {
+                  id: update.tool_call_id,
+                  toolName: update.tool_name,
+                  label: existing?.label ?? update.tool_name,
+                  state: update.success ? "success" : "failed",
+                  summary: update.summary,
+                };
+                return {
+                  ...message,
+                  tools: existing
+                    ? tools.map((tool) => (tool.id === update.tool_call_id ? nextStatus : tool))
+                    : [...tools, nextStatus],
+                };
+              }),
             );
           },
           onDone: () => void refreshConversations(),
@@ -326,7 +385,7 @@ export function ChatShell() {
             当前阶段
           </div>
           <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-            通用对话已就绪。航班、酒店、天气与地图工具将在后续接入。
+            航班、火车、酒店、天气与地图工具已接入，查询过程会显示在回复中。
           </p>
         </div>
       </aside>
@@ -421,7 +480,7 @@ export function ChatShell() {
                   下一站，去哪里？
                 </h1>
                 <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)] md:text-base">
-                  和你的 AI 旅行助手聊聊灵感、路线与预算。实时信息接入前，请对价格与班次进行二次确认。
+                  和你的 AI 旅行助手聊聊灵感、路线与预算。实时查询结果仍可能变化，请在出行前再次确认。
                 </p>
                 <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {suggestions.map((suggestion) => (
@@ -457,17 +516,41 @@ export function ChatShell() {
                       }
                     >
                       {message.role === "assistant" ? (
-                        message.content ? (
-                          <div className="markdown-body">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                          </div>
-                        ) : (
-                          <div className="flex h-7 items-center gap-1" aria-label="正在思考">
-                            <span className="thinking-dot" />
-                            <span className="thinking-dot [animation-delay:140ms]" />
-                            <span className="thinking-dot [animation-delay:280ms]" />
-                          </div>
-                        )
+                        <div>
+                          {Boolean(message.tools?.length) && (
+                            <div className="mb-3 space-y-1.5" aria-label="工具执行状态">
+                              {message.tools?.map((tool) => (
+                                <div
+                                  key={tool.id}
+                                  className={`flex items-center gap-2 text-xs ${
+                                    tool.state === "failed" ? "text-red-700" : "text-[var(--muted)]"
+                                  }`}
+                                  title={tool.summary}
+                                >
+                                  {tool.state === "running" ? (
+                                    <LoaderCircle size={13} className="animate-spin" />
+                                  ) : tool.state === "success" ? (
+                                    <Check size={13} className="text-emerald-600" />
+                                  ) : (
+                                    <X size={13} />
+                                  )}
+                                  <span>{tool.summary ?? tool.label}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {message.content ? (
+                            <div className="markdown-body">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                            </div>
+                          ) : (
+                            <div className="flex h-7 items-center gap-1" aria-label="正在思考">
+                              <span className="thinking-dot" />
+                              <span className="thinking-dot [animation-delay:140ms]" />
+                              <span className="thinking-dot [animation-delay:280ms]" />
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <p className="whitespace-pre-wrap">{message.content}</p>
                       )}
