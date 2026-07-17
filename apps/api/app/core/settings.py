@@ -58,6 +58,38 @@ class Settings:
     amap_max_retries: int = 1
     app_timezone: str = "Asia/Shanghai"
     trusted_proxy_cidrs: tuple[str, ...] = ()
+    trip_planner_enabled: bool = True
+    trip_planner_max_days: int = 5
+    trip_planner_max_revisions: int = 2
+    trip_planner_max_poi_candidates: int = 20
+    trip_planner_max_transport_options: int = 16
+    trip_planner_max_hotel_options: int = 10
+    trip_planner_max_route_locations: int = 8
+    trip_planner_max_daily_activities: int = 5
+    trip_planner_tool_timeout_seconds: float = 130
+    trip_planner_model_timeout_seconds: float = 45
+    trip_planner_request_extraction_timeout_seconds: float = 30
+    trip_planner_result_max_length: int = 12_000
+
+    def __post_init__(self) -> None:
+        positive_values = {
+            "trip_planner_max_days": self.trip_planner_max_days,
+            "trip_planner_max_poi_candidates": self.trip_planner_max_poi_candidates,
+            "trip_planner_max_transport_options": self.trip_planner_max_transport_options,
+            "trip_planner_max_hotel_options": self.trip_planner_max_hotel_options,
+            "trip_planner_max_route_locations": self.trip_planner_max_route_locations,
+            "trip_planner_max_daily_activities": self.trip_planner_max_daily_activities,
+            "trip_planner_tool_timeout_seconds": self.trip_planner_tool_timeout_seconds,
+            "trip_planner_model_timeout_seconds": self.trip_planner_model_timeout_seconds,
+            "trip_planner_request_extraction_timeout_seconds": (
+                self.trip_planner_request_extraction_timeout_seconds
+            ),
+            "trip_planner_result_max_length": self.trip_planner_result_max_length,
+        }
+        if any(value <= 0 for value in positive_values.values()):
+            raise ValueError("Trip planner limits and timeouts must be positive.")
+        if self.trip_planner_max_revisions < 0:
+            raise ValueError("trip_planner_max_revisions cannot be negative.")
 
 
 def get_settings() -> Settings:
@@ -90,4 +122,36 @@ def get_settings() -> Settings:
         amap_max_retries=int(os.getenv("AMAP_MAX_RETRIES", "1")),
         app_timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai"),
         trusted_proxy_cidrs=trusted_proxy_cidrs,
+        trip_planner_enabled=_environment_bool("TRIP_PLANNER_ENABLED", True),
+        trip_planner_max_days=int(os.getenv("TRIP_PLANNER_MAX_DAYS", "5")),
+        trip_planner_max_revisions=int(os.getenv("TRIP_PLANNER_MAX_REVISIONS", "2")),
+        trip_planner_max_poi_candidates=int(os.getenv("TRIP_PLANNER_MAX_POI_CANDIDATES", "20")),
+        trip_planner_max_transport_options=int(
+            os.getenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "16")
+        ),
+        trip_planner_max_hotel_options=int(os.getenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "10")),
+        trip_planner_max_route_locations=int(os.getenv("TRIP_PLANNER_MAX_ROUTE_LOCATIONS", "8")),
+        trip_planner_max_daily_activities=int(os.getenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "5")),
+        trip_planner_tool_timeout_seconds=float(
+            os.getenv("TRIP_PLANNER_TOOL_TIMEOUT_SECONDS", "130")
+        ),
+        trip_planner_model_timeout_seconds=float(
+            os.getenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "45")
+        ),
+        trip_planner_request_extraction_timeout_seconds=float(
+            os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")
+        ),
+        trip_planner_result_max_length=int(os.getenv("TRIP_PLANNER_RESULT_MAX_LENGTH", "12000")),
     )
+
+
+def _environment_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value.")

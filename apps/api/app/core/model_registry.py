@@ -61,6 +61,7 @@ class ModelCatalog(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_model: str | None = None
+    router_model: str | None = None
     models: list[ModelEntry]
 
     @model_validator(mode="after")
@@ -70,6 +71,9 @@ class ModelCatalog(BaseModel):
             raise ValueError("Model ids must be unique")
         if self.default_model is not None and self.default_model not in ids:
             raise ValueError("default_model must reference an item in models")
+        enabled_ids = {item.id for item in self.models if item.enabled}
+        if self.router_model is not None and self.router_model not in enabled_ids:
+            raise ValueError("router_model must reference an enabled item in models")
         return self
 
 
@@ -143,14 +147,36 @@ class ModelRegistry:
 
     def create_model(self, model_id: str) -> BaseChatModel:
         entry = self._get_enabled(model_id)
+        return self._create_model(entry)
+
+    def create_router_model(self) -> tuple[BaseChatModel, float]:
+        catalog = self._load_if_changed()
+        if catalog.router_model is None:
+            raise UnavailableModelError("Router model is not configured.")
+        entry = next(
+            item
+            for item in catalog.models
+            if item.id == catalog.router_model and item.enabled
+        )
+        model = self._create_model(entry, temperature_override=0.0)
+        return model, entry.timeout_seconds
+
+    def _create_model(
+        self,
+        entry: ModelEntry,
+        *,
+        temperature_override: float | None = None,
+    ) -> BaseChatModel:
         available, reason = self._availability(entry)
         if not available:
-            raise UnavailableModelError(reason or f"Model is unavailable: {model_id}")
+            raise UnavailableModelError(reason or f"Model is unavailable: {entry.id}")
 
         kwargs: dict[str, Any] = dict(entry.parameters)
         kwargs.setdefault("timeout", entry.timeout_seconds)
         kwargs.setdefault("max_retries", entry.max_retries)
-        if entry.temperature is not None:
+        if temperature_override is not None:
+            kwargs["temperature"] = temperature_override
+        elif entry.temperature is not None:
             kwargs.setdefault("temperature", entry.temperature)
         if entry.max_tokens is not None:
             kwargs.setdefault("max_tokens", entry.max_tokens)
@@ -171,5 +197,5 @@ class ModelRegistry:
             )
         except Exception as exc:
             raise UnavailableModelError(
-                f"Could not initialize model '{model_id}': {exc}"
+                f"Could not initialize model '{entry.id}': {exc}"
             ) from exc

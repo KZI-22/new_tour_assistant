@@ -51,11 +51,19 @@ export type ToolResultUpdate = {
   error_code: string | null;
 };
 
+export type PlanningStageUpdate = {
+  stage: string;
+  display_name: string;
+  status: "running" | "success" | "failed" | "skipped";
+  detail: string | null;
+};
+
 type StreamCallbacks = {
   onToken: (delta: string) => void;
   onConversation?: (conversation: { id: string; title: string }) => void;
   onToolCall?: (update: ToolCallUpdate) => void;
   onToolResult?: (update: ToolResultUpdate) => void;
+  onPlanningStage?: (update: PlanningStageUpdate) => void;
   onDone?: () => void;
 };
 
@@ -194,6 +202,23 @@ export async function streamChat(
           summary: data.summary,
           duration_ms: data.duration_ms,
           error_code: data.error_code ?? null,
+        });
+      }
+    } else if (parsed.event === "planning_stage") {
+      const data = parsed.data as Partial<PlanningStageUpdate>;
+      if (
+        data.stage &&
+        data.display_name &&
+        (data.status === "running" ||
+          data.status === "success" ||
+          data.status === "failed" ||
+          data.status === "skipped")
+      ) {
+        callbacks.onPlanningStage?.({
+          stage: data.stage,
+          display_name: data.display_name,
+          status: data.status,
+          detail: data.detail ?? null,
         });
       }
     } else if (parsed.event === "done") {

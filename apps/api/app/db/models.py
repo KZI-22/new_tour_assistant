@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -38,6 +39,12 @@ class Conversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+    travel_plan: Mapped[TravelPlan | None] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
     )
 
     __table_args__ = (Index("ix_conversations_updated_at", "updated_at"),)
@@ -100,4 +107,68 @@ class ToolCallLog(Base):
         ),
         Index("ix_tool_call_logs_conversation_created", "conversation_id", "created_at"),
         Index("ix_tool_call_logs_assistant_message", "assistant_message_id"),
+    )
+
+
+_JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
+
+
+class TravelPlan(Base):
+    __tablename__ = "travel_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_json: Mapped[dict[str, Any]] = mapped_column(_JSON_DOCUMENT, nullable=False)
+    plan_json: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOCUMENT)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="travel_plan")
+    versions: Mapped[list[TravelPlanVersion]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="TravelPlanVersion.version",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'active', 'archived')",
+            name="ck_travel_plans_status",
+        ),
+        CheckConstraint("current_version >= 0", name="ck_travel_plans_current_version"),
+        Index("ix_travel_plans_conversation_status", "conversation_id", "status"),
+    )
+
+
+class TravelPlanVersion(Base):
+    __tablename__ = "travel_plan_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("travel_plans.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_json: Mapped[dict[str, Any]] = mapped_column(_JSON_DOCUMENT, nullable=False)
+    plan_json: Mapped[dict[str, Any]] = mapped_column(_JSON_DOCUMENT, nullable=False)
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    plan: Mapped[TravelPlan] = relationship(back_populates="versions")
+
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_travel_plan_versions_version"),
+        UniqueConstraint("plan_id", "version", name="uq_travel_plan_versions_plan_version"),
+        Index("ix_travel_plan_versions_plan_version", "plan_id", "version"),
     )

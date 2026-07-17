@@ -56,3 +56,33 @@ def test_get_settings_reads_amap_and_request_context_configuration(
     assert settings.amap_max_retries == 2
     assert settings.app_timezone == "Asia/Shanghai"
     assert settings.trusted_proxy_cidrs == ("10.0.0.0/8", "2001:db8::/32")
+
+
+def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRIP_PLANNER_ENABLED", "false")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_DAYS", "4")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_REVISIONS", "1")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_POI_CANDIDATES", "12")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "8")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "6")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_ROUTE_LOCATIONS", "5")
+    monkeypatch.setenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "4")
+    monkeypatch.setenv("TRIP_PLANNER_TOOL_TIMEOUT_SECONDS", "80")
+    monkeypatch.setenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "35")
+    monkeypatch.setenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "25")
+    monkeypatch.setenv("TRIP_PLANNER_RESULT_MAX_LENGTH", "12000")
+
+    settings = get_settings()
+
+    assert settings.trip_planner_enabled is False
+    assert settings.trip_planner_max_days == 4
+    assert settings.trip_planner_max_revisions == 1
+    assert settings.trip_planner_max_poi_candidates == 12
+    assert settings.trip_planner_max_transport_options == 8
+    assert settings.trip_planner_max_hotel_options == 6
+    assert settings.trip_planner_max_route_locations == 5
+    assert settings.trip_planner_max_daily_activities == 4
+    assert settings.trip_planner_tool_timeout_seconds == 80
+    assert settings.trip_planner_model_timeout_seconds == 35
+    assert settings.trip_planner_request_extraction_timeout_seconds == 25
+    assert settings.trip_planner_result_max_length == 12000

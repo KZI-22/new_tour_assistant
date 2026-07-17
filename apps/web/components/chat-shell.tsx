@@ -31,6 +31,7 @@ import {
   streamChat,
   ToolCallUpdate,
   ToolResultUpdate,
+  PlanningStageUpdate,
 } from "@/lib/api";
 
 type ToolStatus = {
@@ -43,6 +44,7 @@ type ToolStatus = {
 
 type ChatMessage = ApiChatMessage & {
   tools?: ToolStatus[];
+  planningStages?: PlanningStageUpdate[];
 };
 
 const suggestions = [
@@ -267,6 +269,20 @@ export function ChatShell() {
                   tools: existing
                     ? tools.map((tool) => (tool.id === update.tool_call_id ? nextStatus : tool))
                     : [...tools, nextStatus],
+                };
+              }),
+            );
+          },
+          onPlanningStage: (update: PlanningStageUpdate) => {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== assistantId) return message;
+                const stages = message.planningStages ?? [];
+                return {
+                  ...message,
+                  planningStages: stages.some((stage) => stage.stage === update.stage)
+                    ? stages.map((stage) => (stage.stage === update.stage ? update : stage))
+                    : [...stages, update],
                 };
               }),
             );
@@ -517,6 +533,37 @@ export function ChatShell() {
                     >
                       {message.role === "assistant" ? (
                         <div>
+                          {Boolean(message.planningStages?.length) && (
+                            <div
+                              className="mb-3 rounded-xl border border-black/[0.06] bg-black/[0.025] px-3 py-2.5"
+                              aria-label="行程规划进度"
+                            >
+                              <div className="space-y-1.5">
+                                {message.planningStages?.map((stage) => (
+                                  <div
+                                    key={stage.stage}
+                                    className={`flex items-center gap-2 text-xs ${
+                                      stage.status === "failed"
+                                        ? "text-red-700"
+                                        : stage.status === "skipped"
+                                          ? "text-[var(--muted-light)]"
+                                          : "text-[var(--muted)]"
+                                    }`}
+                                    title={stage.detail ?? undefined}
+                                  >
+                                    {stage.status === "running" ? (
+                                      <LoaderCircle size={13} className="animate-spin" />
+                                    ) : stage.status === "failed" ? (
+                                      <X size={13} />
+                                    ) : (
+                                      <Check size={13} className="text-emerald-600" />
+                                    )}
+                                    <span>{stage.display_name}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           {Boolean(message.tools?.length) && (
                             <div className="mb-3 space-y-1.5" aria-label="工具执行状态">
                               {message.tools?.map((tool) => (

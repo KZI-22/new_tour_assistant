@@ -10,12 +10,16 @@
 - 单 Agent 工具调用闭环，支持多轮决策、同轮并发、统一错误和最大轮数限制。
 - SSE 工具调用状态与前端进度展示，以及脱敏的 PostgreSQL 工具调用审计日志。
 - 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
+- LangGraph 结构化行程规划，支持必要信息追问、实时数据采集、自动校验与有限次修订。
+- PostgreSQL `JSONB` 行程方案及不可变历史版本，支持基于当前方案的局部修改。
+- SSE `planning_stage` 规划阶段事件与独立的前端进度展示。
 - Next.js + TypeScript + Tailwind CSS 的响应式聊天界面。
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
-当前仍未接入 LangGraph、多 Agent 编排和自动行程生成。模型可以根据上下文串联或并发调用
-FlyAI 与高德工具，但尚未形成完整的多 Agent 行程规划图。
+系统会先用确定性规则区分普通聊天/单项查询和完整行程规划。前两类继续使用原有
+`AgentExecutor` 工具循环；完整规划和已有方案修改进入 LangGraph。V1 使用一个编排图、少量
+结构化 LLM 节点和确定性业务节点，没有把九个工具包装成九个子 Agent。
 
 ## 项目结构
 
@@ -24,6 +28,7 @@ apps/
 ├── api/                    # FastAPI 后端
 │   └── app/
 │       ├── clients/        # FlyAI、高德等外部客户端
+│       ├── graphs/         # LangGraph 行程规划图与 State
 │       ├── schemas/        # API 与 Tool 的结构化输入输出
 │       ├── services/       # 聊天、工具执行、审计日志等应用服务
 │       └── tools/          # 已绑定到聊天模型的旅游工具
@@ -102,6 +107,27 @@ TOOL_EXECUTION_TIMEOUT_SECONDS=130
 `TOOL_EXECUTION_TIMEOUT_SECONDS` 是单个工具调用的外层安全超时；它应略大于供应商客户端自身的
 超时与重试总时长。
 
+结构化行程规划配置：
+
+```dotenv
+TRIP_PLANNER_ENABLED=true
+TRIP_PLANNER_MAX_DAYS=5
+TRIP_PLANNER_MAX_REVISIONS=2
+TRIP_PLANNER_MAX_POI_CANDIDATES=20
+TRIP_PLANNER_MAX_TRANSPORT_OPTIONS=16
+TRIP_PLANNER_MAX_HOTEL_OPTIONS=10
+TRIP_PLANNER_MAX_ROUTE_LOCATIONS=8
+TRIP_PLANNER_MAX_DAILY_ACTIVITIES=5
+TRIP_PLANNER_TOOL_TIMEOUT_SECONDS=130
+TRIP_PLANNER_MODEL_TIMEOUT_SECONDS=45
+TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS=30
+TRIP_PLANNER_RESULT_MAX_LENGTH=12000
+```
+
+V1 支持单个主要目的地和 2–5 天行程。独立的交通、酒店、POI 和天气查询会并发执行；POI
+返回坐标后再执行距离矩阵和代表性路线查询。工具失败可以受控降级，但回复会明确标记缺失数据，
+不会将模型估算包装成实时价格、班次或天气。
+
 `.env` 已被 Git 忽略，不要把真实密钥写入 `config/models.yaml` 或提交到仓库。
 
 ## 2. 添加或删除模型
@@ -153,6 +179,9 @@ conda activate py312
 alembic upgrade head
 ```
 
+迁移 `20260714_0003` 新增 `travel_plans` 和 `travel_plan_versions`。澄清中的需求以 version 0
+草稿保存；第一个完整方案生成 version 1，每次有效修改递增版本并保留旧版本。
+
 数据库使用 Docker named volume `postgres_data` 持久保存。普通的 `docker compose down`
 不会删除数据；除非确定要清空所有本地会话，否则不要使用 `docker compose down -v`。
 
@@ -194,6 +223,10 @@ conda activate py312
 python -m pytest
 ruff check .
 ```
+
+行程规划的 Fake Model/Fake Tool 测试覆盖请求路由、缺失字段追问、并发数据采集、结构化生成、
+确定性校验、自动修订上限、版本持久化边界和 SSE 阶段事件。数据库、FlyAI、高德及真实模型测试
+仍按对应环境变量显式启用，避免默认消耗外部配额。
 
 FlyAI 单元测试全部使用 mock，不消耗请求额度。若要手工执行一次真实航班集成测试，先确认
 `flyai --help` 可用，再在 PowerShell 中设置测试条件：

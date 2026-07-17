@@ -9,11 +9,16 @@ from langchain_core.tools import BaseTool
 
 from app.core.model_registry import ModelRegistry, UnavailableModelError
 from app.core.request_context import get_request_context
+from app.core.settings import Settings
+from app.graphs.trip_planner import TripPlanner
 from app.schemas.chat import ChatMessage
-from app.schemas.tool_execution import ChatStreamEvent
+from app.schemas.routing import clarification_message
+from app.schemas.tool_execution import ChatStreamEvent, MessageDeltaEvent
 from app.services.agent_executor import MAX_TOOL_ROUNDS, AgentExecutor, ToolEnabledModel
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
+from app.services.trip_plan_service import TripPlanService
+from app.services.trip_request_router import TripRequestRouter, resolve_planning_intent
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +76,11 @@ class ChatService:
         max_tool_rounds: int = MAX_TOOL_ROUNDS,
         tool_timeout_seconds: float = 130,
         tool_call_log_writer: ToolCallLogWriter | None = None,
+        trip_plan_service: TripPlanService | None = None,
+        trip_planner_settings: Settings | None = None,
     ) -> None:
         self._registry = registry
+        self._trip_request_router = TripRequestRouter(registry)
         self._tools = tuple(tools)
         self._max_tool_rounds = max_tool_rounds
         self._tool_executor = ToolExecutor(
@@ -80,6 +88,18 @@ class ChatService:
             timeout_seconds=tool_timeout_seconds,
             log_writer=tool_call_log_writer,
         )
+        self._trip_planner = None
+        if trip_planner_settings and trip_planner_settings.trip_planner_enabled:
+            planner_executor = ToolExecutor(
+                self._tools,
+                timeout_seconds=trip_planner_settings.trip_planner_tool_timeout_seconds,
+                log_writer=tool_call_log_writer,
+            )
+            self._trip_planner = TripPlanner(
+                planner_executor,
+                trip_plan_service,
+                trip_planner_settings,
+            )
 
     async def stream(
         self,
@@ -89,6 +109,34 @@ class ChatService:
         execution_context: ToolExecutionContext | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         model = self._registry.create_model(model_id)
+        if self._trip_planner is not None and execution_context is not None:
+            stored = await self._trip_planner.load_stored(execution_context.conversation_id)
+            route = await self._trip_request_router.route(
+                messages,
+                stored=stored,
+            )
+            if route.route == "clarify":
+                yield MessageDeltaEvent(
+                    delta=clarification_message(route.clarification_kind)
+                )
+                return
+            if route.route == "trip_planner":
+                intent = resolve_planning_intent(
+                    route,
+                    has_current_plan=bool(stored and stored.plan is not None),
+                    has_draft=bool(stored and stored.plan is None),
+                )
+                if intent is not None:
+                    async for event in self._trip_planner.stream(
+                        model,
+                        messages,
+                        intent,
+                        execution_context=execution_context,
+                        stored=stored,
+                    ):
+                        yield event
+                    return
+
         try:
             bound_model = model.bind_tools(list(self._tools))
         except Exception as exc:

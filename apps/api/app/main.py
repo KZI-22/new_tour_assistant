@@ -17,6 +17,7 @@ from app.db.session import create_database
 from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
 from app.services.tool_call_log_service import ToolCallLogService
+from app.services.trip_plan_service import TripPlanService
 from app.tools import build_travel_tools
 
 
@@ -30,10 +31,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database_engine = None
     conversation_service = None
     tool_call_log_service = None
+    trip_plan_service = None
     if current_settings.database_url:
         database_engine, session_factory = create_database(current_settings.database_url)
         conversation_service = ConversationService(session_factory)
         tool_call_log_service = ToolCallLogService(session_factory)
+        trip_plan_service = TripPlanService(session_factory)
 
     amap_client = None
     if current_settings.amap_api_key:
@@ -90,9 +93,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_tool_rounds=current_settings.max_tool_rounds,
         tool_timeout_seconds=current_settings.tool_execution_timeout_seconds,
         tool_call_log_writer=tool_call_log_service,
+        trip_plan_service=trip_plan_service,
+        trip_planner_settings=current_settings,
     )
     application.state.conversation_service = conversation_service
     application.state.tool_call_log_service = tool_call_log_service
+    application.state.trip_plan_service = trip_plan_service
     application.state.flyai_client = flyai_client
     application.state.amap_client = amap_client
     application.state.travel_tools = travel_tools

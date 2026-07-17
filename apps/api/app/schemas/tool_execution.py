@@ -75,12 +75,36 @@ class ToolResultEvent(BaseModel):
     error_code: str | None = None
 
 
-type ChatStreamEvent = MessageDeltaEvent | ToolCallEvent | ToolResultEvent
+class PlanningStageEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["planning_stage"] = "planning_stage"
+    stage: Literal[
+        "understanding_request",
+        "checking_requirements",
+        "collecting_transport",
+        "collecting_hotels",
+        "collecting_pois",
+        "collecting_weather",
+        "calculating_routes",
+        "generating_itinerary",
+        "validating_itinerary",
+        "revising_itinerary",
+        "saving_itinerary",
+        "finalizing",
+    ]
+    display_name: str
+    status: Literal["running", "success", "failed", "skipped"]
+    detail: str | None = None
+
+
+type ChatStreamEvent = MessageDeltaEvent | ToolCallEvent | ToolResultEvent | PlanningStageEvent
 
 
 __all__ = [
     "ChatStreamEvent",
     "MessageDeltaEvent",
+    "PlanningStageEvent",
     "ToolCallEvent",
     "ToolError",
     "ToolResult",

@@ -1,6 +1,7 @@
 # Edit this file to add, disable, or remove models. Secrets must stay in .env.
 # The API automatically reloads this file when it changes.
-default_model: mimo-v2.5-pro
+default_model: kimi-k2.6
+router_model: deepseek-v4-flash
 
 models:
   - id: mimo-v2.5-pro
@@ -12,13 +13,13 @@ models:
     base_url_env: MIMO_BASE_URL
     enabled: true
 
-  - id: mimo-v2.5
-    display_name: MiMo V2.5
-    description: Xiaomi flagship model for reasoning, coding, and agent tasks
+  - id: deepseek-v4-flash
+    display_name: deepseek-v4-flash
+    description: DeepSeek model for reasoning and coding tasks
     provider: openai
-    model: mimo-v2.5
-    api_key_env: MIMO_API_KEY
-    base_url_env: MIMO_BASE_URL
+    model: deepseek-v4-flash
+    api_key_env: DASHSCOPE_API_KEY
+    base_url_env: DASHSCOPE_BASE_URL
     enabled: true
 
   - id: qwen3.7-plus
@@ -39,11 +40,11 @@ models:
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
 
-  - id: glm-5
-    display_name: GLM-5
-    description: GLM reasoning model available through Alibaba Model Studio
+  - id: qwen3.6-max-preview
+    display_name: qwen3.6-max-preview
+    description: Preview of Qwen3.6 Max model for reasoning and coding tasks
     provider: openai
-    model: glm-5
+    model: qwen3.6-max-preview
     api_key_env: DASHSCOPE_API_KEY
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
@@ -57,11 +58,11 @@ models:
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
 
-  - id: qwen3.6-flash
-    display_name: Qwen3.6 Flash
-    description: Fast and efficient Qwen model for quick responses
+  - id: kimi-k2.6
+    display_name: kimi-k2.6
+    description: Kimi model for reasoning and coding tasks
     provider: openai
-    model: qwen3.6-flash
+    model: kimi-k2.6
     api_key_env: DASHSCOPE_API_KEY
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true

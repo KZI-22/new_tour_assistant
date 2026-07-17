@@ -132,6 +132,10 @@ class ToolExecutor:
         self._timeout_seconds = timeout_seconds
         self._log_writer = log_writer
 
+    @property
+    def tool_names(self) -> frozenset[str]:
+        return frozenset(self._tools)
+
     def prepare_calls(
         self,
         tool_calls: Sequence[Mapping[str, Any]],

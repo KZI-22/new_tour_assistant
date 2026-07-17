@@ -7,7 +7,12 @@ from pathlib import Path
 from app.core.settings import Settings
 from app.main import create_app
 from app.schemas.chat import ChatMessage
-from app.schemas.tool_execution import MessageDeltaEvent, ToolCallEvent, ToolResultEvent
+from app.schemas.tool_execution import (
+    MessageDeltaEvent,
+    PlanningStageEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from app.services.agent_executor import ToolLoopLimitError
 from app.services.conversation_service import TurnContext
 from app.services.tool_execution import ToolExecutionContext
@@ -87,11 +92,16 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
             messages: object,
             *,
             execution_context: ToolExecutionContext,
-        ) -> AsyncIterator[MessageDeltaEvent]:
+        ) -> AsyncIterator[MessageDeltaEvent | PlanningStageEvent]:
             assert model_id == "test-model"
             assert messages
             assert execution_context.conversation_id == conversation_id
             assert execution_context.assistant_message_id == assistant_message_id
+            yield PlanningStageEvent(
+                stage="understanding_request",
+                display_name="正在理解旅行需求",
+                status="success",
+            )
             yield MessageDeltaEvent(delta="你")
             yield MessageDeltaEvent(delta="好")
 
@@ -133,6 +143,7 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     conversation_event = f'event: conversation\ndata: {{"id":"{conversation_id}","title":"你好"}}'
     assert conversation_event in response.text
     assert 'event: message_start\ndata: {"type":"message_start"' in response.text
+    assert 'event: planning_stage\ndata: {"type":"planning_stage"' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"你"}' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"好"}' in response.text
     assert 'event: message_end\ndata: {"type":"message_end"' in response.text
