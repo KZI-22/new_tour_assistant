@@ -10,7 +10,14 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.schemas.itinerary import AffectedSection, HotelOption, TransportOption, TripRequest
+from app.schemas.itinerary import (
+    Activity,
+    AffectedSection,
+    HotelOption,
+    ItineraryPlan,
+    TransportOption,
+    TripRequest,
+)
 from app.schemas.tool_execution import ChatStreamEvent, PlanningStageEvent, ToolResultEvent
 from app.services.flyai_transport_adapter import (
     FlyAITransportNormalization,
@@ -38,7 +45,6 @@ class TravelDataCollector:
         max_transport_options: int = 16,
         max_hotel_options: int = 10,
         max_hotel_geocodes: int = 3,
-        max_route_locations: int = 8,
         result_max_length: int,
         timezone: str = "Asia/Shanghai",
     ) -> None:
@@ -47,7 +53,6 @@ class TravelDataCollector:
         self._max_transport_options = max_transport_options
         self._max_hotel_options = max_hotel_options
         self._max_hotel_geocodes = max_hotel_geocodes
-        self._max_route_locations = max_route_locations
         self._result_max_length = result_max_length
         self._timezone = timezone
 
@@ -58,7 +63,6 @@ class TravelDataCollector:
         *,
         execution_context: ToolExecutionContext,
         writer: EventWriter,
-        seed_pois: Sequence[dict[str, Any]] = (),
     ) -> dict[str, Any]:
         sections = set(affected_sections) or {
             "dates",
@@ -122,20 +126,6 @@ class TravelDataCollector:
                 str(diagnostic["status"]),
                 detail=str(diagnostic["detail"]),
             )
-        route_candidates = normalized["poi_results"] or list(seed_pois)
-        route_candidates = [*route_candidates, *_hotel_route_points(normalized["hotel_results"])]
-        route_candidates = _prioritize_route_candidates(route_candidates, request)
-        route_pairs = await self._collect_routes(
-            route_candidates,
-            request,
-            execution_context=execution_context,
-            writer=writer,
-            enabled="routes" in sections or "activities" in sections or "hotel" in sections,
-        )
-        normalized["route_results"] = route_pairs["evidence"]
-        normalized["collection_diagnostics"]["calculating_routes"] = route_pairs["diagnostic"]
-        normalized["tool_evidence"].extend(route_pairs["evidence"])
-        normalized["tool_failures"].extend(route_pairs["failures"])
         return normalized
 
     def _initial_calls(
@@ -507,72 +497,40 @@ class TravelDataCollector:
             evidence.append(_evidence(call, outcome, self._result_max_length))
         return {"hotels": resolved, "evidence": evidence, "failures": failures}
 
-    async def _collect_routes(
+    async def collect_itinerary_routes(
         self,
-        pois: Sequence[dict[str, Any]],
+        plan: ItineraryPlan,
         request: TripRequest,
         *,
         execution_context: ToolExecutionContext,
         writer: EventWriter,
-        enabled: bool,
     ) -> dict[str, Any]:
-        locations = []
-        for index, poi in enumerate(pois):
-            location = poi.get("location")
-            if not isinstance(location, Mapping):
-                continue
-            longitude = _number(location.get("longitude"))
-            latitude = _number(location.get("latitude"))
-            if longitude is None or latitude is None:
-                continue
-            locations.append(
-                {
-                    "id": str(poi.get("poi_id") or f"poi-{index}"),
-                    "name": str(poi.get("name") or f"地点 {index + 1}"),
-                    "longitude": longitude,
-                    "latitude": latitude,
-                    "coordinate_system": "GCJ02",
-                }
-            )
-            if len(locations) >= self._max_route_locations:
-                break
-
+        required_pairs = _itinerary_route_pairs(plan)
         calls: list[dict[str, Any]] = []
-        if enabled and len(locations) >= 2:
-            if "amap_travel_time_matrix" in self._executor.tool_names:
-                calls.append(
-                    _tool_call(
-                        "amap_travel_time_matrix",
-                        {"locations": locations, "mode": "driving"},
-                    )
-                )
-            if "amap_plan_route" in self._executor.tool_names:
+        if "amap_plan_route" in self._executor.tool_names:
+            for pair in required_pairs:
+                if pair["origin"] is None or pair["destination"] is None:
+                    continue
                 route_call = _tool_call(
                     "amap_plan_route",
                     {
-                        "origin": {
-                            "longitude": locations[0]["longitude"],
-                            "latitude": locations[0]["latitude"],
-                            "coordinate_system": "GCJ02",
-                        },
-                        "destination": {
-                            "longitude": locations[1]["longitude"],
-                            "latitude": locations[1]["latitude"],
-                            "coordinate_system": "GCJ02",
-                        },
+                        "origin": pair["origin"],
+                        "destination": pair["destination"],
                         "mode": "driving",
                         "city": request.destinations[0],
                     },
                 )
                 route_call["route_pair"] = {
-                    "origin_id": locations[0]["id"],
-                    "destination_id": locations[1]["id"],
+                    "origin_id": pair["origin_id"],
+                    "destination_id": pair["destination_id"],
                 }
                 calls.append(route_call)
 
-        if not calls:
+        required_items = len(required_pairs)
+        if required_items == 0:
             _stage(writer, "calculating_routes", "skipped")
             return {
+                "plan": _apply_route_durations(plan, []),
                 "evidence": [],
                 "failures": [],
                 "diagnostic": {
@@ -581,7 +539,27 @@ class TravelDataCollector:
                     "successful_calls": 0,
                     "usable_items": 0,
                     "required_items": 0,
-                    "detail": "没有足够的带坐标地点可计算路线。",
+                    "detail": "行程中没有需要计算的相邻活动路段。",
+                },
+            }
+        if not calls:
+            _stage(
+                writer,
+                "calculating_routes",
+                "failed",
+                detail=f"{required_items} 个相邻活动路段缺少坐标或路线工具不可用。",
+            )
+            return {
+                "plan": _apply_route_durations(plan, []),
+                "evidence": [],
+                "failures": [],
+                "diagnostic": {
+                    "status": "failed",
+                    "call_count": 0,
+                    "successful_calls": 0,
+                    "usable_items": 0,
+                    "required_items": required_items,
+                    "detail": f"{required_items} 个相邻活动路段缺少坐标或路线工具不可用。",
                 },
             }
 
@@ -616,7 +594,6 @@ class TravelDataCollector:
                 failures.append(f"{call['name']}: {outcome.result.error.message}")
         unique_legs = _unique_route_legs(all_legs)
         successful_calls = sum(outcome.result.success for outcome in outcomes)
-        required_items = max(1, len(locations) - 1)
         if not unique_legs:
             status = "failed"
         elif len(unique_legs) < required_items or successful_calls < len(calls):
@@ -629,6 +606,7 @@ class TravelDataCollector:
         )
         _stage(writer, "calculating_routes", status, detail=detail)
         return {
+            "plan": _apply_route_durations(plan, unique_legs),
             "evidence": evidence,
             "failures": failures,
             "diagnostic": {
@@ -890,6 +868,77 @@ def _route_legs(
                     )
                 break
     return _unique_route_legs(legs)
+
+
+def _itinerary_route_pairs(plan: ItineraryPlan) -> list[dict[str, Any]]:
+    pairs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for day in plan.days:
+        for left, right in zip(day.activities, day.activities[1:], strict=False):
+            origin_id = left.poi_id or ""
+            destination_id = right.poi_id or ""
+            key = (origin_id, destination_id)
+            if origin_id and destination_id and key in seen:
+                continue
+            if origin_id and destination_id:
+                seen.add(key)
+            pairs.append(
+                {
+                    "origin_id": origin_id,
+                    "destination_id": destination_id,
+                    "origin": _activity_route_coordinate(left),
+                    "destination": _activity_route_coordinate(right),
+                }
+            )
+    return pairs
+
+
+def _activity_route_coordinate(activity: Activity) -> dict[str, Any] | None:
+    if not activity.poi_id or not activity.coordinates:
+        return None
+    try:
+        raw = json.loads(activity.coordinates)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    longitude = _number(raw.get("longitude"))
+    latitude = _number(raw.get("latitude"))
+    if longitude is None or latitude is None:
+        return None
+    return {
+        "longitude": longitude,
+        "latitude": latitude,
+        "coordinate_system": "GCJ02",
+    }
+
+
+def _apply_route_durations(
+    plan: ItineraryPlan,
+    legs: Sequence[Mapping[str, Any]],
+) -> ItineraryPlan:
+    durations = {
+        (str(leg.get("origin_id") or ""), str(leg.get("destination_id") or "")): leg.get(
+            "duration_minutes"
+        )
+        for leg in legs
+        if isinstance(leg.get("duration_minutes"), int)
+    }
+    updated = plan.model_copy(deep=True)
+    for day in updated.days:
+        if len(day.activities) <= 1:
+            day.estimated_transport_time_minutes = 0
+            continue
+        day_durations: list[int] = []
+        for left, right in zip(day.activities, day.activities[1:], strict=False):
+            key = (left.poi_id or "", right.poi_id or "")
+            duration = durations.get(key)
+            if not key[0] or not key[1] or not isinstance(duration, int):
+                day_durations = []
+                break
+            day_durations.append(duration)
+        day.estimated_transport_time_minutes = sum(day_durations) if day_durations else None
+    return updated
 
 
 def _unique_route_legs(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1389,91 +1438,6 @@ def _same_city(left: str, right: str) -> bool:
             or normalized_right in normalized_left
         )
     )
-
-
-def _prioritize_route_candidates(
-    items: Sequence[dict[str, Any]],
-    request: TripRequest,
-) -> list[dict[str, Any]]:
-    """Prefer relevant, geographically dense candidates before matrix truncation."""
-
-    coordinates = [_mapping_coordinates(item.get("location")) for item in items]
-    must_visit = [value.casefold() for value in request.must_visit]
-    interests = [value.casefold() for value in request.interests]
-
-    def score(index: int) -> tuple[int, int, int, int, int]:
-        item = items[index]
-        text = " ".join(
-            str(item.get(key) or "") for key in ("name", "poi_type", "query")
-        ).casefold()
-        coordinate = coordinates[index]
-        nearby = 0
-        if coordinate is not None:
-            nearby = sum(
-                other is not None and _distance_km(coordinate, other) <= 20
-                for other in coordinates
-            )
-        return (
-            -int(bool(item.get("is_hotel"))),
-            -int(any(value in text for value in must_visit)),
-            -int(any(value in text for value in interests)),
-            -nearby,
-            int(item.get("provider_rank") or index),
-        )
-
-    return [items[index] for index in sorted(range(len(items)), key=score)]
-
-
-def _mapping_coordinates(value: Any) -> tuple[float, float] | None:
-    if not isinstance(value, Mapping):
-        return None
-    longitude = _number(_first(value, "longitude", "lng", "lon"))
-    latitude = _number(_first(value, "latitude", "lat"))
-    if longitude is None or latitude is None:
-        return None
-    return longitude, latitude
-
-
-def _distance_km(left: tuple[float, float], right: tuple[float, float]) -> float:
-    left_lon, left_lat = map(math.radians, left)
-    right_lon, right_lat = map(math.radians, right)
-    delta_lon = right_lon - left_lon
-    delta_lat = right_lat - left_lat
-    value = (
-        math.sin(delta_lat / 2) ** 2
-        + math.cos(left_lat) * math.cos(right_lat) * math.sin(delta_lon / 2) ** 2
-    )
-    return 6371.0088 * 2 * math.asin(min(1.0, math.sqrt(value)))
-
-
-def _hotel_route_points(hotels: Sequence[HotelOption]) -> list[dict[str, Any]]:
-    points: list[dict[str, Any]] = []
-    for index, hotel in enumerate(hotels[:3]):
-        if not hotel.coordinates:
-            continue
-        try:
-            parsed = json.loads(hotel.coordinates)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(parsed, Mapping):
-            continue
-        longitude = _number(_first(parsed, "longitude", "lng", "lon"))
-        latitude = _number(_first(parsed, "latitude", "lat"))
-        if longitude is None or latitude is None:
-            continue
-        points.append(
-            {
-                "poi_id": hotel.poi_id or f"hotel-{index}",
-                "name": hotel.name,
-                "is_hotel": True,
-                "location": {
-                    "longitude": longitude,
-                    "latitude": latitude,
-                    "coordinate_system": parsed.get("coordinate_system", "GCJ02"),
-                },
-            }
-        )
-    return points
 
 
 def _match_hotel_place(

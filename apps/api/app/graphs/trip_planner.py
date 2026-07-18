@@ -136,7 +136,6 @@ class _TripPlanningRun:
             max_transport_options=settings.trip_planner_max_transport_options,
             max_hotel_options=settings.trip_planner_max_hotel_options,
             max_hotel_geocodes=settings.trip_planner_max_hotel_geocodes,
-            max_route_locations=settings.trip_planner_max_route_locations,
             result_max_length=settings.trip_planner_result_max_length,
             timezone=settings.app_timezone,
         )
@@ -149,6 +148,7 @@ class _TripPlanningRun:
         workflow.add_node("ask_clarification", self.ask_clarification)
         workflow.add_node("collect_travel_data", self.collect_travel_data)
         workflow.add_node("generate_itinerary", self.generate_itinerary)
+        workflow.add_node("collect_itinerary_routes", self.collect_itinerary_routes)
         workflow.add_node("validate_itinerary", self.validate_itinerary)
         workflow.add_node("revise_itinerary", self.revise_itinerary)
         workflow.add_node("persist_itinerary", self.persist_itinerary)
@@ -164,7 +164,8 @@ class _TripPlanningRun:
         )
         workflow.add_edge("ask_clarification", END)
         workflow.add_edge("collect_travel_data", "generate_itinerary")
-        workflow.add_edge("generate_itinerary", "validate_itinerary")
+        workflow.add_edge("generate_itinerary", "collect_itinerary_routes")
+        workflow.add_edge("collect_itinerary_routes", "validate_itinerary")
         workflow.add_conditional_edges(
             "validate_itinerary",
             self._route_after_validation,
@@ -174,7 +175,7 @@ class _TripPlanningRun:
                 "draft": "persist_incomplete",
             },
         )
-        workflow.add_edge("revise_itinerary", "validate_itinerary")
+        workflow.add_edge("revise_itinerary", "collect_itinerary_routes")
         workflow.add_edge("persist_itinerary", "finalize_response")
         workflow.add_edge("persist_incomplete", "finalize_response")
         workflow.add_edge("finalize_response", END)
@@ -354,7 +355,6 @@ class _TripPlanningRun:
             collection_sections,
             execution_context=self._execution_context,
             writer=writer,
-            seed_pois=state.get("poi_results", []),
         )
         if (
             state.get("is_plan_revision")
@@ -461,6 +461,49 @@ class _TripPlanningRun:
             "current_plan": plan,
             "itinerary_generation_available": itinerary_generation_available,
             "current_stage": "generating_itinerary",
+        }
+
+    async def collect_itinerary_routes(self, state: TripPlanningState) -> dict[str, Any]:
+        request = state.get("request")
+        plan = state.get("current_plan")
+        if request is None or plan is None:
+            raise TripPlanningError("ITINERARY_MISSING", "没有可用于路线查询的结构化行程。")
+        writer = get_stream_writer()
+        collected = await self._collector.collect_itinerary_routes(
+            plan,
+            request,
+            execution_context=self._execution_context,
+            writer=writer,
+        )
+        updated_plan = collected["plan"]
+        diagnostic = collected["diagnostic"]
+        route_diagnostics = _collection_plan_diagnostics(
+            {"calculating_routes": diagnostic}
+        )
+        updated_plan.diagnostics = [
+            item for item in updated_plan.diagnostics if item.stage != "calculating_routes"
+        ]
+        updated_plan.diagnostics.extend(route_diagnostics)
+        for item in route_diagnostics:
+            if item.severity not in {"warning", "error"}:
+                continue
+            warning = f"数据阶段未完全可用：{item.message}"
+            if warning not in updated_plan.warnings:
+                updated_plan.warnings.append(warning)
+        failures = list(dict.fromkeys([*state.get("tool_failures", []), *collected["failures"]]))
+        for failure in collected["failures"]:
+            warning = f"部分实时查询失败：{failure}"
+            if warning not in updated_plan.warnings:
+                updated_plan.warnings.append(warning)
+        diagnostics = dict(state.get("collection_diagnostics", {}))
+        diagnostics["calculating_routes"] = diagnostic
+        return {
+            "current_plan": updated_plan,
+            "route_results": collected["evidence"],
+            "collection_diagnostics": diagnostics,
+            "tool_evidence": [*state.get("tool_evidence", []), *collected["evidence"]],
+            "tool_failures": failures,
+            "current_stage": "calculating_routes",
         }
 
     async def validate_itinerary(self, state: TripPlanningState) -> dict[str, Any]:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import date
 from typing import Any
 
 import pytest
-from app.schemas.amap import RoutePlanInput, SearchPlacesInput, TravelTimeMatrixInput, WeatherInput
-from app.schemas.itinerary import AffectedSection, TripRequest
+from app.schemas.amap import RoutePlanInput, SearchPlacesInput, WeatherInput
+from app.schemas.itinerary import Activity, AffectedSection, DayPlan, ItineraryPlan, TripRequest
 from app.schemas.travel import HotelSearchInput, TrainSearchInput
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.travel_data_collector import TravelDataCollector
@@ -15,21 +16,16 @@ from langchain_core.tools import StructuredTool
 
 
 @pytest.mark.asyncio
-async def test_initial_queries_run_concurrently_before_dependent_routes() -> None:
+async def test_initial_queries_run_concurrently_without_precomputing_routes() -> None:
     active = 0
     max_active = 0
-    initial_finished = False
-    completed_initial = 0
-    route_started_after_initial: list[bool] = []
 
     async def initial_result(kind: str, values: dict[str, Any]) -> dict[str, Any]:
-        nonlocal active, completed_initial, initial_finished, max_active
+        nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0.01)
         active -= 1
-        completed_initial += 1
-        initial_finished = completed_initial >= 7
         if kind == "train":
             data: Any = {
                 "items": [
@@ -76,37 +72,6 @@ async def test_initial_queries_run_concurrently_before_dependent_routes() -> Non
     async def weather(**values: Any) -> dict[str, Any]:
         return await initial_result("weather", values)
 
-    async def matrix(**values: Any) -> dict[str, Any]:
-        route_started_after_initial.append(initial_finished)
-        locations = values["locations"]
-        return {
-            "success": True,
-            "provider": "fake",
-            "data": {
-                "matrix": [
-                        {
-                            "origin_id": left["id"] if isinstance(left, dict) else left.id,
-                            "destination_id": right["id"]
-                            if isinstance(right, dict)
-                            else right.id,
-                        "success": True,
-                        "distance_meters": 1000,
-                        "duration_seconds": 600,
-                    }
-                    for left, right in zip(locations, locations[1:], strict=False)
-                ]
-            },
-        }
-
-    async def route(**values: Any) -> dict[str, Any]:
-        del values
-        route_started_after_initial.append(initial_finished)
-        return {
-            "success": True,
-            "provider": "fake",
-            "data": {"distance_meters": 1000, "duration_seconds": 600},
-        }
-
     tools = [
         StructuredTool.from_function(
             coroutine=train,
@@ -132,18 +97,6 @@ async def test_initial_queries_run_concurrently_before_dependent_routes() -> Non
             description="weather",
             args_schema=WeatherInput,
         ),
-        StructuredTool.from_function(
-            coroutine=matrix,
-            name="amap_travel_time_matrix",
-            description="matrix",
-            args_schema=TravelTimeMatrixInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=route,
-            name="amap_plan_route",
-            description="route",
-            args_schema=RoutePlanInput,
-        ),
     ]
     collector = TravelDataCollector(
         ToolExecutor(tools),
@@ -168,13 +121,12 @@ async def test_initial_queries_run_concurrently_before_dependent_routes() -> Non
     )
 
     assert max_active >= 4
-    assert route_started_after_initial and all(route_started_after_initial)
     assert result["transport_results"]
     assert result["transport_results"][0].timezone == "Asia/Shanghai"
     assert result["transport_results"][0].departure_time.utcoffset().total_seconds() == 8 * 3600
     assert result["hotel_results"]
     assert len(result["poi_results"]) >= 2
-    assert len(result["route_results"]) == 2
+    assert result["route_results"] == []
     transport_quality = [
         event
         for event in events
@@ -246,22 +198,25 @@ async def test_revision_queries_only_affected_tool_groups(
 
 
 @pytest.mark.asyncio
-async def test_activity_revision_recalculates_routes_from_existing_pois() -> None:
-    matrix_calls = 0
+async def test_itinerary_routes_query_only_actual_adjacent_activities() -> None:
+    route_calls: list[dict[str, Any]] = []
 
-    async def matrix(**_: Any) -> dict[str, Any]:
-        nonlocal matrix_calls
-        matrix_calls += 1
-        return {"success": True, "provider": "fake", "data": {"matrix": []}}
+    async def route(**values: Any) -> dict[str, Any]:
+        route_calls.append(values)
+        return {
+            "success": True,
+            "provider": "fake",
+            "data": {"distance_meters": 1000, "duration_seconds": 600},
+        }
 
-    matrix_tool = StructuredTool.from_function(
-        coroutine=matrix,
-        name="amap_travel_time_matrix",
-        description="matrix",
-        args_schema=TravelTimeMatrixInput,
+    route_tool = StructuredTool.from_function(
+        coroutine=route,
+        name="amap_plan_route",
+        description="route",
+        args_schema=RoutePlanInput,
     )
     collector = TravelDataCollector(
-        ToolExecutor([matrix_tool]),
+        ToolExecutor([route_tool]),
         max_poi_candidates=10,
         result_max_length=10_000,
     )
@@ -271,28 +226,20 @@ async def test_activity_revision_recalculates_routes_from_existing_pois() -> Non
         start_date=date(2026, 7, 20),
         end_date=date(2026, 7, 22),
     )
-    seed_pois = [
-        {
-            "poi_id": "p1",
-            "name": "西湖",
-            "location": {"longitude": 120.15, "latitude": 30.25},
-        },
-        {
-            "poi_id": "p2",
-            "name": "灵隐寺",
-            "location": {"longitude": 120.10, "latitude": 30.24},
-        },
-    ]
+    plan = _route_test_plan(3)
 
-    await collector.collect(
+    result = await collector.collect_itinerary_routes(
+        plan,
         request,
-        ["activities"],
         execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
         writer=lambda _: None,
-        seed_pois=seed_pois,
     )
 
-    assert matrix_calls == 1
+    assert len(route_calls) == 2
+    assert [call["origin"].longitude for call in route_calls] == [120.1, 120.11]
+    assert result["diagnostic"]["required_items"] == 2
+    assert result["diagnostic"]["usable_items"] == 2
+    assert result["plan"].days[0].estimated_transport_time_minutes == 20
 
 
 @pytest.mark.asyncio
@@ -352,14 +299,13 @@ async def test_transport_stage_fails_when_successful_calls_normalize_to_no_optio
 
 @pytest.mark.asyncio
 async def test_partial_route_results_preserve_only_verified_leg_duration() -> None:
-    async def matrix(**_: Any) -> dict[str, Any]:
-        return {
-            "success": False,
-            "provider": "fake",
-            "error_code": "PROVIDER_RATE_LIMITED",
-        }
-
-    async def route(**_: Any) -> dict[str, Any]:
+    async def route(**values: Any) -> dict[str, Any]:
+        if values["origin"].longitude > 120.1:
+            return {
+                "success": False,
+                "provider": "fake",
+                "error_code": "PROVIDER_RATE_LIMITED",
+            }
         return {
             "success": True,
             "provider": "fake",
@@ -367,12 +313,6 @@ async def test_partial_route_results_preserve_only_verified_leg_duration() -> No
         }
 
     tools = [
-        StructuredTool.from_function(
-            coroutine=matrix,
-            name="amap_travel_time_matrix",
-            description="matrix",
-            args_schema=TravelTimeMatrixInput,
-        ),
         StructuredTool.from_function(
             coroutine=route,
             name="amap_plan_route",
@@ -385,30 +325,52 @@ async def test_partial_route_results_preserve_only_verified_leg_duration() -> No
         max_poi_candidates=10,
         result_max_length=10_000,
     )
-    seed_pois = [
-        {
-            "poi_id": f"p{index}",
-            "name": f"地点 {index}",
-            "location": {"longitude": 120.1 + index / 100, "latitude": 30.2},
-        }
-        for index in range(3)
-    ]
     events: list[Any] = []
-    result = await collector.collect(
+    result = await collector.collect_itinerary_routes(
+        _route_test_plan(3),
         TripRequest(destinations=["杭州"]),
-        ["routes"],
         execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
         writer=events.append,
-        seed_pois=seed_pois,
     )
 
-    diagnostic = result["collection_diagnostics"]["calculating_routes"]
+    diagnostic = result["diagnostic"]
     assert diagnostic["status"] == "partial"
     assert diagnostic["usable_items"] == 1
     assert diagnostic["required_items"] == 2
-    assert result["route_results"][0]["route_legs"][0]["duration_minutes"] == 10
+    assert result["evidence"][0]["route_legs"][0]["duration_minutes"] == 10
+    assert result["plan"].days[0].estimated_transport_time_minutes is None
     assert any(
         getattr(event, "stage", None) == "calculating_routes"
         and getattr(event, "status", None) == "partial"
         for event in events
+    )
+
+
+def _route_test_plan(activity_count: int) -> ItineraryPlan:
+    return ItineraryPlan(
+        title="杭州路线测试",
+        destination="杭州",
+        start_date=date(2026, 7, 20),
+        end_date=date(2026, 7, 20),
+        days=[
+            DayPlan(
+                date=date(2026, 7, 20),
+                day_index=1,
+                activities=[
+                    Activity(
+                        place_name=f"地点 {index}",
+                        poi_id=f"p{index}",
+                        coordinates=json.dumps(
+                            {
+                                "longitude": 120.1 + index / 100,
+                                "latitude": 30.2,
+                                "coordinate_system": "GCJ02",
+                            }
+                        ),
+                        activity_type="景点",
+                    )
+                    for index in range(activity_count)
+                ],
+            )
+        ],
     )

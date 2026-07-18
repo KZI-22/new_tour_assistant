@@ -65,7 +65,6 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("TRIP_PLANNER_MAX_POI_CANDIDATES", "12")
     monkeypatch.setenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "8")
     monkeypatch.setenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "6")
-    monkeypatch.setenv("TRIP_PLANNER_MAX_ROUTE_LOCATIONS", "5")
     monkeypatch.setenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "4")
     monkeypatch.setenv("TRIP_PLANNER_TOOL_TIMEOUT_SECONDS", "80")
     monkeypatch.setenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "35")
@@ -80,7 +79,6 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     assert settings.trip_planner_max_poi_candidates == 12
     assert settings.trip_planner_max_transport_options == 8
     assert settings.trip_planner_max_hotel_options == 6
-    assert settings.trip_planner_max_route_locations == 5
     assert settings.trip_planner_max_daily_activities == 4
     assert settings.trip_planner_tool_timeout_seconds == 80
     assert settings.trip_planner_model_timeout_seconds == 35
