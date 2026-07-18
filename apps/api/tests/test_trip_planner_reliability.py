@@ -16,6 +16,9 @@ from app.schemas.travel import HotelSearchInput
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.travel_data_collector import (
     TravelDataCollector,
+    _hotel_geocode_quality_summary,
+    _payload_item_count,
+    _poi_quality_summary,
     _relevant_pois,
     _transport_options,
 )
@@ -193,6 +196,33 @@ def test_poi_relevance_rejects_commercial_and_cross_city_results() -> None:
     assert [item["poi_id"] for item in result] == ["good"]
     assert result[0]["relevance_score"] >= 20
     assert "query_type_match" in result[0]["relevance_reasons"]
+
+
+def test_empty_provider_envelope_is_not_counted_as_one_record() -> None:
+    assert (
+        _payload_item_count(
+            {"data": None, "message": "empty", "status": 0, "systemMessage": None}
+        )
+        == 0
+    )
+
+
+def test_quality_summaries_distinguish_filtering_and_candidate_mismatch() -> None:
+    poi_summary = _poi_quality_summary(
+        provider_count=6,
+        normalized_item_count=2,
+        parse_failure_count=0,
+        relevance_filtered_count=4,
+    )
+    hotel_summary = _hotel_geocode_quality_summary(
+        provider_count=5,
+        matched_count=1,
+        parse_failure_count=0,
+        candidate_unmatched_count=4,
+    )
+
+    assert poi_summary == "供应商返回 6 条地点，相关性过滤 4 条，保留 2 条旅游候选。"
+    assert hotel_summary == "供应商返回 5 个地点候选，候选未匹配 4 个，匹配酒店坐标 1 个。"
 
 
 @pytest.mark.asyncio

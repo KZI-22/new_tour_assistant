@@ -310,14 +310,16 @@ class TravelDataCollector:
                 elif stage == "collecting_pois":
                     arguments = call.get("args") if isinstance(call.get("args"), Mapping) else {}
                     query = _text(arguments, "keyword", "keywords")
-                    items = _poi_items(
+                    parsed_items = _poi_items(
                         outcome.result.data,
                         query=query,
                         source_tool=str(call.get("name") or "unknown"),
                     )
-                    items = _relevant_pois(items, request)
+                    items = _relevant_pois(parsed_items, request)
                     poi_results.extend(items)
                     provider_count = _payload_item_count(outcome.result.data)
+                    parse_failure_count = max(0, provider_count - len(parsed_items))
+                    relevance_filtered_count = max(0, len(parsed_items) - len(items))
                     quality_events.append(
                         _quality_event(
                             outcome,
@@ -325,6 +327,23 @@ class TravelDataCollector:
                             normalized_item_count=len(items),
                             rejected_item_count=max(0, provider_count - len(items)),
                             schema_version="poi-generic-v1",
+                            invalid_error_code=(
+                                "NO_RELEVANT_RESULTS"
+                                if parsed_items and not items
+                                else "PROVIDER_SCHEMA_MISMATCH"
+                            ),
+                            partial_summary=_poi_quality_summary(
+                                provider_count=provider_count,
+                                normalized_item_count=len(items),
+                                parse_failure_count=parse_failure_count,
+                                relevance_filtered_count=relevance_filtered_count,
+                            ),
+                            invalid_summary=_poi_quality_summary(
+                                provider_count=provider_count,
+                                normalized_item_count=len(items),
+                                parse_failure_count=parse_failure_count,
+                                relevance_filtered_count=relevance_filtered_count,
+                            ),
                         )
                     )
                 elif stage == "collecting_weather":
@@ -448,16 +467,24 @@ class TravelDataCollector:
                 source_tool="amap_search_places",
             )
             match = _match_hotel_place(hotel, places, destination)
+            matched_count = int(match is not None)
+            parse_failure_count = max(0, provider_count - len(places))
+            candidate_unmatched_count = max(0, len(places) - matched_count)
+            geocode_summary = _hotel_geocode_quality_summary(
+                provider_count=provider_count,
+                matched_count=matched_count,
+                parse_failure_count=parse_failure_count,
+                candidate_unmatched_count=candidate_unmatched_count,
+            )
             quality_event = _quality_event(
                 outcome,
                 provider_item_count=provider_count,
-                normalized_item_count=int(match is not None),
-                rejected_item_count=max(0, provider_count - int(match is not None)),
+                normalized_item_count=matched_count,
+                rejected_item_count=max(0, provider_count - matched_count),
                 schema_version="hotel-geocode-v1",
                 invalid_error_code="HOTEL_COORDINATE_MATCH_REJECTED",
-                invalid_summary=(
-                    f"返回了 {provider_count} 个地点，但没有酒店名称和城市均匹配的坐标。"
-                ),
+                partial_summary=geocode_summary,
+                invalid_summary=geocode_summary,
             )
             writer(quality_event)
             await self._executor.record_data_quality(quality_event, execution_context)
@@ -644,6 +671,7 @@ def _quality_event(
     rejected_item_count: int,
     schema_version: str,
     invalid_error_code: str = "PROVIDER_SCHEMA_MISMATCH",
+    partial_summary: str | None = None,
     invalid_summary: str | None = None,
 ) -> ToolResultEvent:
     if normalized_item_count > 0:
@@ -651,9 +679,9 @@ def _quality_event(
         success = True
         error_code = None
         if data_status == "partial":
-            summary = (
-                f"供应商返回 {provider_item_count} 条记录，已转换 "
-                f"{normalized_item_count} 条，拒绝 {rejected_item_count} 条异常记录。"
+            summary = partial_summary or (
+                f"供应商返回 {provider_item_count} 条记录，成功解析 "
+                f"{normalized_item_count} 条，解析失败 {rejected_item_count} 条。"
             )
         else:
             summary = f"已取得 {normalized_item_count} 条可用数据。"
@@ -667,7 +695,7 @@ def _quality_event(
         success = False
         error_code = invalid_error_code
         summary = invalid_summary or (
-            f"供应商返回 {provider_item_count} 条记录，但当前版本无法转换为可用数据。"
+            f"供应商返回 {provider_item_count} 条记录，但均解析失败，当前版本无法使用。"
         )
     return ToolResultEvent(
         tool_call_id=outcome.event.tool_call_id,
@@ -682,6 +710,50 @@ def _quality_event(
         rejected_item_count=max(0, rejected_item_count),
         schema_version=schema_version,
     )
+
+
+def _poi_quality_summary(
+    *,
+    provider_count: int,
+    normalized_item_count: int,
+    parse_failure_count: int,
+    relevance_filtered_count: int,
+) -> str:
+    if normalized_item_count > 0:
+        parts = [f"供应商返回 {provider_count} 条地点"]
+        if parse_failure_count:
+            parts.append(f"解析失败 {parse_failure_count} 条")
+        if relevance_filtered_count:
+            parts.append(f"相关性过滤 {relevance_filtered_count} 条")
+        parts.append(f"保留 {normalized_item_count} 条旅游候选")
+        return "，".join(parts) + "。"
+    if relevance_filtered_count:
+        prefix = (
+            f"供应商返回 {provider_count} 条地点，解析失败 {parse_failure_count} 条，"
+            if parse_failure_count
+            else f"供应商返回 {provider_count} 条地点，"
+        )
+        return f"{prefix}相关性过滤 {relevance_filtered_count} 条，没有保留旅游候选。"
+    return f"供应商返回 {provider_count} 条记录，但 {parse_failure_count} 条均解析失败。"
+
+
+def _hotel_geocode_quality_summary(
+    *,
+    provider_count: int,
+    matched_count: int,
+    parse_failure_count: int,
+    candidate_unmatched_count: int,
+) -> str:
+    parts = [f"供应商返回 {provider_count} 个地点候选"]
+    if parse_failure_count:
+        parts.append(f"解析失败 {parse_failure_count} 个")
+    if candidate_unmatched_count:
+        parts.append(f"候选未匹配 {candidate_unmatched_count} 个")
+    if matched_count:
+        parts.append(f"匹配酒店坐标 {matched_count} 个")
+    else:
+        parts.append("未找到可确认的酒店坐标")
+    return "，".join(parts) + "。"
 
 
 def _payload_item_count(data: Any, *, _depth: int = 0) -> int:
@@ -707,6 +779,8 @@ def _payload_item_count(data: Any, *, _depth: int = 0) -> int:
         value = data.get(key)
         if isinstance(value, list):
             return len(value)
+    if "data" in data and data.get("data") is None:
+        return 0
     if _depth < 3:
         nested = data.get("data")
         if isinstance(nested, (Mapping, list)):

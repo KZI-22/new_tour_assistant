@@ -7,7 +7,6 @@ from app.schemas.travel import (
     FlightSearchInput,
     FlyAIResult,
     HotelSearchInput,
-    PoiSearchInput,
     TrainSearchInput,
 )
 from app.tools import build_travel_tools
@@ -26,9 +25,6 @@ class FakeFlyAIClient:
     async def search_hotel(self, query: HotelSearchInput) -> FlyAIResult:
         return self._result(query, "search-hotel")
 
-    async def search_poi(self, query: PoiSearchInput) -> FlyAIResult:
-        return self._result(query, "search-poi")
-
     def _result(self, query: object, command: str) -> FlyAIResult:
         self.queries.append(query)
         return FlyAIResult(
@@ -46,7 +42,7 @@ async def test_travel_tools_validate_structured_fields_and_delegate_to_client() 
     by_name = {tool.name: tool for tool in tools}
     tomorrow = date.today() + timedelta(days=1)
 
-    assert set(by_name) == {"search_flight", "search_train", "search_hotel", "search_poi"}
+    assert set(by_name) == {"search_flight", "search_train", "search_hotel"}
     assert "command" not in by_name["search_flight"].args_schema.model_json_schema()["properties"]
 
     results = [
@@ -63,7 +59,6 @@ async def test_travel_tools_validate_structured_fields_and_delegate_to_client() 
                 "check_out_date": (tomorrow + timedelta(days=1)).isoformat(),
             }
         ),
-        await by_name["search_poi"].ainvoke({"city": "杭州", "keyword": "西湖"}),
     ]
 
     assert all(result["success"] is True for result in results)
@@ -71,5 +66,4 @@ async def test_travel_tools_validate_structured_fields_and_delegate_to_client() 
         FlightSearchInput,
         TrainSearchInput,
         HotelSearchInput,
-        PoiSearchInput,
     ]
