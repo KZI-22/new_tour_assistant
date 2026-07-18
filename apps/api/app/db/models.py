@@ -96,6 +96,11 @@ class ToolCallLog(Base):
     result_summary: Mapped[str] = mapped_column(String(500), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(100))
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_status: Mapped[str | None] = mapped_column(String(20))
+    provider_item_count: Mapped[int | None] = mapped_column(Integer)
+    normalized_item_count: Mapped[int | None] = mapped_column(Integer)
+    rejected_item_count: Mapped[int | None] = mapped_column(Integer)
+    schema_version: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -104,6 +109,10 @@ class ToolCallLog(Base):
         CheckConstraint(
             "status IN ('pending', 'success', 'failed')",
             name="ck_tool_call_logs_status",
+        ),
+        CheckConstraint(
+            "data_status IS NULL OR data_status IN ('usable', 'partial', 'empty', 'invalid')",
+            name="ck_tool_call_logs_data_status",
         ),
         Index("ix_tool_call_logs_conversation_created", "conversation_id", "created_at"),
         Index("ix_tool_call_logs_assistant_message", "assistant_message_id"),

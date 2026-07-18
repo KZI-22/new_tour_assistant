@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ConversationMessageResponse(BaseModel):
@@ -24,6 +24,24 @@ class ConversationSummaryResponse(BaseModel):
     updated_at: datetime
 
 
+class ConversationToolCallResponse(BaseModel):
+    id: UUID
+    assistant_message_id: UUID
+    tool_call_id: str
+    tool_name: str
+    provider: str
+    status: Literal["pending", "success", "failed"]
+    result_summary: str
+    error_code: str | None
+    duration_ms: int
+    data_status: Literal["usable", "partial", "empty", "invalid"] | None = None
+    provider_item_count: int | None = None
+    normalized_item_count: int | None = None
+    rejected_item_count: int | None = None
+    schema_version: str | None = None
+    created_at: datetime
+
+
 class ConversationDetailResponse(ConversationSummaryResponse):
     messages: list[ConversationMessageResponse]
-
+    tool_calls: list[ConversationToolCallResponse] = Field(default_factory=list)

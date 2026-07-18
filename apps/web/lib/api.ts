@@ -34,6 +34,25 @@ export type PersistedMessage = ApiChatMessage & {
 
 export type ConversationDetail = ConversationSummary & {
   messages: PersistedMessage[];
+  tool_calls?: PersistedToolCall[];
+};
+
+export type PersistedToolCall = {
+  id: string;
+  assistant_message_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  provider: string;
+  status: "pending" | "success" | "failed";
+  result_summary: string;
+  error_code: string | null;
+  duration_ms: number;
+  data_status: "usable" | "partial" | "empty" | "invalid" | null;
+  provider_item_count: number | null;
+  normalized_item_count: number | null;
+  rejected_item_count: number | null;
+  schema_version: string | null;
+  created_at: string;
 };
 
 export type ToolCallUpdate = {
@@ -49,12 +68,17 @@ export type ToolResultUpdate = {
   summary: string;
   duration_ms: number;
   error_code: string | null;
+  data_status: "usable" | "partial" | "empty" | "invalid" | null;
+  provider_item_count: number | null;
+  normalized_item_count: number | null;
+  rejected_item_count: number | null;
+  schema_version: string | null;
 };
 
 export type PlanningStageUpdate = {
   stage: string;
   display_name: string;
-  status: "running" | "success" | "failed" | "skipped";
+  status: "running" | "success" | "partial" | "failed" | "skipped";
   detail: string | null;
 };
 
@@ -202,6 +226,11 @@ export async function streamChat(
           summary: data.summary,
           duration_ms: data.duration_ms,
           error_code: data.error_code ?? null,
+          data_status: data.data_status ?? null,
+          provider_item_count: data.provider_item_count ?? null,
+          normalized_item_count: data.normalized_item_count ?? null,
+          rejected_item_count: data.rejected_item_count ?? null,
+          schema_version: data.schema_version ?? null,
         });
       }
     } else if (parsed.event === "planning_stage") {
@@ -211,6 +240,7 @@ export async function streamChat(
         data.display_name &&
         (data.status === "running" ||
           data.status === "success" ||
+          data.status === "partial" ||
           data.status === "failed" ||
           data.status === "skipped")
       ) {

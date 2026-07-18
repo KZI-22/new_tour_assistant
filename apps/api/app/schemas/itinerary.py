@@ -73,10 +73,15 @@ class TripRequest(ItineraryModel):
 
     @model_validator(mode="after")
     def complete_dates_and_travelers(self) -> Self:
-        if self.start_date is not None and self.end_date is None and self.duration_days:
+        if self.start_date is not None and self.end_date is not None:
+            actual_duration = (self.end_date - self.start_date).days + 1
+            if self.duration_days is not None and self.duration_days != actual_duration:
+                raise ValueError(
+                    "duration_days must match the inclusive start_date/end_date range"
+                )
+            self.duration_days = actual_duration
+        elif self.start_date is not None and self.duration_days is not None:
             self.end_date = self.start_date + timedelta(days=self.duration_days - 1)
-        elif self.start_date is not None and self.end_date is not None:
-            self.duration_days = (self.end_date - self.start_date).days + 1
 
         if self.traveler_count is None and (self.adults is not None or self.children is not None):
             total = (self.adults or 0) + (self.children or 0)
@@ -113,6 +118,10 @@ class HotelOption(ItineraryModel):
     address: str | None = None
     poi_id: str | None = None
     coordinates: str | None = None
+    coordinate_source: str | None = None
+    coordinate_source_reference: str | None = None
+    coordinate_queried_at: datetime | None = None
+    coordinate_match_confidence: float | None = Field(default=None, ge=0, le=1)
 
     star_level: str | None = None
     room_type: str | None = None
@@ -156,7 +165,9 @@ class DayPlan(ItineraryModel):
     day_index: int = Field(ge=1)
     theme: str | None = None
     activities: list[Activity] = Field(default_factory=list)
-    estimated_transport_time_minutes: int = Field(default=0, ge=0)
+    # ``None`` means that the required legs are not covered by verified route
+    # facts.  Zero is reserved for days that genuinely require no travel.
+    estimated_transport_time_minutes: int | None = Field(default=None, ge=0)
     estimated_activity_cost: float | None = Field(default=None, ge=0)
     weather_summary: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -174,6 +185,16 @@ class BudgetSummary(ItineraryModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class PlanDiagnostic(ItineraryModel):
+    """Persisted, sanitized evidence about degraded planning stages."""
+
+    code: str
+    stage: str
+    severity: IssueSeverity
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class ItineraryPlan(ItineraryModel):
     title: str
     origin: str | None = None
@@ -185,6 +206,8 @@ class ItineraryPlan(ItineraryModel):
     hotel: HotelOption | None = None
     days: list[DayPlan] = Field(default_factory=list)
     budget: BudgetSummary | None = None
+    readiness: Literal["ready", "partial", "blocked"] = "ready"
+    diagnostics: list[PlanDiagnostic] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -241,6 +264,7 @@ __all__ = [
     "ExperienceValidation",
     "HotelOption",
     "ItineraryPlan",
+    "PlanDiagnostic",
     "PlanningIntent",
     "TransportOption",
     "TripRequest",

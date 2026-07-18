@@ -81,15 +81,68 @@ class TripPlanService:
                     )
                     session.add(record)
                     await session.flush()
-                else:
+                elif record.current_version == 0:
                     record.title = title
                     record.status = "draft"
                     record.request_json = request_json
-                    record.plan_json = None
                     record.updated_at = now
                 return record.id
         except Exception as exc:
             raise TripPlanPersistenceError("无法保存行程需求草稿。") from exc
+
+    async def save_partial_plan(
+        self,
+        conversation_id: uuid.UUID,
+        request: TripRequest,
+        plan: ItineraryPlan,
+    ) -> StoredTripPlan:
+        """Save a recoverable structured draft without creating a formal version."""
+
+        now = datetime.now(UTC)
+        request_json = request.model_dump(mode="json")
+        plan_json = plan.model_dump(mode="json")
+        try:
+            async with self._session_factory() as session, session.begin():
+                record = await session.scalar(
+                    select(TravelPlan)
+                    .where(TravelPlan.conversation_id == conversation_id)
+                    .with_for_update()
+                )
+                if record is None:
+                    record = TravelPlan(
+                        conversation_id=conversation_id,
+                        title=plan.title,
+                        status="draft",
+                        current_version=0,
+                        request_json=request_json,
+                        plan_json=plan_json,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(record)
+                    await session.flush()
+                elif record.current_version == 0:
+                    record.title = plan.title
+                    record.status = "draft"
+                    record.request_json = request_json
+                    record.plan_json = plan_json
+                    record.updated_at = now
+                    await session.flush()
+                else:
+                    raise TripPlanPersistenceError("正式行程已存在，不能用未完成草稿覆盖。")
+                record_id = record.id
+        except TripPlanPersistenceError:
+            raise
+        except Exception as exc:
+            raise TripPlanPersistenceError("无法保存结构化行程草稿。") from exc
+
+        return StoredTripPlan(
+            id=record_id,
+            request=request,
+            plan=plan,
+            status="draft",
+            version=0,
+        )
 
     async def save_plan(
         self,

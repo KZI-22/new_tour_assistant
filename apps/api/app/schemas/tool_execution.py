@@ -73,6 +73,11 @@ class ToolResultEvent(BaseModel):
     summary: str
     duration_ms: int = Field(ge=0)
     error_code: str | None = None
+    data_status: Literal["usable", "partial", "empty", "invalid"] | None = None
+    provider_item_count: int | None = Field(default=None, ge=0)
+    normalized_item_count: int | None = Field(default=None, ge=0)
+    rejected_item_count: int | None = Field(default=None, ge=0)
+    schema_version: str | None = None
 
 
 class PlanningStageEvent(BaseModel):
@@ -94,7 +99,7 @@ class PlanningStageEvent(BaseModel):
         "finalizing",
     ]
     display_name: str
-    status: Literal["running", "success", "failed", "skipped"]
+    status: Literal["running", "success", "partial", "failed", "skipped"]
     detail: str | None = None
 
 

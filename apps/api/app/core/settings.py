@@ -64,6 +64,7 @@ class Settings:
     trip_planner_max_poi_candidates: int = 20
     trip_planner_max_transport_options: int = 16
     trip_planner_max_hotel_options: int = 10
+    trip_planner_max_hotel_geocodes: int = 3
     trip_planner_max_route_locations: int = 8
     trip_planner_max_daily_activities: int = 5
     trip_planner_tool_timeout_seconds: float = 130
@@ -77,6 +78,7 @@ class Settings:
             "trip_planner_max_poi_candidates": self.trip_planner_max_poi_candidates,
             "trip_planner_max_transport_options": self.trip_planner_max_transport_options,
             "trip_planner_max_hotel_options": self.trip_planner_max_hotel_options,
+            "trip_planner_max_hotel_geocodes": self.trip_planner_max_hotel_geocodes,
             "trip_planner_max_route_locations": self.trip_planner_max_route_locations,
             "trip_planner_max_daily_activities": self.trip_planner_max_daily_activities,
             "trip_planner_tool_timeout_seconds": self.trip_planner_tool_timeout_seconds,
@@ -130,6 +132,9 @@ def get_settings() -> Settings:
             os.getenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "16")
         ),
         trip_planner_max_hotel_options=int(os.getenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "10")),
+        trip_planner_max_hotel_geocodes=int(
+            os.getenv("TRIP_PLANNER_MAX_HOTEL_GEOCODES", "3")
+        ),
         trip_planner_max_route_locations=int(os.getenv("TRIP_PLANNER_MAX_ROUTE_LOCATIONS", "8")),
         trip_planner_max_daily_activities=int(os.getenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "5")),
         trip_planner_tool_timeout_seconds=float(

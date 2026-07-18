@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import ToolCallLog
@@ -25,8 +26,24 @@ class ToolCallLogEntry:
     duration_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCallQualityUpdate:
+    conversation_id: uuid.UUID
+    assistant_message_id: uuid.UUID
+    tool_call_id: str
+    data_status: Literal["usable", "partial", "empty", "invalid"]
+    provider_item_count: int
+    normalized_item_count: int
+    rejected_item_count: int
+    schema_version: str
+    result_summary: str
+    error_code: str | None
+
+
 class ToolCallLogWriter(Protocol):
     async def record(self, entry: ToolCallLogEntry) -> None: ...
+
+    async def update_data_quality(self, quality: ToolCallQualityUpdate) -> None: ...
 
 
 class ToolCallLogService:
@@ -52,9 +69,32 @@ class ToolCallLogService:
                 )
             )
 
+    async def update_data_quality(self, quality: ToolCallQualityUpdate) -> None:
+        """Attach normalized-data quality without persisting provider payloads."""
+
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                update(ToolCallLog)
+                .where(
+                    ToolCallLog.conversation_id == quality.conversation_id,
+                    ToolCallLog.assistant_message_id == quality.assistant_message_id,
+                    ToolCallLog.tool_call_id == quality.tool_call_id,
+                )
+                .values(
+                    data_status=quality.data_status,
+                    provider_item_count=quality.provider_item_count,
+                    normalized_item_count=quality.normalized_item_count,
+                    rejected_item_count=quality.rejected_item_count,
+                    schema_version=quality.schema_version,
+                    result_summary=quality.result_summary,
+                    error_code=quality.error_code,
+                )
+            )
+
 
 __all__ = [
     "ToolCallLogEntry",
+    "ToolCallQualityUpdate",
     "ToolCallLogService",
     "ToolCallLogWriter",
     "ToolCallStatus",

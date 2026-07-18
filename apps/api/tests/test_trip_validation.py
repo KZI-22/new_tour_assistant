@@ -39,6 +39,20 @@ def _transport() -> TransportOption:
     )
 
 
+def _return_transport() -> TransportOption:
+    return TransportOption(
+        transport_type="train",
+        departure_city="杭州",
+        arrival_city="南京",
+        departure_time=datetime(2026, 7, 21, 18, 0),
+        arrival_time=datetime(2026, 7, 21, 20, 0),
+        train_number="G2",
+        price=200,
+        source_tool="search_train",
+        source_reference="search_train:G2",
+    )
+
+
 def _hotel() -> HotelOption:
     return HotelOption(
         name="西湖酒店",
@@ -116,6 +130,7 @@ def test_deterministic_validation_reports_time_pace_duplicates_budget_and_source
 
 def test_verified_plan_passes_source_and_date_checks() -> None:
     transport = _transport()
+    return_transport = _return_transport()
     hotel = _hotel()
     plan = ItineraryPlan(
         title="杭州两日游",
@@ -124,19 +139,98 @@ def test_verified_plan_passes_source_and_date_checks() -> None:
         start_date=date(2026, 7, 20),
         end_date=date(2026, 7, 21),
         outbound_transport=transport,
+        return_transport=return_transport,
         hotel=hotel,
         days=[
             DayPlan(date=date(2026, 7, 20), day_index=1),
             DayPlan(date=date(2026, 7, 21), day_index=2),
         ],
+        budget=BudgetSummary(total_estimated_cost=900, user_budget=1000),
     )
 
     issues = validate_itinerary(
         plan,
         _request(),
-        transport_options=[transport],
+        transport_options=[transport, return_transport],
         hotel_options=[hotel],
         route_data_available=True,
     )
 
     assert not [issue for issue in issues if issue.severity == "error"]
+
+
+def test_missing_critical_facts_block_an_overnight_budgeted_plan() -> None:
+    plan = ItineraryPlan(
+        title="杭州两日游",
+        origin="南京",
+        destination="杭州",
+        start_date=date(2026, 7, 20),
+        end_date=date(2026, 7, 21),
+        days=[
+            DayPlan(date=date(2026, 7, 20), day_index=1),
+            DayPlan(date=date(2026, 7, 21), day_index=2),
+        ],
+        budget=BudgetSummary(user_budget=1000),
+    )
+
+    codes = {issue.code for issue in validate_itinerary(plan, _request())}
+
+    assert {
+        "OUTBOUND_TRANSPORT_MISSING",
+        "RETURN_TRANSPORT_MISSING",
+        "HOTEL_MISSING",
+        "BUDGET_TOTAL_MISSING",
+    } <= codes
+
+
+def test_route_validation_requires_every_consecutive_activity_leg() -> None:
+    outbound = _transport()
+    returning = _return_transport()
+    hotel = _hotel()
+    plan = ItineraryPlan(
+        title="杭州两日游",
+        origin="南京",
+        destination="杭州",
+        start_date=date(2026, 7, 20),
+        end_date=date(2026, 7, 21),
+        outbound_transport=outbound,
+        return_transport=returning,
+        hotel=hotel,
+        days=[
+            DayPlan(
+                date=date(2026, 7, 20),
+                day_index=1,
+                estimated_transport_time_minutes=10,
+                activities=[
+                    Activity(place_name="西湖", poi_id="p1", activity_type="游览"),
+                    Activity(place_name="博物馆", poi_id="p2", activity_type="参观"),
+                    Activity(place_name="宋城", poi_id="p3", activity_type="游览"),
+                ],
+            ),
+            DayPlan(date=date(2026, 7, 21), day_index=2),
+        ],
+        budget=BudgetSummary(total_estimated_cost=900, user_budget=1000),
+    )
+    route_results = [
+        {
+            "route_legs": [
+                {
+                    "origin_id": "p1",
+                    "destination_id": "p2",
+                    "duration_minutes": 10,
+                }
+            ]
+        }
+    ]
+
+    issues = validate_itinerary(
+        plan,
+        _request(),
+        transport_options=[outbound, returning],
+        hotel_options=[hotel],
+        known_poi_ids={"p1", "p2", "p3"},
+        route_results=route_results,
+    )
+
+    missing = next(issue for issue in issues if issue.code == "ROUTE_SEGMENTS_MISSING")
+    assert "博物馆→宋城" in missing.message

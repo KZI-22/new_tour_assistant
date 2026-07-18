@@ -26,6 +26,7 @@ from app.schemas.tool_execution import (
 from app.services.tool_call_log_service import (
     ToolCallLogEntry,
     ToolCallLogWriter,
+    ToolCallQualityUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,42 @@ class ToolExecutor:
         return list(
             await asyncio.gather(*(self._execute_one(call, context=context) for call in calls))
         )
+
+    async def record_data_quality(
+        self,
+        event: ToolResultEvent,
+        context: ToolExecutionContext | None,
+    ) -> None:
+        """Persist a post-normalization verdict when the configured writer supports it."""
+
+        if self._log_writer is None or context is None or event.data_status is None:
+            return
+        update_quality = getattr(self._log_writer, "update_data_quality", None)
+        if update_quality is None:
+            return
+        try:
+            await update_quality(
+                ToolCallQualityUpdate(
+                    conversation_id=context.conversation_id,
+                    assistant_message_id=context.assistant_message_id,
+                    tool_call_id=event.tool_call_id,
+                    data_status=event.data_status,
+                    provider_item_count=event.provider_item_count or 0,
+                    normalized_item_count=event.normalized_item_count or 0,
+                    rejected_item_count=event.rejected_item_count or 0,
+                    schema_version=event.schema_version or "unknown",
+                    result_summary=event.summary,
+                    error_code=event.error_code,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Could not persist normalized tool quality tool=%s exception_type=%s",
+                event.tool_name,
+                type(exc).__name__,
+            )
 
     def _prepare_call(
         self,

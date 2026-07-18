@@ -34,6 +34,7 @@ class TripPlanningState(TypedDict, total=False):
     poi_results: list[dict[str, Any]]
     weather_results: list[dict[str, Any]]
     route_results: list[dict[str, Any]]
+    collection_diagnostics: dict[str, dict[str, Any]]
     tool_evidence: list[dict[str, Any]]
     tool_failures: list[str]
 

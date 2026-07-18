@@ -29,7 +29,7 @@ async def test_initial_queries_run_concurrently_before_dependent_routes() -> Non
         await asyncio.sleep(0.01)
         active -= 1
         completed_initial += 1
-        initial_finished = completed_initial == 7
+        initial_finished = completed_initial >= 7
         if kind == "train":
             data: Any = {
                 "items": [
@@ -77,9 +77,26 @@ async def test_initial_queries_run_concurrently_before_dependent_routes() -> Non
         return await initial_result("weather", values)
 
     async def matrix(**values: Any) -> dict[str, Any]:
-        del values
         route_started_after_initial.append(initial_finished)
-        return {"success": True, "provider": "fake", "data": {"matrix": []}}
+        locations = values["locations"]
+        return {
+            "success": True,
+            "provider": "fake",
+            "data": {
+                "matrix": [
+                        {
+                            "origin_id": left["id"] if isinstance(left, dict) else left.id,
+                            "destination_id": right["id"]
+                            if isinstance(right, dict)
+                            else right.id,
+                        "success": True,
+                        "distance_meters": 1000,
+                        "duration_seconds": 600,
+                    }
+                    for left, right in zip(locations, locations[1:], strict=False)
+                ]
+            },
+        }
 
     async def route(**values: Any) -> dict[str, Any]:
         del values
@@ -158,6 +175,15 @@ async def test_initial_queries_run_concurrently_before_dependent_routes() -> Non
     assert result["hotel_results"]
     assert len(result["poi_results"]) >= 2
     assert len(result["route_results"]) == 2
+    transport_quality = [
+        event
+        for event in events
+        if getattr(event, "tool_name", None) == "search_train"
+        and getattr(event, "data_status", None) is not None
+    ]
+    assert transport_quality
+    assert all(event.data_status == "usable" for event in transport_quality)
+    assert all(event.normalized_item_count == 1 for event in transport_quality)
 
 
 @pytest.mark.asyncio
@@ -267,3 +293,122 @@ async def test_activity_revision_recalculates_routes_from_existing_pois() -> Non
     )
 
     assert matrix_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_transport_stage_fails_when_successful_calls_normalize_to_no_options() -> None:
+    async def train(**_: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "provider": "fake",
+            "data": {"items": [{"unexpected_number_field": "G1"}]},
+        }
+
+    tool = StructuredTool.from_function(
+        coroutine=train,
+        name="search_train",
+        description="train",
+        args_schema=TrainSearchInput,
+    )
+    collector = TravelDataCollector(
+        ToolExecutor([tool]),
+        max_poi_candidates=10,
+        result_max_length=10_000,
+    )
+    events: list[Any] = []
+    result = await collector.collect(
+        TripRequest(
+            origin="南京",
+            destinations=["杭州"],
+            start_date=date(2026, 7, 20),
+            end_date=date(2026, 7, 21),
+            transport_preferences=["高铁"],
+        ),
+        ["transport"],
+        execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
+        writer=events.append,
+    )
+
+    diagnostic = result["collection_diagnostics"]["collecting_transport"]
+    assert result["transport_results"] == []
+    assert diagnostic["successful_calls"] == 2
+    assert diagnostic["usable_items"] == 0
+    assert diagnostic["status"] == "failed"
+    assert any(
+        getattr(event, "stage", None) == "collecting_transport"
+        and getattr(event, "status", None) == "failed"
+        for event in events
+    )
+    quality_events = [
+        event for event in events if getattr(event, "data_status", None) is not None
+    ]
+    assert len(quality_events) == 2
+    assert all(event.success is False for event in quality_events)
+    assert all(event.data_status == "invalid" for event in quality_events)
+    assert all(event.error_code == "PROVIDER_SCHEMA_MISMATCH" for event in quality_events)
+    assert all(event.provider_item_count == 1 for event in quality_events)
+    assert all(event.normalized_item_count == 0 for event in quality_events)
+
+
+@pytest.mark.asyncio
+async def test_partial_route_results_preserve_only_verified_leg_duration() -> None:
+    async def matrix(**_: Any) -> dict[str, Any]:
+        return {
+            "success": False,
+            "provider": "fake",
+            "error_code": "PROVIDER_RATE_LIMITED",
+        }
+
+    async def route(**_: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "provider": "fake",
+            "data": {"distance_meters": 1000, "duration_seconds": 600},
+        }
+
+    tools = [
+        StructuredTool.from_function(
+            coroutine=matrix,
+            name="amap_travel_time_matrix",
+            description="matrix",
+            args_schema=TravelTimeMatrixInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=route,
+            name="amap_plan_route",
+            description="route",
+            args_schema=RoutePlanInput,
+        ),
+    ]
+    collector = TravelDataCollector(
+        ToolExecutor(tools),
+        max_poi_candidates=10,
+        result_max_length=10_000,
+    )
+    seed_pois = [
+        {
+            "poi_id": f"p{index}",
+            "name": f"地点 {index}",
+            "location": {"longitude": 120.1 + index / 100, "latitude": 30.2},
+        }
+        for index in range(3)
+    ]
+    events: list[Any] = []
+    result = await collector.collect(
+        TripRequest(destinations=["杭州"]),
+        ["routes"],
+        execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
+        writer=events.append,
+        seed_pois=seed_pois,
+    )
+
+    diagnostic = result["collection_diagnostics"]["calculating_routes"]
+    assert diagnostic["status"] == "partial"
+    assert diagnostic["usable_items"] == 1
+    assert diagnostic["required_items"] == 2
+    assert result["route_results"][0]["route_legs"][0]["duration_minutes"] == 10
+    assert any(
+        getattr(event, "stage", None) == "calculating_routes"
+        and getattr(event, "status", None) == "partial"
+        for event in events
+    )

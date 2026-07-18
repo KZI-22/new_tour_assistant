@@ -12,6 +12,7 @@ import {
   MessageSquareText,
   Plus,
   Sparkles,
+  TriangleAlert,
   Trash2,
   UserRound,
   X,
@@ -38,7 +39,7 @@ type ToolStatus = {
   id: string;
   toolName: string;
   label: string;
-  state: "running" | "success" | "failed";
+  state: "running" | "success" | "partial" | "failed";
   summary?: string;
 };
 
@@ -164,7 +165,26 @@ export function ChatShell() {
               message.status === "completed" ||
               Boolean(message.content && message.status === "interrupted"),
           )
-          .map(({ id: messageId, role, content }) => ({ id: messageId, role, content })),
+          .map(({ id: messageId, role, content }) => ({
+            id: messageId,
+            role,
+            content,
+            tools: (conversation.tool_calls ?? [])
+              .filter((tool) => tool.assistant_message_id === messageId)
+              .map((tool) => ({
+                id: tool.tool_call_id,
+                toolName: tool.tool_name,
+                label: tool.tool_name,
+                state:
+                  tool.data_status === "partial"
+                    ? "partial"
+                    : tool.data_status === "usable" ||
+                        (tool.data_status === null && tool.status === "success")
+                      ? "success"
+                      : "failed",
+                summary: tool.result_summary,
+              })),
+          })),
       );
       setSidebarOpen(false);
     } catch (reason: unknown) {
@@ -261,7 +281,12 @@ export function ChatShell() {
                   id: update.tool_call_id,
                   toolName: update.tool_name,
                   label: existing?.label ?? update.tool_name,
-                  state: update.success ? "success" : "failed",
+                  state:
+                    update.data_status === "partial"
+                      ? "partial"
+                      : update.success
+                        ? "success"
+                        : "failed",
                   summary: update.summary,
                 };
                 return {
@@ -545,6 +570,8 @@ export function ChatShell() {
                                     className={`flex items-center gap-2 text-xs ${
                                       stage.status === "failed"
                                         ? "text-red-700"
+                                        : stage.status === "partial"
+                                          ? "text-amber-700"
                                         : stage.status === "skipped"
                                           ? "text-[var(--muted-light)]"
                                           : "text-[var(--muted)]"
@@ -555,6 +582,8 @@ export function ChatShell() {
                                       <LoaderCircle size={13} className="animate-spin" />
                                     ) : stage.status === "failed" ? (
                                       <X size={13} />
+                                    ) : stage.status === "partial" ? (
+                                      <TriangleAlert size={13} />
                                     ) : (
                                       <Check size={13} className="text-emerald-600" />
                                     )}
@@ -570,7 +599,11 @@ export function ChatShell() {
                                 <div
                                   key={tool.id}
                                   className={`flex items-center gap-2 text-xs ${
-                                    tool.state === "failed" ? "text-red-700" : "text-[var(--muted)]"
+                                    tool.state === "failed"
+                                      ? "text-red-700"
+                                      : tool.state === "partial"
+                                        ? "text-amber-700"
+                                        : "text-[var(--muted)]"
                                   }`}
                                   title={tool.summary}
                                 >
@@ -578,6 +611,8 @@ export function ChatShell() {
                                     <LoaderCircle size={13} className="animate-spin" />
                                   ) : tool.state === "success" ? (
                                     <Check size={13} className="text-emerald-600" />
+                                  ) : tool.state === "partial" ? (
+                                    <TriangleAlert size={13} />
                                   ) : (
                                     <X size={13} />
                                   )}

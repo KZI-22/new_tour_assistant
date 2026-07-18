@@ -8,12 +8,13 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Message, ToolCallLog
 from app.schemas.chat import ChatMessage
 from app.schemas.conversation import (
     ConversationDetailResponse,
     ConversationMessageResponse,
     ConversationSummaryResponse,
+    ConversationToolCallResponse,
 )
 
 
@@ -77,6 +78,31 @@ class ConversationService:
                 )
                 for item in result
             ]
+            tool_result = await session.scalars(
+                select(ToolCallLog)
+                .where(ToolCallLog.conversation_id == conversation_id)
+                .order_by(ToolCallLog.created_at, ToolCallLog.id)
+            )
+            tool_calls = [
+                ConversationToolCallResponse(
+                    id=item.id,
+                    assistant_message_id=item.assistant_message_id,
+                    tool_call_id=item.tool_call_id,
+                    tool_name=item.tool_name,
+                    provider=item.provider,
+                    status=item.status,
+                    result_summary=item.result_summary,
+                    error_code=item.error_code,
+                    duration_ms=item.duration_ms,
+                    data_status=item.data_status,
+                    provider_item_count=item.provider_item_count,
+                    normalized_item_count=item.normalized_item_count,
+                    rejected_item_count=item.rejected_item_count,
+                    schema_version=item.schema_version,
+                    created_at=item.created_at,
+                )
+                for item in tool_result
+            ]
             return ConversationDetailResponse(
                 id=conversation.id,
                 title=conversation.title,
@@ -84,6 +110,7 @@ class ConversationService:
                 created_at=conversation.created_at,
                 updated_at=conversation.updated_at,
                 messages=messages,
+                tool_calls=tool_calls,
             )
 
     async def delete_conversation(self, conversation_id: uuid.UUID) -> None:
@@ -197,4 +224,3 @@ class ConversationService:
                     .where(Conversation.id == conversation_id)
                     .values(updated_at=now)
                 )
-

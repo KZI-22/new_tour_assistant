@@ -8,7 +8,11 @@ from app.db.models import ToolCallLog, TravelPlanVersion
 from app.db.session import create_database
 from app.schemas.itinerary import DayPlan, ItineraryPlan, TripRequest
 from app.services.conversation_service import ConversationService
-from app.services.tool_call_log_service import ToolCallLogEntry, ToolCallLogService
+from app.services.tool_call_log_service import (
+    ToolCallLogEntry,
+    ToolCallLogService,
+    ToolCallQualityUpdate,
+)
 from app.services.trip_plan_service import TripPlanService
 from dotenv import load_dotenv
 from sqlalchemy import select
@@ -51,6 +55,20 @@ async def test_conversation_round_trip_in_postgres() -> None:
                 duration_ms=12,
             )
         )
+        await tool_log_service.update_data_quality(
+            ToolCallQualityUpdate(
+                conversation_id=turn.conversation_id,
+                assistant_message_id=turn.assistant_message_id,
+                tool_call_id="database-tool-call",
+                data_status="usable",
+                provider_item_count=3,
+                normalized_item_count=2,
+                rejected_item_count=0,
+                schema_version="flyai-transport-v1",
+                result_summary="已取得 2 条可用数据。",
+                error_code=None,
+            )
+        )
 
         detail = await service.get_conversation(turn.conversation_id)
         assert detail.title == "数据库集成测试"
@@ -62,6 +80,9 @@ async def test_conversation_round_trip_in_postgres() -> None:
         assert turn.conversation_id in {
             conversation.id for conversation in await service.list_conversations()
         }
+        assert len(detail.tool_calls) == 1
+        assert detail.tool_calls[0].data_status == "usable"
+        assert detail.tool_calls[0].normalized_item_count == 2
         async with session_factory() as session:
             tool_log = await session.scalar(
                 select(ToolCallLog).where(
@@ -70,7 +91,7 @@ async def test_conversation_round_trip_in_postgres() -> None:
             )
         assert tool_log is not None
         assert tool_log.arguments_json == {"origin": "上海", "destination": "北京"}
-        assert tool_log.result_summary == "已完成查询航班。"
+        assert tool_log.result_summary == "已取得 2 条可用数据。"
 
         request = TripRequest(
             origin="南京",
@@ -89,6 +110,18 @@ async def test_conversation_round_trip_in_postgres() -> None:
                 DayPlan(date="2026-07-21", day_index=2),
             ],
         )
+        partial = await trip_plan_service.save_partial_plan(
+            turn.conversation_id,
+            request,
+            plan,
+        )
+        current_partial = await trip_plan_service.get_current(turn.conversation_id)
+        assert partial.status == "draft"
+        assert partial.version == 0
+        assert current_partial is not None and current_partial.plan == plan
+        assert current_partial.status == "draft"
+        assert current_partial.version == 0
+
         version_one = await trip_plan_service.save_plan(turn.conversation_id, request, plan)
         updated_plan = plan.model_copy(deep=True)
         updated_plan.warnings.append("第二版")

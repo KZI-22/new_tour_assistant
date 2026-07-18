@@ -79,10 +79,36 @@ class FakePlanService:
     def __init__(self, current: StoredTripPlan | None = None) -> None:
         self.current = current
         self.saved = 0
+        self.drafts = 0
+        self.partials = 0
         self.saved_request: TripRequest | None = None
+        self.saved_partial: ItineraryPlan | None = None
 
     async def get_current(self, _: uuid.UUID) -> StoredTripPlan | None:
         return self.current
+
+    async def save_draft(
+        self,
+        _: uuid.UUID,
+        request: TripRequest,
+        *,
+        title: str,
+    ) -> uuid.UUID:
+        assert title
+        self.drafts += 1
+        self.saved_request = request
+        return uuid.uuid4()
+
+    async def save_partial_plan(
+        self,
+        _: uuid.UUID,
+        request: TripRequest,
+        plan: ItineraryPlan,
+    ) -> StoredTripPlan:
+        self.partials += 1
+        self.saved_request = request
+        self.saved_partial = plan
+        return StoredTripPlan(uuid.uuid4(), request, plan, "draft", 0)
 
     async def save_plan(
         self,
@@ -161,7 +187,10 @@ async def test_chat_service_sends_complete_plan_to_langgraph_without_binding_too
     ]
 
     assert any(isinstance(event, PlanningStageEvent) for event in events)
-    assert plan_service.saved == 1
+    assert plan_service.saved == 0
+    assert plan_service.drafts == 0
+    assert plan_service.partials == 1
+    assert plan_service.saved_partial is not None
     assert model.bind_calls == 0
     assert registry.model_ids == ["test"]
     assert registry.router_calls == 1
@@ -233,7 +262,10 @@ async def test_chat_service_continues_a_saved_draft_from_a_follow_up_message() -
     ]
 
     assert any(isinstance(event, PlanningStageEvent) for event in events)
-    assert plan_service.saved == 1
+    assert plan_service.saved == 0
+    assert plan_service.drafts == 0
+    assert plan_service.partials == 1
+    assert plan_service.saved_partial is not None
     assert plan_service.saved_request == completed_request
     assert model.bind_calls == 0
 

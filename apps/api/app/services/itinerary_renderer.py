@@ -9,6 +9,15 @@ def render_itinerary(plan: ItineraryPlan, *, change_summary: str | None = None) 
     lines.append(f"- 日期：{plan.start_date.isoformat()} 至 {plan.end_date.isoformat()}")
     if plan.origin:
         lines.append(f"- 出发地：{plan.origin}")
+    if plan.readiness == "blocked":
+        lines.extend(
+            [
+                "",
+                "> ⚠️ 当前仅为未完成草案：关键交通、路线或预算校验未通过，不能直接作为可执行行程。",
+            ]
+        )
+    elif plan.readiness == "partial":
+        lines.extend(["", "> 当前方案使用了降级或不完整数据，请结合注意事项复核后再执行。"])
     if change_summary:
         lines.extend(["", f"> 本次修改：{change_summary}"])
 
@@ -23,7 +32,9 @@ def render_itinerary(plan: ItineraryPlan, *, change_summary: str | None = None) 
         if hotel.address:
             lines.append(f"  - 地址：{hotel.address}")
         if hotel.nightly_price is not None:
-            lines.append(f"  - 实时查询每晚价格：约 ¥{hotel.nightly_price:.0f}")
+            lines.append(f"  - 查询时每晚参考价格：约 ¥{hotel.nightly_price:.0f}")
+            if hotel.queried_at:
+                lines.append(f"  - 查询时间：{hotel.queried_at.isoformat()}")
         else:
             lines.append("  - 实时价格：未取得，请预订前重新查询")
     else:
@@ -47,9 +58,14 @@ def render_itinerary(plan: ItineraryPlan, *, change_summary: str | None = None) 
             lines.append(f"- {period}{activity.place_name}：{activity.activity_type}")
             if activity.notes:
                 lines.append(f"  - {activity.notes}")
-        lines.append(f"- 系统汇总的市内交通时间：约 {day.estimated_transport_time_minutes} 分钟")
+        if day.estimated_transport_time_minutes is None:
+            lines.append("- 市内交通时间：未取得覆盖全部相邻地点的可靠路线数据")
+        else:
+            lines.append(
+                f"- 已核验路段汇总交通时间：约 {day.estimated_transport_time_minutes} 分钟"
+            )
         if day.weather_summary:
-            lines.append(f"- 实时天气信息：{day.weather_summary}")
+            lines.append(f"- 天气预报：{day.weather_summary}")
         for warning in day.warnings:
             lines.append(f"- 注意：{warning}")
         lines.append("")
@@ -80,6 +96,15 @@ def render_itinerary(plan: ItineraryPlan, *, change_summary: str | None = None) 
 
     lines.extend(["", "## 方案假设"])
     lines.extend([f"- {item}" for item in plan.assumptions] or ["- 未记录额外默认假设。"])
+    degraded_diagnostics = [
+        item for item in plan.diagnostics if item.severity in {"warning", "error"}
+    ]
+    if degraded_diagnostics:
+        lines.extend(["", "## 数据质量"])
+        lines.extend(
+            f"- [{item.code}] {item.message}"
+            for item in degraded_diagnostics
+        )
     lines.extend(["", "## 注意事项"])
     lines.extend(
         [f"- {item}" for item in plan.warnings]

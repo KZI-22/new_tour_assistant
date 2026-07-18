@@ -2,25 +2,27 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from app.core.settings import Settings
-from app.graphs.trip_planner import TripPlanner
+from app.graphs.trip_planner import TripPlanner, _deterministic_itinerary
 from app.schemas.chat import ChatMessage
 from app.schemas.itinerary import (
     Activity,
     DayPlan,
     ExperienceValidation,
     ExtractedLocation,
+    HotelOption,
     ItineraryPlan,
+    TransportOption,
     TripRequest,
     TripRequestExtraction,
 )
 from app.schemas.tool_execution import MessageDeltaEvent, PlanningStageEvent
-from app.schemas.travel import PoiSearchInput, TrainSearchInput
+from app.schemas.travel import HotelSearchInput, PoiSearchInput, TrainSearchInput
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.trip_plan_service import StoredTripPlan
 from langchain_core.messages import AIMessage
@@ -60,6 +62,7 @@ class FakeJsonFallbackModel:
 class FakePlanService:
     def __init__(self) -> None:
         self.drafts: list[TripRequest] = []
+        self.partials: list[StoredTripPlan] = []
         self.saved: list[ItineraryPlan] = []
 
     async def get_current(self, _: uuid.UUID) -> None:
@@ -69,6 +72,22 @@ class FakePlanService:
         assert title
         self.drafts.append(request)
         return uuid.uuid4()
+
+    async def save_partial_plan(
+        self,
+        _: uuid.UUID,
+        request: TripRequest,
+        plan: ItineraryPlan,
+    ) -> StoredTripPlan:
+        stored = StoredTripPlan(
+            id=uuid.uuid4(),
+            request=request,
+            plan=plan,
+            status="draft",
+            version=0,
+        )
+        self.partials.append(stored)
+        return stored
 
     async def save_plan(
         self,
@@ -108,6 +127,89 @@ def _request() -> TripRequest:
     )
 
 
+def _outbound_transport() -> TransportOption:
+    return TransportOption(
+        transport_type="train",
+        departure_city="南京",
+        arrival_city="杭州",
+        departure_time=datetime(2026, 7, 20, 8),
+        arrival_time=datetime(2026, 7, 20, 10),
+        train_number="G1",
+        price=200,
+        source_tool="search_train",
+        source_reference="search_train:G1",
+    )
+
+
+def _return_transport() -> TransportOption:
+    return TransportOption(
+        transport_type="train",
+        departure_city="杭州",
+        arrival_city="南京",
+        departure_time=datetime(2026, 7, 21, 18),
+        arrival_time=datetime(2026, 7, 21, 20),
+        train_number="G2",
+        price=200,
+        source_tool="search_train",
+        source_reference="search_train:G2",
+    )
+
+
+def _hotel() -> HotelOption:
+    return HotelOption(
+        name="西湖酒店",
+        poi_id="h1",
+        nightly_price=500,
+        check_in_date=date(2026, 7, 20),
+        check_out_date=date(2026, 7, 21),
+        source_tool="search_hotel",
+        source_reference="search_hotel:h1",
+    )
+
+
+def _verified_tool_executor() -> ToolExecutor:
+    async def train(**values: Any) -> dict[str, Any]:
+        outbound = values["origin"] == "南京"
+        return {
+            "success": True,
+            "provider": "fake",
+            "data": {
+                "items": [
+                    {
+                        "train_number": "G1" if outbound else "G2",
+                        "departure_time": "08:00" if outbound else "18:00",
+                        "arrival_time": "10:00" if outbound else "20:00",
+                        "price": 200,
+                    }
+                ]
+            },
+        }
+
+    async def hotel(**_: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "provider": "fake",
+            "data": {"items": [{"id": "h1", "name": "西湖酒店", "price": 500}]},
+        }
+
+    return ToolExecutor(
+        [
+            StructuredTool.from_function(
+                coroutine=train,
+                name="search_train",
+                description="train",
+                args_schema=TrainSearchInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=hotel,
+                name="search_hotel",
+                description="hotel",
+                args_schema=HotelSearchInput,
+            ),
+        ]
+    )
+
+
 def _plan(*, duplicate: bool = False) -> ItineraryPlan:
     return ItineraryPlan(
         title="杭州两日游",
@@ -115,6 +217,9 @@ def _plan(*, duplicate: bool = False) -> ItineraryPlan:
         destination="杭州",
         start_date=date(2026, 7, 20),
         end_date=date(2026, 7, 21),
+        outbound_transport=_outbound_transport(),
+        return_transport=_return_transport(),
+        hotel=_hotel(),
         days=[
             DayPlan(
                 date=date(2026, 7, 20),
@@ -365,9 +470,11 @@ async def test_request_json_fallback_preserves_llm_location_evidence() -> None:
 
     text = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
     assert "# 杭州2日行程" in text
-    assert service.saved
-    assert service.saved[0].origin == "南京"
-    assert any("自动体验编排" in item for item in service.saved[0].assumptions)
+    assert service.partials
+    assert not service.saved
+    assert service.partials[0].request.origin == "南京"
+    assert service.partials[0].plan is not None
+    assert "未完成草案" in text
 
 
 @pytest.mark.asyncio
@@ -380,7 +487,7 @@ async def test_graph_generates_validates_persists_and_streams_stage_events() -> 
             "ExperienceValidation": [ExperienceValidation()],
         }
     )
-    planner = TripPlanner(ToolExecutor([]), service, _settings())
+    planner = TripPlanner(_verified_tool_executor(), service, _settings())
 
     events = [
         event
@@ -400,6 +507,13 @@ async def test_graph_generates_validates_persists_and_streams_stage_events() -> 
     assert "saving_itinerary" in stages
     assert "# 杭州两日游" in text
     assert len(service.saved) == 1
+    transport_diagnostic = next(
+        item
+        for item in service.saved[0].diagnostics
+        if item.stage == "collecting_transport"
+    )
+    assert transport_diagnostic.details["usable_items"] == 2
+    assert transport_diagnostic.details["covered_items"] == 2
 
 
 @pytest.mark.asyncio
@@ -428,11 +542,12 @@ async def test_graph_uses_deterministic_fallback_when_structured_model_is_incomp
 
     text = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
     assert "# 杭州3日行程" in text
-    assert len(service.saved) == 1
-    assert service.saved[0].origin == "南京"
-    assert service.saved[0].destination == "杭州"
-    assert len(service.saved[0].days) == 3
-    assert any("自动体验编排" in item for item in service.saved[0].assumptions)
+    assert service.partials
+    assert not service.saved
+    assert service.partials[0].request.origin == "南京"
+    assert service.partials[0].request.destinations == ["杭州"]
+    assert service.partials[0].plan is not None
+    assert "结构化体验编排不可用" in text
 
 
 @pytest.mark.asyncio
@@ -445,7 +560,7 @@ async def test_graph_revises_invalid_plan_once_then_stops_loop() -> None:
             "ExperienceValidation": [ExperienceValidation(), ExperienceValidation()],
         }
     )
-    planner = TripPlanner(ToolExecutor([]), service, _settings())
+    planner = TripPlanner(_verified_tool_executor(), service, _settings())
 
     events = [
         event
@@ -470,7 +585,7 @@ async def test_graph_revises_invalid_plan_once_then_stops_loop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_graph_persists_best_effort_plan_after_revision_limit() -> None:
+async def test_graph_keeps_invalid_plan_as_draft_after_revision_limit() -> None:
     service = FakePlanService()
     model = FakeStructuredModel(
         {
@@ -479,7 +594,7 @@ async def test_graph_persists_best_effort_plan_after_revision_limit() -> None:
             "ExperienceValidation": [ExperienceValidation() for _ in range(3)],
         }
     )
-    planner = TripPlanner(ToolExecutor([]), service, _settings())
+    planner = TripPlanner(_verified_tool_executor(), service, _settings())
 
     events = [
         event
@@ -500,8 +615,11 @@ async def test_graph_persists_best_effort_plan_after_revision_limit() -> None:
         and event.status == "success"
     ]
     assert len(revision_success) == 2
-    assert len(service.saved) == 1
-    assert any("自动修订达到上限" in warning for warning in service.saved[0].warnings)
+    assert service.partials
+    assert not service.saved
+    assert service.partials[0].plan is not None
+    text = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+    assert "自动修订达到上限" in text
 
 
 @pytest.mark.asyncio
@@ -570,3 +688,94 @@ async def test_local_pace_revision_does_not_requery_unaffected_tools() -> None:
         for event in events
     )
     assert len(service.saved) == 1
+
+
+def test_deterministic_fallback_clusters_pois_uses_verified_routes_and_scores_hotel() -> None:
+    request = TripRequest(
+        destinations=["杭州"],
+        start_date=date(2026, 7, 20),
+        end_date=date(2026, 7, 21),
+        pace="relaxed",
+    )
+    poi_results = [
+        {
+            "poi_id": "far-1",
+            "name": "远郊一",
+            "provider_rank": 0,
+            "location": {"longitude": 119.0, "latitude": 30.0},
+        },
+        {
+            "poi_id": "far-2",
+            "name": "远郊二",
+            "provider_rank": 1,
+            "location": {"longitude": 121.2, "latitude": 31.0},
+        },
+        *[
+            {
+                "poi_id": f"central-{index}",
+                "name": f"城市地标 {index}",
+                "poi_type": "历史文化景点",
+                "provider_rank": index + 2,
+                "location": {
+                    "longitude": 120.15 + index / 100,
+                    "latitude": 30.25,
+                },
+            }
+            for index in range(3)
+        ],
+    ]
+    hotels = [
+        HotelOption(
+            name="远郊低价酒店",
+            coordinates='{"longitude": 119.0, "latitude": 30.0}',
+            nightly_price=100,
+            check_in_date=date(2026, 7, 20),
+            check_out_date=date(2026, 7, 21),
+            source_tool="search_hotel",
+        ),
+        HotelOption(
+            name="中心酒店",
+            coordinates='{"longitude": 120.16, "latitude": 30.25}',
+            nightly_price=300,
+            check_in_date=date(2026, 7, 20),
+            check_out_date=date(2026, 7, 21),
+            source_tool="search_hotel",
+        ),
+    ]
+    state: dict[str, Any] = {
+        "poi_results": poi_results,
+        "hotel_results": hotels,
+        "route_results": [
+            {
+                "route_legs": [
+                    {
+                        "origin_id": "central-0",
+                        "destination_id": "central-1",
+                        "duration_minutes": 12,
+                    }
+                ]
+            }
+        ],
+        "collection_diagnostics": {},
+    }
+
+    plan = _deterministic_itinerary(state, request, max_daily_activities=5)  # type: ignore[arg-type]
+
+    assert [item.place_name for item in plan.days[0].activities] == [
+        "城市地标 0",
+        "城市地标 1",
+    ]
+    assert plan.days[0].estimated_transport_time_minutes == 12
+    assert plan.days[1].estimated_transport_time_minutes == 0
+    assert plan.hotel is not None and plan.hotel.name == "中心酒店"
+
+    one_day_request = request.model_copy(
+        update={"end_date": request.start_date, "duration_days": 1, "pace": "moderate"}
+    )
+    incomplete_routes = _deterministic_itinerary(
+        state,
+        one_day_request,
+        max_daily_activities=5,
+    )  # type: ignore[arg-type]
+    assert len(incomplete_routes.days[0].activities) == 3
+    assert incomplete_routes.days[0].estimated_transport_time_minutes is None

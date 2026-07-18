@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, time, timedelta
+from typing import Any
 
 from app.schemas.itinerary import (
     HotelOption,
@@ -23,12 +25,16 @@ def validate_itinerary(
     hotel_options: Iterable[HotelOption] = (),
     known_poi_ids: Iterable[str] = (),
     max_daily_activities: int = 5,
-    route_data_available: bool = True,
+    route_results: Iterable[Mapping[str, Any]] = (),
+    route_data_available: bool | None = None,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    route_result_list = list(route_results)
     _validate_dates(plan, issues)
+    _validate_required_facts(plan, request, issues)
     _validate_arrival_and_return(plan, issues)
     _validate_days(plan, request, issues, max_daily_activities=max_daily_activities)
+    _validate_route_coverage(plan, route_result_list, issues)
     _validate_hotel(plan, issues)
     _validate_budget(plan, request, issues)
     _validate_sources(
@@ -38,16 +44,76 @@ def validate_itinerary(
         hotel_options=list(hotel_options),
         known_poi_ids=set(known_poi_ids),
     )
-    if not route_data_available and any(len(day.activities) > 1 for day in plan.days):
+    if (
+        route_data_available is False
+        and not route_result_list
+        and any(len(day.activities) > 1 for day in plan.days)
+    ):
         issues.append(
             ValidationIssue(
                 code="ROUTE_DATA_MISSING",
-                severity="warning",
+                severity="error",
                 message="部分地点间的实时路线或耗时未能取得，日程衔接时间需要出行前复核。",
                 suggested_action="取得路线数据后重新核对每日交通时间。",
             )
         )
     return issues
+
+
+def _validate_required_facts(
+    plan: ItineraryPlan,
+    request: TripRequest,
+    issues: list[ValidationIssue],
+) -> None:
+    if request.origin:
+        if plan.outbound_transport is None:
+            issues.append(
+                ValidationIssue(
+                    code="OUTBOUND_TRANSPORT_MISSING",
+                    severity="error",
+                    message="未取得可核验的去程方案，无法确认首日活动开始时间。",
+                    suggested_action="重新查询交通或由用户确认抵达时间后再安排首日活动。",
+                )
+            )
+        elif plan.outbound_transport.arrival_time is None:
+            issues.append(
+                ValidationIssue(
+                    code="OUTBOUND_ARRIVAL_TIME_MISSING",
+                    severity="error",
+                    message="去程方案缺少抵达时间，无法确认首日活动是否可行。",
+                )
+            )
+        if plan.return_transport is None:
+            issues.append(
+                ValidationIssue(
+                    code="RETURN_TRANSPORT_MISSING",
+                    severity="error",
+                    message="未取得可核验的返程方案，无法确认末日活动结束时间。",
+                    suggested_action="重新查询交通或由用户确认返程时间后再安排末日活动。",
+                )
+            )
+        elif plan.return_transport.departure_time is None:
+            issues.append(
+                ValidationIssue(
+                    code="RETURN_DEPARTURE_TIME_MISSING",
+                    severity="error",
+                    message="返程方案缺少出发时间，无法确认末日活动是否可行。",
+                )
+            )
+    if (
+        request.start_date
+        and request.end_date
+        and request.end_date > request.start_date
+        and plan.hotel is None
+    ):
+        issues.append(
+            ValidationIssue(
+                code="HOTEL_MISSING",
+                severity="error",
+                message="过夜行程缺少可核验的住宿方案。",
+                suggested_action="重新查询覆盖入住日期的住宿。",
+            )
+        )
 
 
 def _validate_dates(plan: ItineraryPlan, issues: list[ValidationIssue]) -> None:
@@ -111,6 +177,54 @@ def _validate_arrival_and_return(
                 )
 
 
+def _validate_route_coverage(
+    plan: ItineraryPlan,
+    route_results: list[Mapping[str, Any]],
+    issues: list[ValidationIssue],
+) -> None:
+    covered: set[tuple[str, str]] = set()
+    for result in route_results:
+        legs = result.get("route_legs")
+        if not isinstance(legs, list):
+            continue
+        for leg in legs:
+            if not isinstance(leg, Mapping):
+                continue
+            origin_id = str(leg.get("origin_id") or "")
+            destination_id = str(leg.get("destination_id") or "")
+            duration = leg.get("duration_minutes")
+            if origin_id and destination_id and isinstance(duration, int):
+                covered.add((origin_id, destination_id))
+
+    for day in plan.days:
+        if len(day.activities) <= 1:
+            continue
+        if day.estimated_transport_time_minutes is None:
+            issues.append(
+                ValidationIssue(
+                    code="TRANSPORT_TIME_UNVERIFIED",
+                    severity="error",
+                    message=f"第 {day.day_index} 天缺少完整的可核验交通耗时。",
+                    day_index=day.day_index,
+                    suggested_action="补齐所选地点之间的路线后重新生成时间表。",
+                )
+            )
+        missing: list[str] = []
+        for left, right in zip(day.activities, day.activities[1:], strict=False):
+            if not left.poi_id or not right.poi_id or (left.poi_id, right.poi_id) not in covered:
+                missing.append(f"{left.place_name}→{right.place_name}")
+        if missing:
+            issues.append(
+                ValidationIssue(
+                    code="ROUTE_SEGMENTS_MISSING",
+                    severity="error",
+                    message=f"第 {day.day_index} 天缺少路段：{'、'.join(missing)}。",
+                    day_index=day.day_index,
+                    suggested_action="仅在路线证据覆盖全部相邻活动后确认本日安排。",
+                )
+            )
+
+
 def _validate_days(
     plan: ItineraryPlan,
     request: TripRequest,
@@ -164,7 +278,10 @@ def _validate_days(
             or _clock_duration(activity.start_time, activity.end_time)
             for activity in day.activities
         )
-        if activity_minutes + day.estimated_transport_time_minutes > 12 * 60:
+        if (
+            day.estimated_transport_time_minutes is not None
+            and activity_minutes + day.estimated_transport_time_minutes > 12 * 60
+        ):
             issues.append(
                 ValidationIssue(
                     code="DAILY_SCHEDULE_TOO_LONG",
@@ -174,7 +291,11 @@ def _validate_days(
                     suggested_action="压缩活动或增加休息时间。",
                 )
             )
-        if len(day.activities) > 1 and day.estimated_transport_time_minutes <= 0:
+        if (
+            len(day.activities) > 1
+            and day.estimated_transport_time_minutes is not None
+            and day.estimated_transport_time_minutes <= 0
+        ):
             issues.append(
                 ValidationIssue(
                     code="TRANSPORT_TIME_NOT_INCLUDED",
@@ -206,6 +327,23 @@ def _validate_days(
                     message=f"第 {day.day_index} 天存在恶劣天气预报，但仍安排了室外活动。",
                     day_index=day.day_index,
                     suggested_action="准备室内备选方案并在出发前复核天气。",
+                )
+            )
+        temperatures = (
+            [int(value) for value in re.findall(r"-?\d+(?=℃)", day.weather_summary)]
+            if day.weather_summary
+            else []
+        )
+        if temperatures and max(temperatures) >= 35 and any(
+            activity.indoor is False for activity in day.activities
+        ):
+            issues.append(
+                ValidationIssue(
+                    code="OUTDOOR_ACTIVITY_HIGH_TEMPERATURE",
+                    severity="warning",
+                    message=f"第 {day.day_index} 天最高气温较高，但仍安排了室外活动。",
+                    day_index=day.day_index,
+                    suggested_action="减少正午室外活动并准备室内备选方案。",
                 )
             )
 
@@ -251,6 +389,15 @@ def _validate_hotel(plan: ItineraryPlan, issues: list[ValidationIssue]) -> None:
                 suggested_action="重新查询覆盖旅行日期的酒店。",
             )
         )
+    if not plan.hotel.coordinates:
+        issues.append(
+            ValidationIssue(
+                code="HOTEL_LOCATION_UNVERIFIED",
+                severity="warning",
+                message="住宿候选缺少可核验坐标，无法评估其与每日活动的通勤距离。",
+                suggested_action="补充酒店坐标后按通勤距离重新比较候选。",
+            )
+        )
 
 
 def _validate_budget(
@@ -261,7 +408,16 @@ def _validate_budget(
     if request.total_budget is None or plan.budget is None:
         return
     total = plan.budget.total_estimated_cost
-    if total is not None and total > request.total_budget:
+    if total is None:
+        issues.append(
+            ValidationIssue(
+                code="BUDGET_TOTAL_MISSING",
+                severity="error",
+                message="用户设置了总预算，但当前缺少完整费用，无法判断是否超预算。",
+                suggested_action="补齐往返交通、住宿和活动费用后再确认预算。",
+            )
+        )
+    elif total > request.total_budget:
         issues.append(
             ValidationIssue(
                 code="OVER_BUDGET",

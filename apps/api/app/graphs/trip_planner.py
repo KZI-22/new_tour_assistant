@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from typing import Any, TypeVar, cast
 from zoneinfo import ZoneInfo
@@ -26,7 +27,9 @@ from app.schemas.itinerary import (
     DayPlan,
     ExperienceValidation,
     ExtractedLocation,
+    HotelOption,
     ItineraryPlan,
+    PlanDiagnostic,
     PlanningIntent,
     TripRequest,
     TripRequestExtraction,
@@ -126,11 +129,13 @@ class _TripPlanningRun:
         self._plan_service = plan_service
         self._settings = settings
         self._native_structured_available: bool | None = None
+        self._native_structured_failure_type: str | None = None
         self._collector = TravelDataCollector(
             tool_executor,
             max_poi_candidates=settings.trip_planner_max_poi_candidates,
             max_transport_options=settings.trip_planner_max_transport_options,
             max_hotel_options=settings.trip_planner_max_hotel_options,
+            max_hotel_geocodes=settings.trip_planner_max_hotel_geocodes,
             max_route_locations=settings.trip_planner_max_route_locations,
             result_max_length=settings.trip_planner_result_max_length,
             timezone=settings.app_timezone,
@@ -147,6 +152,7 @@ class _TripPlanningRun:
         workflow.add_node("validate_itinerary", self.validate_itinerary)
         workflow.add_node("revise_itinerary", self.revise_itinerary)
         workflow.add_node("persist_itinerary", self.persist_itinerary)
+        workflow.add_node("persist_incomplete", self.persist_incomplete)
         workflow.add_node("finalize_response", self.finalize_response)
 
         workflow.add_edge(START, "understand_request")
@@ -162,10 +168,15 @@ class _TripPlanningRun:
         workflow.add_conditional_edges(
             "validate_itinerary",
             self._route_after_validation,
-            {"revise": "revise_itinerary", "persist": "persist_itinerary"},
+            {
+                "revise": "revise_itinerary",
+                "persist": "persist_itinerary",
+                "draft": "persist_incomplete",
+            },
         )
         workflow.add_edge("revise_itinerary", "validate_itinerary")
         workflow.add_edge("persist_itinerary", "finalize_response")
+        workflow.add_edge("persist_incomplete", "finalize_response")
         workflow.add_edge("finalize_response", END)
         return workflow.compile()
 
@@ -247,9 +258,14 @@ class _TripPlanningRun:
             previous_request=previous_request,
         )
         merged_request = _merge_requests(previous_request, extracted_request)
+        latest_user_text = _latest_user(state)
+        constraint_errors = _explicit_date_constraint_errors(
+            latest_user_text,
+            current_date=current_date,
+        )
         request = _supplement_request(
             merged_request,
-            _latest_user(state),
+            latest_user_text,
             current_date=current_date,
         )
         affected = extraction.affected_sections
@@ -262,6 +278,7 @@ class _TripPlanningRun:
         _stage(writer, "understanding_request", "正在理解旅行需求", "success")
         return {
             "request": request,
+            "requirement_errors": constraint_errors,
             "is_plan_revision": state["intent"] == "modify_trip_plan"
             or extraction.is_plan_revision,
             "revision_instructions": extraction.revision_instructions,
@@ -275,10 +292,11 @@ class _TripPlanningRun:
         writer = get_stream_writer()
         _stage(writer, "checking_requirements", "正在检查必要信息", "running")
         existing_missing = list(state.get("missing_fields", []))
+        existing_errors = list(state.get("requirement_errors", []))
         request = state.get("request")
         if request is None:
             missing = [*existing_missing, "request"]
-            errors: list[str] = []
+            errors = existing_errors
         else:
             missing, errors = _requirement_issues(
                 request,
@@ -286,6 +304,7 @@ class _TripPlanningRun:
                 timezone=self._settings.app_timezone,
             )
             missing = list(dict.fromkeys([*existing_missing, *missing]))
+            errors = list(dict.fromkeys([*existing_errors, *errors]))
         _stage(writer, "checking_requirements", "正在检查必要信息", "success")
         return {
             "missing_fields": missing,
@@ -379,7 +398,7 @@ class _TripPlanningRun:
                 code="ITINERARY_GENERATION_FAILED",
                 message="模型没有生成有效的结构化行程，请稍后重试。",
             )
-        except TripPlanningError:
+        except TripPlanningError as exc:
             logger.info("Falling back to deterministic itinerary generation")
             itinerary_generation_available = False
             plan = _deterministic_itinerary(
@@ -387,6 +406,42 @@ class _TripPlanningRun:
                 request,
                 max_daily_activities=self._settings.trip_planner_max_daily_activities,
             )
+            plan.readiness = "partial"
+            plan.diagnostics.append(
+                PlanDiagnostic(
+                    code=exc.code,
+                    stage="generating_itinerary",
+                    severity="warning",
+                    message="结构化行程生成失败，已使用确定性降级规划器。",
+                    details={
+                        "failure_type": type(exc.__cause__).__name__
+                        if exc.__cause__ is not None
+                        else type(exc).__name__,
+                        "native_structured_failure_type": self._native_structured_failure_type,
+                    },
+                )
+            )
+            generation_status = "partial"
+            generation_detail = f"已降级到确定性规划器（{exc.code}）。"
+        else:
+            generation_status = "success"
+            generation_detail = None
+        collection_diagnostics = _collection_plan_diagnostics(
+            state.get("collection_diagnostics", {})
+        )
+        existing_diagnostic_codes = {item.code for item in plan.diagnostics}
+        plan.diagnostics.extend(
+            item for item in collection_diagnostics if item.code not in existing_diagnostic_codes
+        )
+        degraded_collection = [
+            item for item in collection_diagnostics if item.severity in {"warning", "error"}
+        ]
+        if degraded_collection and plan.readiness == "ready":
+            plan.readiness = "partial"
+        for diagnostic in degraded_collection:
+            warning = f"数据阶段未完全可用：{diagnostic.message}"
+            if warning not in plan.warnings:
+                plan.warnings.append(warning)
         for failure in state.get("tool_failures", []):
             warning = f"部分实时查询失败：{failure}"
             if warning not in plan.warnings:
@@ -395,7 +450,13 @@ class _TripPlanningRun:
             warning = "未取得覆盖旅行日期的准确天气数据，请临近出发时复核。"
             if warning not in plan.warnings:
                 plan.warnings.append(warning)
-        _stage(writer, "generating_itinerary", "正在生成结构化行程", "success")
+        _stage(
+            writer,
+            "generating_itinerary",
+            "正在生成结构化行程",
+            generation_status,
+            detail=generation_detail,
+        )
         return {
             "current_plan": plan,
             "itinerary_generation_available": itinerary_generation_available,
@@ -419,6 +480,7 @@ class _TripPlanningRun:
             hotel_options=state.get("hotel_results", []),
             known_poi_ids=known_pois,
             max_daily_activities=self._settings.trip_planner_max_daily_activities,
+            route_results=state.get("route_results", []),
             route_data_available=bool(state.get("route_results"))
             or (
                 state.get("is_plan_revision", False)
@@ -457,9 +519,44 @@ class _TripPlanningRun:
             for issue in issues:
                 if issue.severity == "error" and issue.message not in plan.warnings:
                     plan.warnings.append(f"自动修订达到上限：{issue.message}")
-        _stage(writer, "validating_itinerary", "正在校验时间、路线与预算", "success")
+        unique_issues = _unique_issues(issues)
+        plan.diagnostics = [
+            item for item in plan.diagnostics if item.stage != "validating_itinerary"
+        ]
+        plan.diagnostics.extend(
+            PlanDiagnostic(
+                code=issue.code,
+                stage="validating_itinerary",
+                severity=issue.severity,
+                message=issue.message,
+                details={
+                    "day_index": issue.day_index,
+                    "activity_index": issue.activity_index,
+                    "suggested_action": issue.suggested_action,
+                },
+            )
+            for issue in unique_issues
+        )
+        error_count = sum(issue.severity == "error" for issue in unique_issues)
+        warning_count = sum(issue.severity == "warning" for issue in unique_issues)
+        if error_count:
+            plan.readiness = "blocked"
+            validation_status = "failed"
+        elif warning_count or plan.readiness != "ready":
+            plan.readiness = "partial"
+            validation_status = "partial"
+        else:
+            plan.readiness = "ready"
+            validation_status = "success"
+        _stage(
+            writer,
+            "validating_itinerary",
+            "正在校验时间、路线与预算",
+            validation_status,
+            detail=f"发现 {error_count} 个错误、{warning_count} 个警告。",
+        )
         return {
-            "validation_issues": _unique_issues(issues),
+            "validation_issues": unique_issues,
             "current_plan": plan,
             "experience_validation_available": experience_validation_available,
             "current_stage": "validating_itinerary",
@@ -489,14 +586,25 @@ class _TripPlanningRun:
                 code="ITINERARY_REVISION_FAILED",
                 message="自动修订行程失败，请稍后重试。",
             )
-        except TripPlanningError:
+        except TripPlanningError as exc:
             revised = _deterministic_revision(
                 state,
                 request,
                 plan,
                 max_daily_activities=self._settings.trip_planner_max_daily_activities,
             )
-        _stage(writer, "revising_itinerary", "正在修订不合理安排", "success")
+            revision_status = "partial"
+            revision_detail = f"自动修订降级为确定性规则（{exc.code}）。"
+        else:
+            revision_status = "success"
+            revision_detail = None
+        _stage(
+            writer,
+            "revising_itinerary",
+            "正在修订不合理安排",
+            revision_status,
+            detail=revision_detail,
+        )
         return {
             "current_plan": revised,
             "revision_count": state.get("revision_count", 0) + 1,
@@ -535,6 +643,54 @@ class _TripPlanningRun:
             "current_stage": "saving_itinerary",
         }
 
+    async def persist_incomplete(self, state: TripPlanningState) -> dict[str, Any]:
+        writer = get_stream_writer()
+        _stage(writer, "saving_itinerary", "正在保存行程版本", "running")
+        request = state.get("request")
+        plan = state.get("current_plan")
+        if request is None or plan is None:
+            raise TripPlanningError("ITINERARY_MISSING", "没有可保存的行程草案。")
+        warning = "当前方案未通过可执行性校验，未保存为正式行程版本。"
+        if warning not in plan.warnings:
+            plan.warnings.insert(0, warning)
+
+        plan_id = state.get("plan_id")
+        plan_version = state.get("plan_version")
+        if state.get("is_plan_revision") and state.get("previous_plan") is not None:
+            detail = "本次修改未通过校验，已保留原正式版本。"
+        else:
+            if self._plan_service is None:
+                _stage(writer, "saving_itinerary", "正在保存行程版本", "failed")
+                raise TripPlanningError(
+                    "TRIP_PLAN_STORAGE_UNAVAILABLE",
+                    "行程草案已经生成，但当前无法保存，请稍后重试。",
+                )
+            try:
+                stored = await self._plan_service.save_partial_plan(
+                    self._execution_context.conversation_id,
+                    request,
+                    plan,
+                )
+            except TripPlanPersistenceError as exc:
+                _stage(writer, "saving_itinerary", "正在保存行程版本", "failed")
+                raise TripPlanningError("TRIP_PLAN_SAVE_FAILED", str(exc)) from exc
+            plan_id = str(stored.id)
+            plan_version = stored.version
+            detail = "未完成方案已保存为结构化草稿，可在后续对话中继续，不会作为正式版本使用。"
+
+        _stage(
+            writer,
+            "saving_itinerary",
+            "正在保存行程版本",
+            "partial",
+            detail=detail,
+        )
+        return {
+            "plan_id": plan_id,
+            "plan_version": plan_version,
+            "current_stage": "saving_itinerary",
+        }
+
     async def finalize_response(self, state: TripPlanningState) -> dict[str, Any]:
         writer = get_stream_writer()
         _stage(writer, "finalizing", "正在整理最终行程", "running")
@@ -547,7 +703,17 @@ class _TripPlanningRun:
         )
         for chunk in _split_text(answer):
             writer(MessageDeltaEvent(delta=chunk))
-        _stage(writer, "finalizing", "正在整理最终行程", "success")
+        _stage(
+            writer,
+            "finalizing",
+            "正在整理最终行程",
+            "success" if plan.readiness == "ready" else "partial",
+            detail=(
+                None
+                if plan.readiness == "ready"
+                else f"方案状态：{plan.readiness}，请查看校验提示。"
+            ),
+        )
         return {"final_answer": answer, "current_stage": "finalizing"}
 
     def _route_after_requirements(self, state: TripPlanningState) -> str:
@@ -558,11 +724,16 @@ class _TripPlanningRun:
         )
 
     def _route_after_validation(self, state: TripPlanningState) -> str:
-        if (
-            _has_errors(state.get("validation_issues", []))
-            and state.get("revision_count", 0) < self._settings.trip_planner_max_revisions
-        ):
-            return "revise"
+        issues = state.get("validation_issues", [])
+        if _has_errors(issues):
+            if (
+                state.get("itinerary_generation_available", True)
+                and
+                _has_revisable_errors(issues)
+                and state.get("revision_count", 0) < self._settings.trip_planner_max_revisions
+            ):
+                return "revise"
+            return "draft"
         return "persist"
 
     def _understanding_prompt(self, state: TripPlanningState) -> str:
@@ -580,6 +751,8 @@ class _TripPlanningRun:
             {
                 "task": (
                     "结合完整对话提取一个完整 TripRequest。相对日期必须基于给出的当前时间和时区。"
+                    "start_date 和 end_date 都是行程包含的自然日；玩 N 天表示 duration_days=N，"
+                    "且 end_date=start_date+N-1。住 N 晚与玩 N 天不是同一语义。"
                     "地点必须来自用户明确表达，不得把‘规划一份’等任务措辞当作出发地。"
                     "为出发地和目的地填写 ExtractedLocation：value 是规范地点，"
                     "evidence 必须逐字来自"
@@ -625,10 +798,12 @@ class _TripPlanningRun:
                     )
                 validated = schema.model_validate(result)
                 self._native_structured_available = True
+                self._native_structured_failure_type = None
                 return validated
             except Exception as exc:
                 native_error = exc
                 self._native_structured_available = False
+                self._native_structured_failure_type = type(exc).__name__
                 logger.info(
                     "Native structured output failed; JSON fallback allowed=%s code=%s type=%s",
                     allow_json_fallback,
@@ -677,12 +852,20 @@ class _TripPlanningRun:
             raise TripPlanningError(code, message) from exc
 
 
-def _stage(writer: Any, stage: str, display_name: str, status: str) -> None:
+def _stage(
+    writer: Any,
+    stage: str,
+    display_name: str,
+    status: str,
+    *,
+    detail: str | None = None,
+) -> None:
     writer(
         PlanningStageEvent(
             stage=stage,
             display_name=display_name,
             status=status,
+            detail=detail,
         )
     )
 
@@ -964,19 +1147,26 @@ def _supplement_request(
         if origin and not any(_same_location(origin, item) for item in destinations):
             values["origin"] = origin
 
-    if request.start_date is None or request.end_date is None:
-        parsed_dates = _explicit_trip_dates(text, current_date=current_date)
-        if parsed_dates:
-            values["start_date"] = values.get("start_date") or parsed_dates[0]
-            if len(parsed_dates) > 1:
-                values["end_date"] = values.get("end_date") or parsed_dates[1]
+    parsed_dates = _explicit_trip_dates(text, current_date=current_date)
+    explicit_duration = _explicit_duration_days(text)
+    if parsed_dates:
+        values["start_date"] = parsed_dates[0]
+        if len(parsed_dates) > 1:
+            values["end_date"] = parsed_dates[1]
+            values["duration_days"] = (parsed_dates[1] - parsed_dates[0]).days + 1
+        elif explicit_duration is not None:
+            values["duration_days"] = explicit_duration
+            values["end_date"] = parsed_dates[0] + timedelta(days=explicit_duration - 1)
+        elif values.get("duration_days"):
+            values["end_date"] = parsed_dates[0] + timedelta(
+                days=int(values["duration_days"]) - 1
+            )
 
-    if request.duration_days is None:
-        duration_match = re.search(r"(?:玩|游|行程)?\s*([一二两三四五\d]+)\s*天", text)
-        if duration_match:
-            duration = _small_chinese_number(duration_match.group(1))
-            if duration:
-                values["duration_days"] = duration
+    if explicit_duration is not None and len(parsed_dates) <= 1:
+        values["duration_days"] = explicit_duration
+        start_date = values.get("start_date")
+        if isinstance(start_date, date):
+            values["end_date"] = start_date + timedelta(days=explicit_duration - 1)
 
     if request.traveler_count is None:
         traveler_match = re.search(r"([一二两三四五六七八九十\d]+)\s*(?:个)?人", text)
@@ -1013,6 +1203,37 @@ def _supplement_request(
         elif re.search(r"(?:只|仅).{0,4}(?:飞机|航班)", text):
             values["transport_preferences"] = ["flight"]
     return TripRequest.model_validate(values)
+
+
+def _explicit_duration_days(text: str) -> int | None:
+    duration_match = re.search(
+        r"(?:玩|游|行程)?\s*([零〇一二两三四五六七八九十\d]+)\s*天",
+        text,
+    )
+    if duration_match is None:
+        return None
+    duration = _small_chinese_number(duration_match.group(1))
+    return duration or None
+
+
+def _explicit_date_constraint_errors(
+    text: str,
+    *,
+    current_date: date,
+) -> list[str]:
+    parsed_dates = _explicit_trip_dates(text, current_date=current_date)
+    duration = _explicit_duration_days(text)
+    if len(parsed_dates) < 2 or duration is None:
+        return []
+    range_duration = (parsed_dates[1] - parsed_dates[0]).days + 1
+    if range_duration == duration:
+        return []
+    return [
+        (
+            f"你给出的日期范围是 {range_duration} 天，但同时说要玩 {duration} 天。"
+            "请确认以日期范围还是游玩天数为准。"
+        )
+    ]
 
 
 def _explicit_trip_dates(text: str, *, current_date: date) -> list[date]:
@@ -1210,6 +1431,7 @@ def _generation_prompt(state: TripPlanningState, request: TripRequest) -> str:
             "poi_options": state.get("poi_results", []),
             "weather_facts": state.get("weather_results", []),
             "route_facts": state.get("route_results", []),
+            "collection_diagnostics": state.get("collection_diagnostics", {}),
             "tool_failures": state.get("tool_failures", []),
         },
         ensure_ascii=False,
@@ -1228,15 +1450,6 @@ def _deterministic_itinerary(
     transports = state.get("transport_results", [])
     outbound = _select_transport(transports, request.origin, destination)
     returning = _select_transport(transports, destination, request.origin)
-    hotels = state.get("hotel_results", [])
-    hotel = min(
-        hotels,
-        key=lambda item: (
-            item.nightly_price is None,
-            item.nightly_price if item.nightly_price is not None else float("inf"),
-        ),
-        default=None,
-    )
 
     avoided = {item.casefold() for item in request.avoid_places}
     poi_candidates = [
@@ -1259,9 +1472,10 @@ def _deterministic_itinerary(
         request.start_date + timedelta(days=offset)
         for offset in range((request.end_date - request.start_date).days + 1)
     ]
-    poi_index = 0
+    remaining_pois = _rank_poi_candidates(unique_pois, request)
+    route_lookup = _route_leg_lookup(state.get("route_results", []))
     days: list[DayPlan] = []
-    route_fact_available = bool(state.get("route_results"))
+    selected_pois: list[dict[str, Any]] = []
     for day_index, current_date in enumerate(dates, start=1):
         activity_limit = pace_target
         start_minutes = 9 * 60
@@ -1275,13 +1489,17 @@ def _deterministic_itinerary(
             end_minutes = min(end_minutes, departure.hour * 60 + departure.minute - 120)
             activity_limit = min(activity_limit, 1 if end_minutes <= 14 * 60 else 2)
 
+        candidates = _select_day_pois(remaining_pois, activity_limit, request)
         activities: list[Activity] = []
         slot_start = start_minutes
-        while poi_index < len(unique_pois) and len(activities) < activity_limit:
+        used_candidates: list[dict[str, Any]] = []
+        previous: dict[str, Any] | None = None
+        for poi in candidates:
+            if previous is not None:
+                leg_minutes = _route_leg_minutes(previous, poi, route_lookup)
+                slot_start += max(60, leg_minutes or 60)
             if slot_start + 120 > end_minutes:
                 break
-            poi = unique_pois[poi_index]
-            poi_index += 1
             location = poi.get("location")
             coordinates = (
                 json.dumps(location, ensure_ascii=False) if isinstance(location, dict) else None
@@ -1300,11 +1518,20 @@ def _deterministic_itinerary(
                     notes="来自已查询的 POI 候选；开放时间和门票请出发前复核。",
                 )
             )
-            slot_start += 180
+            used_candidates.append(poi)
+            previous = poi
+            slot_start += 120
 
-        transport_minutes = 0
-        if len(activities) > 1:
-            transport_minutes = (35 if route_fact_available else 50) * (len(activities) - 1)
+        used_keys = {_poi_key(item) for item in used_candidates}
+        remaining_pois = [item for item in remaining_pois if _poi_key(item) not in used_keys]
+        selected_pois.extend(used_candidates)
+        transport_minutes = _verified_transport_minutes(used_candidates, route_lookup)
+        day_warnings: list[str] = []
+        if len(activities) > 1 and transport_minutes is None:
+            day_warnings.append("所选地点之间缺少完整的可核验路线耗时，本日时间表仅为草案。")
+        weather_summary = _weather_summary(state, current_date)
+        if _is_high_temperature(weather_summary):
+            day_warnings.append("预报最高气温较高，建议减少正午室外活动并准备防暑方案。")
         days.append(
             DayPlan(
                 date=current_date,
@@ -1312,10 +1539,16 @@ def _deterministic_itinerary(
                 theme=_day_theme(activities, destination),
                 activities=activities,
                 estimated_transport_time_minutes=transport_minutes,
-                weather_summary=_weather_summary(state, current_date),
+                weather_summary=weather_summary,
+                warnings=day_warnings,
             )
         )
 
+    hotel, hotel_location_verified = _select_hotel(
+        state.get("hotel_results", []),
+        selected_pois,
+        request,
+    )
     travelers = request.traveler_count or 1
     selected_transports = [item for item in (outbound, returning) if item is not None]
     transport_prices = [option.price for option in selected_transports]
@@ -1335,13 +1568,23 @@ def _deterministic_itinerary(
     food_estimate = float(travelers * len(dates) * 150)
     total = None
     assumptions = [
-        "自动体验编排暂时不可用，当前方案按已查询事实和基础节奏规则生成。",
+        "结构化体验编排不可用，当前草案由确定性降级规划器生成。",
         "餐饮按每人每天 150 元、市内交通按每人每天 50 元作经验估算。",
         "景点门票价格未取得，未计算预计合计。",
     ]
-    if not route_fact_available and any(len(day.activities) > 1 for day in days):
-        assumptions.append("地点间路线数据不完整，市内交通时间按每段 50 分钟作经验估算。")
+    if any(
+        len(day.activities) > 1 and day.estimated_transport_time_minutes is None
+        for day in days
+    ):
+        assumptions.append("地点间路线数据不完整，未使用固定时长冒充实时路线结果。")
     warnings = [f"部分实时查询失败：{item}" for item in state.get("tool_failures", [])]
+    diagnostics = _collection_plan_diagnostics(state.get("collection_diagnostics", {}))
+    if request.origin and outbound is None:
+        warnings.append("未取得可用于安排首日活动的去程班次，首日开始时间尚未核验。")
+    if request.origin and returning is None:
+        warnings.append("未取得可用于安排末日活动的返程班次，末日结束时间尚未核验。")
+    if hotel is not None and not hotel_location_verified:
+        warnings.append("住宿候选缺少可核验坐标，尚未确认其与每日活动之间的通勤距离。")
     if not state.get("weather_results"):
         warnings.append("未取得覆盖旅行日期的准确天气数据，请临近出发时复核。")
     if request.must_visit:
@@ -1364,6 +1607,8 @@ def _deterministic_itinerary(
         return_transport=returning,
         hotel=hotel,
         days=days,
+        readiness="partial",
+        diagnostics=diagnostics,
         budget=BudgetSummary(
             transport_cost=transport_cost,
             hotel_cost=hotel_cost,
@@ -1379,6 +1624,262 @@ def _deterministic_itinerary(
         assumptions=assumptions,
         warnings=list(dict.fromkeys(warnings)),
     )
+
+
+def _poi_key(item: Mapping[str, Any]) -> str:
+    return str(item.get("poi_id") or item.get("name") or "").casefold()
+
+
+def _poi_coordinates(item: Mapping[str, Any]) -> tuple[float, float] | None:
+    location = item.get("location")
+    if not isinstance(location, Mapping):
+        return None
+    longitude = location.get("longitude")
+    latitude = location.get("latitude")
+    if not isinstance(longitude, (int, float)) or not isinstance(latitude, (int, float)):
+        return None
+    return float(longitude), float(latitude)
+
+
+def _distance_km(left: tuple[float, float], right: tuple[float, float]) -> float:
+    left_lon, left_lat = map(math.radians, left)
+    right_lon, right_lat = map(math.radians, right)
+    delta_lon = right_lon - left_lon
+    delta_lat = right_lat - left_lat
+    value = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(left_lat) * math.cos(right_lat) * math.sin(delta_lon / 2) ** 2
+    )
+    return 6371.0088 * 2 * math.asin(min(1.0, math.sqrt(value)))
+
+
+def _rank_poi_candidates(
+    candidates: Sequence[dict[str, Any]],
+    request: TripRequest,
+) -> list[dict[str, Any]]:
+    coordinates = [_poi_coordinates(item) for item in candidates]
+    must_visit = [value.casefold() for value in request.must_visit]
+    interests = [value.casefold() for value in request.interests]
+    cultural_markers = (
+        "博物馆",
+        "历史",
+        "遗址",
+        "古城",
+        "古镇",
+        "城墙",
+        "地标",
+        "museum",
+        "historic",
+        "landmark",
+    )
+
+    def score(index: int) -> tuple[int, int, int, int, int, int]:
+        item = candidates[index]
+        text = " ".join(
+            str(item.get(key) or "") for key in ("name", "poi_type", "query")
+        ).casefold()
+        coordinate = coordinates[index]
+        nearby = 0
+        if coordinate is not None:
+            nearby = sum(
+                other is not None and _distance_km(coordinate, other) <= 20
+                for other in coordinates
+            )
+        return (
+            -int(any(value in text for value in must_visit)),
+            -int(any(value in text for value in interests)),
+            -nearby,
+            -int(any(marker in text for marker in cultural_markers)),
+            int(coordinate is None),
+            int(item.get("provider_rank") or index),
+        )
+
+    return [candidates[index] for index in sorted(range(len(candidates)), key=score)]
+
+
+def _select_day_pois(
+    candidates: Sequence[dict[str, Any]],
+    limit: int,
+    request: TripRequest,
+) -> list[dict[str, Any]]:
+    if limit <= 0 or not candidates:
+        return []
+    anchor = candidates[0]
+    anchor_coordinates = _poi_coordinates(anchor)
+    must_visit = [value.casefold() for value in request.must_visit]
+
+    def proximity(item: dict[str, Any]) -> tuple[int, float, int]:
+        text = str(item.get("name") or "").casefold()
+        required = any(value in text for value in must_visit)
+        coordinates = _poi_coordinates(item)
+        distance = (
+            _distance_km(anchor_coordinates, coordinates)
+            if anchor_coordinates is not None and coordinates is not None
+            else float("inf")
+        )
+        return (-int(required), distance, candidates.index(item))
+
+    selected = [anchor]
+    for item in sorted(candidates[1:], key=proximity):
+        if len(selected) >= limit:
+            break
+        coordinates = _poi_coordinates(item)
+        distance = (
+            _distance_km(anchor_coordinates, coordinates)
+            if anchor_coordinates is not None and coordinates is not None
+            else None
+        )
+        required = any(value in str(item.get("name") or "").casefold() for value in must_visit)
+        if required or (distance is not None and distance <= 25):
+            selected.append(item)
+    return selected
+
+
+def _route_leg_lookup(
+    route_results: Sequence[dict[str, Any]],
+) -> dict[tuple[str, str], int]:
+    lookup: dict[tuple[str, str], int] = {}
+    for result in route_results:
+        legs = result.get("route_legs")
+        if not isinstance(legs, list):
+            continue
+        for leg in legs:
+            if not isinstance(leg, Mapping):
+                continue
+            origin_id = str(leg.get("origin_id") or "")
+            destination_id = str(leg.get("destination_id") or "")
+            duration = leg.get("duration_minutes")
+            if not origin_id or not destination_id or not isinstance(duration, int):
+                continue
+            key = (origin_id, destination_id)
+            lookup[key] = min(lookup.get(key, duration), duration)
+    return lookup
+
+
+def _route_leg_minutes(
+    origin: Mapping[str, Any],
+    destination: Mapping[str, Any],
+    lookup: Mapping[tuple[str, str], int],
+) -> int | None:
+    origin_id = str(origin.get("poi_id") or "")
+    destination_id = str(destination.get("poi_id") or "")
+    if not origin_id or not destination_id:
+        return None
+    return lookup.get((origin_id, destination_id))
+
+
+def _verified_transport_minutes(
+    items: Sequence[dict[str, Any]],
+    lookup: Mapping[tuple[str, str], int],
+) -> int | None:
+    if len(items) <= 1:
+        return 0
+    durations = [
+        _route_leg_minutes(left, right, lookup)
+        for left, right in zip(items, items[1:], strict=False)
+    ]
+    if any(value is None for value in durations):
+        return None
+    return sum(cast(int, value) for value in durations)
+
+
+def _activity_transport_minutes(
+    activities: Sequence[Activity],
+    lookup: Mapping[tuple[str, str], int],
+) -> int | None:
+    if len(activities) <= 1:
+        return 0
+    durations: list[int | None] = []
+    for left, right in zip(activities, activities[1:], strict=False):
+        if not left.poi_id or not right.poi_id:
+            durations.append(None)
+        else:
+            durations.append(lookup.get((left.poi_id, right.poi_id)))
+    if any(value is None for value in durations):
+        return None
+    return sum(cast(int, value) for value in durations)
+
+
+def _hotel_coordinates(hotel: HotelOption) -> tuple[float, float] | None:
+    if not hotel.coordinates:
+        return None
+    try:
+        value = json.loads(hotel.coordinates)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    longitude = value.get("longitude", value.get("lng"))
+    latitude = value.get("latitude", value.get("lat"))
+    if not isinstance(longitude, (int, float)) or not isinstance(latitude, (int, float)):
+        return None
+    return float(longitude), float(latitude)
+
+
+def _select_hotel(
+    hotels: Sequence[HotelOption],
+    selected_pois: Sequence[dict[str, Any]],
+    request: TripRequest,
+) -> tuple[HotelOption | None, bool]:
+    if not hotels:
+        return None, False
+    poi_coordinates = [
+        coordinates
+        for item in selected_pois
+        if (coordinates := _poi_coordinates(item)) is not None
+    ]
+
+    def score(hotel: HotelOption) -> tuple[int, int, float, int, float]:
+        coordinates = _hotel_coordinates(hotel)
+        average_distance = (
+            sum(_distance_km(coordinates, item) for item in poi_coordinates)
+            / len(poi_coordinates)
+            if coordinates is not None and poi_coordinates
+            else float("inf")
+        )
+        over_preference = int(
+            request.hotel_budget_per_night is not None
+            and hotel.nightly_price is not None
+            and hotel.nightly_price > request.hotel_budget_per_night
+        )
+        return (
+            over_preference,
+            int(coordinates is None),
+            average_distance,
+            int(hotel.nightly_price is None),
+            hotel.nightly_price if hotel.nightly_price is not None else float("inf"),
+        )
+
+    selected = min(hotels, key=score)
+    return selected, _hotel_coordinates(selected) is not None and bool(poi_coordinates)
+
+
+def _collection_plan_diagnostics(
+    diagnostics: Mapping[str, Mapping[str, Any]],
+) -> list[PlanDiagnostic]:
+    result: list[PlanDiagnostic] = []
+    for stage, diagnostic in diagnostics.items():
+        status = str(diagnostic.get("status") or "unknown")
+        severity = "info" if status in {"success", "skipped"} else "warning"
+        if status == "failed":
+            severity = "error"
+        result.append(
+            PlanDiagnostic(
+                code=f"{stage.upper()}_{status.upper()}",
+                stage=stage,
+                severity=severity,
+                message=str(diagnostic.get("detail") or "未记录阶段详情。"),
+                details=dict(diagnostic),
+            )
+        )
+    return result
+
+
+def _is_high_temperature(summary: str | None) -> bool:
+    if not summary:
+        return False
+    temperatures = [int(value) for value in re.findall(r"-?\d+(?=℃)", summary)]
+    return bool(temperatures and max(temperatures) >= 35)
 
 
 def _select_transport(
@@ -1426,7 +1927,10 @@ def _deterministic_revision(
             target = max(targets, key=lambda item: len(item.activities), default=None)
             if target and target.activities:
                 target.activities.pop()
-                target.estimated_transport_time_minutes = max(0, 50 * (len(target.activities) - 1))
+                target.estimated_transport_time_minutes = _activity_transport_minutes(
+                    target.activities,
+                    _route_leg_lookup(state.get("route_results", [])),
+                )
         if "自动体验编排暂时不可用" not in revised.assumptions:
             revised.assumptions.append("自动体验编排暂时不可用，本次修改按基础节奏规则完成。")
         return revised
@@ -1449,7 +1953,19 @@ def _minutes_to_time(minutes: int) -> time:
 
 def _likely_indoor(poi_type: str) -> bool | None:
     normalized = poi_type.casefold()
-    if any(marker in normalized for marker in ("museum", "博物馆", "美术馆", "展览馆")):
+    if any(
+        marker in normalized
+        for marker in (
+            "museum",
+            "博物馆",
+            "美术馆",
+            "展览馆",
+            "水族馆",
+            "海洋馆",
+            "科技馆",
+            "室内",
+        )
+    ):
         return True
     if any(marker in normalized for marker in ("park", "公园", "山", "湖", "古镇", "景区")):
         return False
@@ -1563,6 +2079,22 @@ def _plan_pois(plan: ItineraryPlan | None) -> list[dict[str, Any]]:
 
 def _has_errors(issues: Sequence[ValidationIssue]) -> bool:
     return any(issue.severity == "error" for issue in issues)
+
+
+def _has_revisable_errors(issues: Sequence[ValidationIssue]) -> bool:
+    external_fact_errors = {
+        "OUTBOUND_TRANSPORT_MISSING",
+        "OUTBOUND_ARRIVAL_TIME_MISSING",
+        "RETURN_TRANSPORT_MISSING",
+        "RETURN_DEPARTURE_TIME_MISSING",
+        "HOTEL_MISSING",
+        "BUDGET_TOTAL_MISSING",
+        "ROUTE_DATA_MISSING",
+    }
+    return any(
+        issue.severity == "error" and issue.code not in external_fact_errors
+        for issue in issues
+    )
 
 
 def _unique_issues(issues: Sequence[ValidationIssue]) -> list[ValidationIssue]:
