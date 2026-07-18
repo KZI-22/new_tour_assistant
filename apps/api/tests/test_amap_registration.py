@@ -21,7 +21,7 @@ def settings(tmp_path: Path, *, api_key: str | None) -> Settings:
     )
 
 
-def test_missing_amap_key_keeps_the_existing_four_flyai_tools(tmp_path: Path) -> None:
+def test_missing_amap_key_keeps_the_existing_three_flyai_tools(tmp_path: Path) -> None:
     application = create_app(settings(tmp_path, api_key=None))
 
     assert application.state.amap_client is None
@@ -29,7 +29,6 @@ def test_missing_amap_key_keeps_the_existing_four_flyai_tools(tmp_path: Path) ->
         "search_flight",
         "search_train",
         "search_hotel",
-        "search_poi",
     }
 
 
@@ -37,12 +36,11 @@ def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: 
     application = create_app(settings(tmp_path, api_key="test-key"))
     names = [tool.name for tool in application.state.travel_tools]
 
-    assert len(names) == len(set(names)) == 9
+    assert len(names) == len(set(names)) == 8
     assert set(names) == {
         "search_flight",
         "search_train",
         "search_hotel",
-        "search_poi",
         "amap_get_current_city",
         "amap_search_places",
         "amap_plan_route",
