@@ -7,6 +7,7 @@ import re
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
+from difflib import SequenceMatcher
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -1334,6 +1335,15 @@ def _relevant_pois(
         "写字楼",
         "市集",
     )
+    excluded_place_markers = (
+        "商务住宅",
+        "住宅区",
+        "住宅小区",
+        "商务写字楼",
+        "产业园",
+        "公司企业",
+        "公司",
+    )
     tourism_markers = (
         "风景名胜",
         "旅游景点",
@@ -1376,8 +1386,14 @@ def _relevant_pois(
             str(item.get(key) or "")
             for key in ("name", "poi_type", "type_code", "address", "query")
         ).casefold()
+        classification_text = " ".join(
+            str(item.get(key) or "") for key in ("name", "poi_type", "type_code")
+        ).casefold()
         name_text = name.casefold()
         required = any(value in name_text or name_text in value for value in must_visit)
+        excluded_place = any(marker in classification_text for marker in excluded_place_markers)
+        if excluded_place and not required:
+            continue
         commercial = any(marker in text for marker in commercial_markers)
         if commercial and not required and not shopping_requested:
             continue
@@ -1390,7 +1406,8 @@ def _relevant_pois(
         if required:
             score += 100
             reasons.append("must_visit")
-        if query and query.casefold() in name_text:
+        query_name_match = bool(query and query.casefold() in name_text)
+        if query_name_match:
             score += 30
             reasons.append("query_name_match")
         matched_intent = any(
@@ -1400,9 +1417,10 @@ def _relevant_pois(
         if matched_intent:
             score += 20
             reasons.append("query_type_match")
-        if any(marker in text for marker in tourism_markers) or str(
+        tourism_signal = any(marker in text for marker in tourism_markers) or str(
             item.get("type_code") or ""
-        ).startswith("11"):
+        ).startswith("11")
+        if tourism_signal:
             score += 15
             reasons.append("tourism_type")
         if item.get("location") is not None:
@@ -1411,6 +1429,14 @@ def _relevant_pois(
         if commercial:
             score -= 40
             reasons.append("commercial_penalty")
+        if (
+            not tourism_signal
+            and not matched_intent
+            and not required
+            and not query_name_match
+            and not (shopping_requested and commercial)
+        ):
+            continue
         if score < 10 and not required:
             continue
         candidate = dict(item)
@@ -1454,6 +1480,11 @@ def _match_hotel_place(
         city = str(place.get("city") or "")
         if not isinstance(location, Mapping) or not city or not _same_city(city, destination):
             continue
+        poi_type = str(place.get("poi_type") or "")
+        if poi_type and not any(
+            marker in poi_type for marker in ("住宿服务", "宾馆酒店", "酒店", "宾馆", "旅馆")
+        ):
+            continue
         place_name = _normalize_place_text(str(place.get("name") or ""))
         if not hotel_name or not place_name:
             continue
@@ -1462,11 +1493,16 @@ def _match_hotel_place(
             min(len(hotel_name), len(place_name)) >= 5
             and (hotel_name in place_name or place_name in hotel_name)
         )
-        address_matches = _addresses_overlap(hotel.address, str(place.get("address") or ""))
+        address_score = _address_match_score(hotel.address, str(place.get("address") or ""))
+        address_matches = address_score >= 0.75
+        hotel_brand = _hotel_brand_key(hotel_name)
+        brand_matches = bool(hotel_brand and hotel_brand == _hotel_brand_key(place_name))
         if exact_name and (len(hotel_name) >= 8 or address_matches):
             confidence = 0.98 if address_matches else 0.95
         elif contained_name and address_matches:
             confidence = 0.9
+        elif brand_matches and address_matches:
+            confidence = 0.88
         else:
             continue
         matches.append((confidence, place))
@@ -1480,18 +1516,30 @@ def _normalize_place_text(value: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", value.casefold())
 
 
-def _addresses_overlap(left: str | None, right: str | None) -> bool:
+def _address_match_score(left: str | None, right: str | None) -> float:
     left_text = _normalize_place_text(left or "")
     right_text = _normalize_place_text(right or "")
     if not left_text or not right_text:
-        return False
+        return 0.0
     if left_text in right_text or right_text in left_text:
-        return True
-    if len(left_text) <= len(right_text):
-        shorter, longer = left_text, right_text
-    else:
-        shorter, longer = right_text, left_text
-    return any(shorter[index : index + 4] in longer for index in range(len(shorter) - 3))
+        return 1.0
+    street_number = re.compile(r"[\u4e00-\u9fff]{2,8}(?:路|街|巷|大道)\d+号")
+    if set(street_number.findall(left_text)) & set(street_number.findall(right_text)):
+        return 0.95
+    longest = SequenceMatcher(None, left_text, right_text, autojunk=False).find_longest_match().size
+    if longest >= 7:
+        return 0.9
+    if longest >= 5:
+        return 0.75
+    return 0.0
+
+
+def _hotel_brand_key(normalized_name: str) -> str:
+    for marker in ("酒店", "宾馆", "旅馆", "客栈", "公寓"):
+        index = normalized_name.find(marker)
+        if index >= 2:
+            return normalized_name[: index + len(marker)]
+    return ""
 
 
 __all__ = ["TravelDataCollector"]

@@ -10,13 +10,14 @@ from typing import Any
 import pytest
 from app.graphs.trip_planner import _deterministic_itinerary, _supplement_request
 from app.schemas.amap import SearchPlacesInput
-from app.schemas.itinerary import TripRequest
+from app.schemas.itinerary import HotelOption, TripRequest
 from app.schemas.tool_execution import ToolResult, ToolResultMetadata
 from app.schemas.travel import HotelSearchInput
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.travel_data_collector import (
     TravelDataCollector,
     _hotel_geocode_quality_summary,
+    _match_hotel_place,
     _payload_item_count,
     _poi_quality_summary,
     _relevant_pois,
@@ -189,6 +190,22 @@ def test_poi_relevance_rejects_commercial_and_cross_city_results() -> None:
             "query": "历史文化景点",
             "location": {"longitude": 112.18, "latitude": 37.2},
         },
+        {
+            "poi_id": "residential",
+            "name": "招商城市主场·盛会",
+            "city": "西安市",
+            "poi_type": "商务住宅;住宅区;住宅小区",
+            "query": "城市地标",
+            "location": {"longitude": 109.05, "latitude": 34.4},
+        },
+        {
+            "poi_id": "office",
+            "name": "大兴新地标",
+            "city": "西安市",
+            "poi_type": "商务住宅;楼宇;商务写字楼",
+            "query": "城市地标",
+            "location": {"longitude": 108.9, "latitude": 34.3},
+        },
     ]
 
     result = _relevant_pois(candidates, request)
@@ -196,6 +213,57 @@ def test_poi_relevance_rejects_commercial_and_cross_city_results() -> None:
     assert [item["poi_id"] for item in result] == ["good"]
     assert result[0]["relevance_score"] >= 20
     assert "query_type_match" in result[0]["relevance_reasons"]
+
+
+def test_hotel_alias_matches_same_brand_with_strong_address_evidence() -> None:
+    hotel = HotelOption(
+        name="万澳酒店(行政中心店)",
+        address=(
+            "陕西省西安市经济技术开发区凤城七路60号"
+            "（2号线行政中心站B3出口，凤城七路十字向西路南）"
+        ),
+        check_in_date=date(2026, 7, 20),
+        check_out_date=date(2026, 7, 22),
+        source_tool="search_hotel",
+    )
+    places = [
+        {
+            "poi_id": "B0H1VCT77N",
+            "name": "万澳酒店(西安高铁北客站行政中心地铁站店)",
+            "address": "凤城七路60号(地铁2号线行政中心站C5出口向西100米)",
+            "city": "西安市",
+            "poi_type": "住宿服务;宾馆酒店;宾馆酒店",
+            "location": {"longitude": 108.944091, "latitude": 34.336923},
+        }
+    ]
+
+    match = _match_hotel_place(hotel, places, "西安")
+
+    assert match is not None
+    assert match[0]["poi_id"] == "B0H1VCT77N"
+    assert match[1] == 0.88
+
+
+def test_hotel_alias_rejects_same_brand_at_a_different_address() -> None:
+    hotel = HotelOption(
+        name="万澳酒店(行政中心店)",
+        address="西安市凤城七路60号",
+        check_in_date=date(2026, 7, 20),
+        check_out_date=date(2026, 7, 22),
+        source_tool="search_hotel",
+    )
+    places = [
+        {
+            "poi_id": "different-branch",
+            "name": "万澳酒店(西安钟楼店)",
+            "address": "西安市东大街8号",
+            "city": "西安市",
+            "poi_type": "住宿服务;宾馆酒店",
+            "location": {"longitude": 108.95, "latitude": 34.26},
+        }
+    ]
+
+    assert _match_hotel_place(hotel, places, "西安") is None
 
 
 def test_empty_provider_envelope_is_not_counted_as_one_record() -> None:
