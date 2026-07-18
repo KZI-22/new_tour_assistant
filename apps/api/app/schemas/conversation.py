@@ -33,6 +33,7 @@ class ConversationToolCallResponse(BaseModel):
     status: Literal["pending", "success", "failed"]
     result_summary: str
     error_code: str | None
+    provider_error_code: str | None
     duration_ms: int
     data_status: Literal["usable", "partial", "empty", "invalid"] | None = None
     provider_item_count: int | None = None

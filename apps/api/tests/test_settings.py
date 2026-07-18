@@ -45,6 +45,7 @@ def test_get_settings_reads_amap_and_request_context_configuration(
     monkeypatch.setenv("AMAP_BASE_URL", "https://restapi.amap.test/")
     monkeypatch.setenv("AMAP_TIMEOUT_SECONDS", "20")
     monkeypatch.setenv("AMAP_MAX_RETRIES", "2")
+    monkeypatch.setenv("AMAP_MIN_REQUEST_INTERVAL_SECONDS", "0.4")
     monkeypatch.setenv("APP_TIMEZONE", "Asia/Shanghai")
     monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 2001:db8::/32")
 
@@ -54,6 +55,7 @@ def test_get_settings_reads_amap_and_request_context_configuration(
     assert settings.amap_base_url == "https://restapi.amap.test"
     assert settings.amap_timeout_seconds == 20
     assert settings.amap_max_retries == 2
+    assert settings.amap_min_request_interval_seconds == 0.4
     assert settings.app_timezone == "Asia/Shanghai"
     assert settings.trusted_proxy_cidrs == ("10.0.0.0/8", "2001:db8::/32")
 

@@ -45,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             base_url=current_settings.amap_base_url,
             timeout_seconds=current_settings.amap_timeout_seconds,
             max_retries=current_settings.amap_max_retries,
+            min_request_interval_seconds=current_settings.amap_min_request_interval_seconds,
         )
     else:
         logging.getLogger(__name__).warning(

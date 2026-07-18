@@ -28,6 +28,7 @@ def _failure(error: AmapError) -> dict[str, Any]:
         success=False,
         error_code=error.error_code,
         error_message=str(error),
+        provider_error_code=error.infocode,
     ).model_dump(mode="json")
 
 

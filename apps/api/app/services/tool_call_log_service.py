@@ -24,6 +24,7 @@ class ToolCallLogEntry:
     result_summary: str
     error_code: str | None
     duration_ms: int
+    provider_error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,7 @@ class ToolCallLogService:
                     status=entry.status,
                     result_summary=entry.result_summary,
                     error_code=entry.error_code,
+                    provider_error_code=entry.provider_error_code,
                     duration_ms=entry.duration_ms,
                 )
             )

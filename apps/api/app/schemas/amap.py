@@ -313,6 +313,7 @@ class AmapToolResult(AmapModel):
     data: AmapToolData | None = None
     error_code: AmapErrorCode | None = None
     error_message: str | None = None
+    provider_error_code: str | None = Field(default=None, max_length=100)
     finished_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
@@ -320,7 +321,11 @@ class AmapToolResult(AmapModel):
         if self.success:
             if self.data is None:
                 raise ValueError("successful Amap tool results require data")
-            if self.error_code is not None or self.error_message is not None:
+            if (
+                self.error_code is not None
+                or self.error_message is not None
+                or self.provider_error_code is not None
+            ):
                 raise ValueError("successful Amap tool results cannot contain errors")
         else:
             if self.data is not None:

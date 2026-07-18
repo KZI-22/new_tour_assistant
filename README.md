@@ -75,6 +75,7 @@ AMAP_API_KEY=your-web-service-key
 AMAP_BASE_URL=https://restapi.amap.com
 AMAP_TIMEOUT_SECONDS=15
 AMAP_MAX_RETRIES=1
+AMAP_MIN_REQUEST_INTERVAL_SECONDS=0.2
 ```
 
 高德返回的坐标统一标记为 GCJ-02。外部 WGS84、BD-09 或 Mapbar 坐标可通过客户端内部

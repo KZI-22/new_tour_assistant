@@ -164,7 +164,10 @@ async def test_private_ip_returns_structured_unavailable_result_without_calling_
 async def test_amap_error_is_converted_to_a_structured_tool_error() -> None:
     class FailingClient(FakeAmapClient):
         async def search_places(self, query: Any) -> PlaceSearchResult:
-            raise AmapRequestError("The Amap service could not be reached.")
+            raise AmapRequestError(
+                "The Amap service could not be reached.",
+                infocode="10020",
+            )
 
     tool = build_amap_tools(FailingClient())[1]  # type: ignore[arg-type]
 
@@ -172,6 +175,7 @@ async def test_amap_error_is_converted_to_a_structured_tool_error() -> None:
 
     assert result["success"] is False
     assert result["error_code"] == "REQUEST_ERROR"
+    assert result["provider_error_code"] == "10020"
     assert result["data"] is None
 
 

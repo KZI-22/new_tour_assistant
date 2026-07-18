@@ -56,6 +56,7 @@ class Settings:
     amap_base_url: str = "https://restapi.amap.com"
     amap_timeout_seconds: float = 15
     amap_max_retries: int = 1
+    amap_min_request_interval_seconds: float = 0.2
     app_timezone: str = "Asia/Shanghai"
     trusted_proxy_cidrs: tuple[str, ...] = ()
     trip_planner_enabled: bool = True
@@ -90,6 +91,8 @@ class Settings:
             raise ValueError("Trip planner limits and timeouts must be positive.")
         if self.trip_planner_max_revisions < 0:
             raise ValueError("trip_planner_max_revisions cannot be negative.")
+        if self.amap_min_request_interval_seconds < 0:
+            raise ValueError("amap_min_request_interval_seconds cannot be negative.")
 
 
 def get_settings() -> Settings:
@@ -120,6 +123,9 @@ def get_settings() -> Settings:
         amap_base_url=os.getenv("AMAP_BASE_URL", "https://restapi.amap.com").rstrip("/"),
         amap_timeout_seconds=float(os.getenv("AMAP_TIMEOUT_SECONDS", "15")),
         amap_max_retries=int(os.getenv("AMAP_MAX_RETRIES", "1")),
+        amap_min_request_interval_seconds=float(
+            os.getenv("AMAP_MIN_REQUEST_INTERVAL_SECONDS", "0.2")
+        ),
         app_timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai"),
         trusted_proxy_cidrs=trusted_proxy_cidrs,
         trip_planner_enabled=_environment_bool("TRIP_PLANNER_ENABLED", True),

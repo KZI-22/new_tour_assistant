@@ -12,6 +12,7 @@ class ToolError(BaseModel):
     code: str
     message: str
     retryable: bool = False
+    provider_error_code: str | None = Field(default=None, max_length=100)
 
 
 class ToolResultMetadata(BaseModel):
@@ -73,6 +74,7 @@ class ToolResultEvent(BaseModel):
     summary: str
     duration_ms: int = Field(ge=0)
     error_code: str | None = None
+    provider_error_code: str | None = None
     data_status: Literal["usable", "partial", "empty", "invalid"] | None = None
     provider_item_count: int | None = Field(default=None, ge=0)
     normalized_item_count: int | None = Field(default=None, ge=0)

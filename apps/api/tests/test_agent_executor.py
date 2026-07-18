@@ -465,3 +465,43 @@ async def test_log_arguments_are_redacted_and_log_failure_is_non_fatal() -> None
 
     assert any(isinstance(event, MessageDeltaEvent) for event in events)
     assert entries[0].arguments == {"api_key": "[REDACTED]", "city": "南京"}
+
+
+@pytest.mark.asyncio
+async def test_provider_error_code_is_sanitized_and_recorded() -> None:
+    entries: list[ToolCallLogEntry] = []
+
+    class LogWriter:
+        async def record(self, entry: ToolCallLogEntry) -> None:
+            entries.append(entry)
+
+    async def rate_limited(value: str) -> dict[str, object]:
+        del value
+        return {
+            "success": False,
+            "provider": "amap",
+            "error_code": "RATE_LIMITED",
+            "provider_error_code": "10003",
+        }
+
+    tool = StructuredTool.from_function(
+        coroutine=rate_limited,
+        name="amap_search_places",
+        description="rate limited",
+        args_schema=ValueInput,
+    )
+    executor = ToolExecutor([tool], log_writer=LogWriter())
+    prepared = executor.prepare_calls(
+        [{"id": "rate-call", "name": "amap_search_places", "args": {"value": "x"}}],
+        round_index=0,
+    )
+
+    outcomes = await executor.execute_many(
+        prepared,
+        context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
+    )
+
+    assert outcomes[0].event.provider_error_code == "10003"
+    assert outcomes[0].result.error is not None
+    assert outcomes[0].result.error.provider_error_code == "10003"
+    assert entries[0].provider_error_code == "10003"

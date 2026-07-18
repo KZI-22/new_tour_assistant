@@ -93,6 +93,7 @@ class ConversationService:
                     status=item.status,
                     result_summary=item.result_summary,
                     error_code=item.error_code,
+                    provider_error_code=item.provider_error_code,
                     duration_ms=item.duration_ms,
                     data_status=item.data_status,
                     provider_item_count=item.provider_item_count,

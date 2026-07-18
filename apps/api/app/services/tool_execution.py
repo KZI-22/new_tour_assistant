@@ -401,6 +401,7 @@ class ToolExecutor:
 
         raw_code = payload.get("error_code")
         code = _canonical_error_code(raw_code)
+        provider_error_code = _safe_provider_error_code(payload.get("provider_error_code"))
         return ToolResult(
             success=False,
             tool_name=call.tool_name,
@@ -408,6 +409,7 @@ class ToolExecutor:
                 code=code,
                 message=_safe_error_message(call.tool_name, code),
                 retryable=code in {"PROVIDER_TIMEOUT", "PROVIDER_RATE_LIMITED", "PROVIDER_ERROR"},
+                provider_error_code=provider_error_code,
             ),
             metadata=metadata,
         )
@@ -455,6 +457,7 @@ class ToolExecutor:
             else result.error.message
         )
         error_code = result.error.code if result.error else None
+        provider_error_code = result.error.provider_error_code if result.error else None
         return ToolExecutionOutcome(
             message=ToolMessage(
                 content=content,
@@ -469,6 +472,7 @@ class ToolExecutor:
                 summary=summary,
                 duration_ms=result.metadata.duration_ms,
                 error_code=error_code,
+                provider_error_code=provider_error_code,
             ),
         )
 
@@ -494,6 +498,9 @@ class ToolExecutor:
                     result_summary=summary,
                     error_code=result.error.code if result.error else None,
                     duration_ms=result.metadata.duration_ms,
+                    provider_error_code=(
+                        result.error.provider_error_code if result.error else None
+                    ),
                 )
             )
         except asyncio.CancelledError:
@@ -518,6 +525,14 @@ def _safe_provider(value: Any, fallback: str) -> str:
     if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9._-]{1,50}", value):
         return value
     return fallback
+
+
+def _safe_provider_error_code(value: Any) -> str | None:
+    if isinstance(value, (str, int)):
+        normalized = str(value).strip()
+        if normalized and re.fullmatch(r"[a-zA-Z0-9._-]{1,100}", normalized):
+            return normalized
+    return None
 
 
 def _provider_for(tool_name: str) -> str:

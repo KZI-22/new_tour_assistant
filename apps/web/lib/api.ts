@@ -46,6 +46,7 @@ export type PersistedToolCall = {
   status: "pending" | "success" | "failed";
   result_summary: string;
   error_code: string | null;
+  provider_error_code: string | null;
   duration_ms: number;
   data_status: "usable" | "partial" | "empty" | "invalid" | null;
   provider_item_count: number | null;
@@ -68,6 +69,7 @@ export type ToolResultUpdate = {
   summary: string;
   duration_ms: number;
   error_code: string | null;
+  provider_error_code: string | null;
   data_status: "usable" | "partial" | "empty" | "invalid" | null;
   provider_item_count: number | null;
   normalized_item_count: number | null;
@@ -226,6 +228,7 @@ export async function streamChat(
           summary: data.summary,
           duration_ms: data.duration_ms,
           error_code: data.error_code ?? null,
+          provider_error_code: data.provider_error_code ?? null,
           data_status: data.data_status ?? null,
           provider_item_count: data.provider_item_count ?? null,
           normalized_item_count: data.normalized_item_count ?? null,

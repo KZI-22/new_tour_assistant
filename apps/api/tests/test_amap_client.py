@@ -32,6 +32,8 @@ def make_client(
     handler: Handler,
     *,
     max_retries: int = 0,
+    retry_delay_seconds: float = 0,
+    min_request_interval_seconds: float = 0,
     matrix_batch_size: int = 100,
 ) -> AmapClient:
     http_client = httpx.AsyncClient(
@@ -41,7 +43,8 @@ def make_client(
     return AmapClient(
         "super-secret-amap-key",
         max_retries=max_retries,
-        retry_delay_seconds=0,
+        retry_delay_seconds=retry_delay_seconds,
+        min_request_interval_seconds=min_request_interval_seconds,
         matrix_batch_size=matrix_batch_size,
         http_client=http_client,
     )
@@ -345,6 +348,52 @@ async def test_business_failure_and_rate_limit_are_classified() -> None:
     with pytest.raises(AmapRateLimitError):
         await retrying_client.search_places(SearchPlacesInput(keywords="西湖"))
     assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_retries_use_exponential_backoff() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def rate_limited(_: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(
+            200,
+            json={"status": "0", "info": "DAILY_QUERY_OVER_LIMIT", "infocode": "10003"},
+        )
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    client = make_client(rate_limited, max_retries=2, retry_delay_seconds=0.25)
+    client._sleep = record_delay
+
+    with pytest.raises(AmapRateLimitError):
+        await client.search_places(SearchPlacesInput(keywords="西湖"))
+
+    assert attempts == 3
+    assert delays == [0.25, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_requests_are_throttled_across_concurrent_tool_calls() -> None:
+    delays: list[float] = []
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    client = make_client(
+        lambda _: httpx.Response(200, json=ok(pois=[])),
+        min_request_interval_seconds=0.2,
+    )
+    client._sleep = record_delay
+
+    await client.search_places(SearchPlacesInput(keywords="西湖"))
+    await client.search_places(SearchPlacesInput(keywords="灵隐寺"))
+
+    assert len(delays) == 1
+    assert 0 < delays[0] <= 0.201
 
 
 @pytest.mark.asyncio

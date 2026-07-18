@@ -7,7 +7,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from datetime import date
 from ipaddress import IPv4Address, ip_address
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -81,6 +81,7 @@ class AmapClient:
         timeout_seconds: float = 15,
         max_retries: int = 1,
         retry_delay_seconds: float = 0.25,
+        min_request_interval_seconds: float = 0.2,
         matrix_batch_size: int = 100,
         cache: AmapCache | None = None,
         http_client: httpx.AsyncClient | None = None,
@@ -104,12 +105,18 @@ class AmapClient:
             raise AmapConfigurationError("AMAP_MAX_RETRIES must be between 0 and 5.")
         if retry_delay_seconds < 0:
             raise AmapConfigurationError("Amap retry delay cannot be negative.")
+        if min_request_interval_seconds < 0:
+            raise AmapConfigurationError("Amap request interval cannot be negative.")
         if not 1 <= matrix_batch_size <= 100:
             raise AmapConfigurationError("Amap matrix batch size must be between 1 and 100.")
 
         self._api_key = normalized_key
         self._max_retries = max_retries
         self._retry_delay_seconds = retry_delay_seconds
+        self._min_request_interval_seconds = min_request_interval_seconds
+        self._request_slot_lock = asyncio.Lock()
+        self._next_request_at = 0.0
+        self._sleep = asyncio.sleep
         self._matrix_batch_size = matrix_batch_size
         self._cache = cache or InMemoryAmapCache()
         self._owns_http_client = http_client is None
@@ -458,6 +465,7 @@ class AmapClient:
         for attempt in range(attempts):
             started = perf_counter()
             try:
+                await self._wait_for_request_slot()
                 response = await self._http.get(
                     endpoint,
                     params={**safe_params, "key": self._api_key, "output": "JSON"},
@@ -465,13 +473,13 @@ class AmapClient:
             except httpx.TimeoutException:
                 logger.warning("Amap request timed out endpoint=%s", endpoint)
                 if attempt + 1 < attempts:
-                    await self._retry_delay()
+                    await self._retry_delay(attempt)
                     continue
                 raise AmapTimeoutError("The Amap request timed out.") from None
             except httpx.RequestError:
                 logger.warning("Amap network request failed endpoint=%s", endpoint)
                 if attempt + 1 < attempts:
-                    await self._retry_delay()
+                    await self._retry_delay(attempt)
                     continue
                 raise AmapRequestError("The Amap service could not be reached.") from None
 
@@ -483,7 +491,10 @@ class AmapClient:
                     duration_ms,
                 )
                 if attempt + 1 < attempts:
-                    await self._retry_delay()
+                    await self._retry_delay(
+                        attempt,
+                        retry_after_seconds=self._retry_after_seconds(response),
+                    )
                     continue
                 raise AmapRateLimitError("The Amap service rate limit was reached.")
             if response.status_code >= 500:
@@ -494,7 +505,7 @@ class AmapClient:
                     duration_ms,
                 )
                 if attempt + 1 < attempts:
-                    await self._retry_delay()
+                    await self._retry_delay(attempt)
                     continue
                 raise AmapRequestError("The Amap service returned a temporary HTTP error.")
             if response.status_code in {401, 403}:
@@ -521,7 +532,7 @@ class AmapClient:
                     duration_ms,
                 )
                 if isinstance(error, AmapRateLimitError) and attempt + 1 < attempts:
-                    await self._retry_delay()
+                    await self._retry_delay(attempt)
                     continue
                 raise error
 
@@ -537,9 +548,36 @@ class AmapClient:
 
         raise AssertionError("Amap request retry loop exited unexpectedly")
 
-    async def _retry_delay(self) -> None:
-        if self._retry_delay_seconds:
-            await asyncio.sleep(self._retry_delay_seconds)
+    async def _wait_for_request_slot(self) -> None:
+        if self._min_request_interval_seconds <= 0:
+            return
+        async with self._request_slot_lock:
+            delay = max(0.0, self._next_request_at - monotonic())
+            if delay:
+                await self._sleep(delay)
+            self._next_request_at = monotonic() + self._min_request_interval_seconds
+
+    async def _retry_delay(
+        self,
+        attempt: int,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        exponential_delay = self._retry_delay_seconds * (2**attempt)
+        delay = max(exponential_delay, retry_after_seconds or 0.0)
+        if delay:
+            await self._sleep(delay)
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float | None:
+        value = response.headers.get("Retry-After")
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
 
     @staticmethod
     def _business_error(infocode: str | None) -> AmapError:

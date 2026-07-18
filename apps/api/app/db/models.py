@@ -95,6 +95,7 @@ class ToolCallLog(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     result_summary: Mapped[str] = mapped_column(String(500), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(100))
+    provider_error_code: Mapped[str | None] = mapped_column(String(100))
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     data_status: Mapped[str | None] = mapped_column(String(20))
     provider_item_count: Mapped[int | None] = mapped_column(Integer)
