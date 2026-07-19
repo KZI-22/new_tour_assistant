@@ -1,0 +1,92 @@
+{
+  "keyword": "成都 3日游 攻略",
+  "liked_count_cases": [
+    {"value": "0", "expected": 0},
+    {"value": "823", "expected": 823},
+    {"value": "1,234", "expected": 1234},
+    {"value": "1.2千", "expected": 1200},
+    {"value": "9999+", "expected": 9999},
+    {"value": "1万", "expected": 10000},
+    {"value": "1.2万", "expected": 12000},
+    {"value": "3万+", "expected": 30000},
+    {"value": "", "expected": null},
+    {"value": null, "expected": null},
+    {"value": "未知文案", "expected": null}
+  ],
+  "items": [
+    {
+      "note_id": "note-unreadable",
+      "xsec_token": "fixture-xsec-unreadable",
+      "detail_available": false,
+      "index": 0,
+      "title": "不可读取的高赞笔记",
+      "author": {"nickname": "脱敏作者甲"},
+      "interactions": {"liked_count": "9万"}
+    },
+    {
+      "note_id": "note-mid",
+      "xsec_token": "fixture-xsec-mid",
+      "detail_available": true,
+      "index": 1,
+      "title": "中点赞候选",
+      "author": {"nickname": "脱敏作者乙"},
+      "interactions": {"liked_count": "1.2万"}
+    },
+    {
+      "note_id": "note-low",
+      "xsec_token": "fixture-xsec-low",
+      "detail_available": true,
+      "index": 2,
+      "title": "低点赞候选",
+      "author": {"nickname": "脱敏作者丙"},
+      "interactions": {"liked_count": "9999+"}
+    },
+    {
+      "note_id": "note-high",
+      "xsec_token": "fixture-xsec-high",
+      "detail_available": true,
+      "index": 3,
+      "title": "最高点赞可读候选",
+      "author": {"nickname": "脱敏作者丁"},
+      "interactions": {"liked_count": "3万+"}
+    },
+    {
+      "note_id": "note-high",
+      "xsec_token": "fixture-xsec-high-duplicate",
+      "detail_available": true,
+      "index": 4,
+      "title": "重复候选",
+      "author": {"nickname": "脱敏作者丁"},
+      "interactions": {"liked_count": "3万+"}
+    },
+    {
+      "note_id": "note-unknown",
+      "xsec_token": "fixture-xsec-unknown",
+      "detail_available": true,
+      "index": 5,
+      "title": "未知点赞候选",
+      "author": {"nickname": "脱敏作者戊"},
+      "interactions": {"liked_count": "未知文案"}
+    }
+  ],
+  "scenarios": {
+    "two_usable": {
+      "note-high": "usable",
+      "note-mid": "usable",
+      "note-low": "usable",
+      "note-unknown": "usable"
+    },
+    "one_usable": {
+      "note-high": "usable",
+      "note-mid": "short",
+      "note-low": "error",
+      "note-unknown": "short"
+    },
+    "zero_usable": {
+      "note-high": "short",
+      "note-mid": "error",
+      "note-low": "short",
+      "note-unknown": "error"
+    }
+  }
+}
