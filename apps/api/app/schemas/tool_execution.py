@@ -89,6 +89,8 @@ class PlanningStageEvent(BaseModel):
     stage: Literal[
         "understanding_request",
         "checking_requirements",
+        "checking_xhs_login",
+        "waiting_xhs_login",
         "collecting_transport",
         "collecting_hotels",
         "collecting_pois",
@@ -107,7 +109,24 @@ class PlanningStageEvent(BaseModel):
     detail: str | None = None
 
 
-type ChatStreamEvent = MessageDeltaEvent | ToolCallEvent | ToolResultEvent | PlanningStageEvent
+class XhsLoginRequiredEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["xhs_login_required"] = "xhs_login_required"
+    login_id: str = Field(repr=False)
+    expires_at: str
+    qr_mime_type: Literal["image/png"]
+    qr_data_base64: str = Field(repr=False)
+    message: str
+
+
+type ChatStreamEvent = (
+    MessageDeltaEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | PlanningStageEvent
+    | XhsLoginRequiredEvent
+)
 
 
 __all__ = [
@@ -119,4 +138,5 @@ __all__ = [
     "ToolResult",
     "ToolResultEvent",
     "ToolResultMetadata",
+    "XhsLoginRequiredEvent",
 ]

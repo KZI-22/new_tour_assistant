@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import ImageContent
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,34 @@ class _Author(_BoundaryModel):
 class _Interactions(_BoundaryModel):
     liked_count: str = ""
     collected_count: str = ""
+
+
+class XhsMcpImage(_BoundaryModel):
+    mime_type: str
+    data_base64: str = Field(repr=False)
+
+
+class XhsMcpToolResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    structured_content: dict[str, Any]
+    images: list[XhsMcpImage] = Field(default_factory=list, repr=False)
+
+
+class XhsLoginStatusResult(_BoundaryModel):
+    is_logged_in: bool
+    checked_at: str
+
+
+class XhsLoginSessionResult(_BoundaryModel):
+    login_id: str = Field(repr=False)
+    status: Literal["pending", "succeeded", "expired", "cancelled", "failed"]
+    created_at: str
+    expires_at: str
+    is_logged_in: bool = False
+    qr_mime_type: str | None = None
+    message: str = ""
+    qr_image: XhsMcpImage | None = Field(default=None, repr=False)
 
 
 class XhsSearchItem(_BoundaryModel):
@@ -88,7 +117,7 @@ class XhsMcpClient:
         self._timeout_seconds = timeout_seconds
 
     async def search_notes(self, keyword: str) -> XhsSearchResult:
-        payload = await self._call_tool(
+        response = await self._call_tool(
             "xhs_search_notes",
             {
                 "keyword": keyword,
@@ -96,7 +125,7 @@ class XhsMcpClient:
             },
         )
         try:
-            return XhsSearchResult.model_validate(payload)
+            return XhsSearchResult.model_validate(response.structured_content)
         except ValidationError as exc:
             raise XhsMcpClientError(
                 "INVALID_RESPONSE",
@@ -108,7 +137,7 @@ class XhsMcpClient:
         note_id: str,
         xsec_token: str,
     ) -> XhsNoteDetailResult:
-        payload = await self._call_tool(
+        response = await self._call_tool(
             "xhs_get_note_detail",
             {
                 "note_id": note_id,
@@ -117,14 +146,85 @@ class XhsMcpClient:
             },
         )
         try:
-            return XhsNoteDetailResult.model_validate(payload)
+            return XhsNoteDetailResult.model_validate(response.structured_content)
         except ValidationError as exc:
             raise XhsMcpClientError(
                 "INVALID_RESPONSE",
                 "小红书笔记详情服务返回了无法识别的数据。",
             ) from exc
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Mapping[str, Any]:
+    async def check_login(self) -> XhsLoginStatusResult:
+        response = await self._call_tool("xhs_check_login", {})
+        try:
+            return XhsLoginStatusResult.model_validate(response.structured_content)
+        except ValidationError as exc:
+            raise XhsMcpClientError(
+                "INVALID_RESPONSE",
+                "小红书登录检查返回了无法识别的数据。",
+            ) from exc
+
+    async def start_login(self) -> XhsLoginSessionResult:
+        response = await self._call_tool(
+            "xhs_start_login",
+            {"force_restart": False},
+        )
+        try:
+            session = XhsLoginSessionResult.model_validate(response.structured_content)
+        except ValidationError as exc:
+            raise XhsMcpClientError(
+                "INVALID_RESPONSE",
+                "小红书扫码登录服务返回了无法识别的数据。",
+            ) from exc
+        if session.status == "pending":
+            image = next(
+                (item for item in response.images if item.mime_type == "image/png"),
+                None,
+            )
+            if image is None:
+                raise XhsMcpClientError(
+                    "INVALID_RESPONSE",
+                    "小红书扫码登录服务没有返回二维码图片。",
+                )
+            session.qr_image = image
+        return session
+
+    async def get_login_status(self, login_id: str) -> XhsLoginSessionResult:
+        normalized_id = login_id.strip()
+        if not normalized_id:
+            raise ValueError("login_id cannot be empty")
+        response = await self._call_tool(
+            "xhs_get_login_status",
+            {"login_id": normalized_id},
+        )
+        try:
+            return XhsLoginSessionResult.model_validate(response.structured_content)
+        except ValidationError as exc:
+            raise XhsMcpClientError(
+                "INVALID_RESPONSE",
+                "小红书登录状态服务返回了无法识别的数据。",
+            ) from exc
+
+    async def cancel_login(self, login_id: str) -> XhsLoginSessionResult:
+        normalized_id = login_id.strip()
+        if not normalized_id:
+            raise ValueError("login_id cannot be empty")
+        response = await self._call_tool(
+            "xhs_cancel_login",
+            {"login_id": normalized_id},
+        )
+        try:
+            return XhsLoginSessionResult.model_validate(response.structured_content)
+        except ValidationError as exc:
+            raise XhsMcpClientError(
+                "INVALID_RESPONSE",
+                "小红书登录取消服务返回了无法识别的数据。",
+            ) from exc
+
+    async def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> XhsMcpToolResponse:
         headers: dict[str, str] = {}
         if self._auth_token is not None:
             headers["Authorization"] = f"Bearer {self._auth_token}"
@@ -181,7 +281,18 @@ class XhsMcpClient:
                 "INVALID_RESPONSE",
                 "小红书内容服务没有返回结构化数据。",
             )
-        return structured
+        images = [
+            XhsMcpImage(
+                mime_type=item.mimeType,
+                data_base64=item.data,
+            )
+            for item in result.content
+            if isinstance(item, ImageContent)
+        ]
+        return XhsMcpToolResponse(
+            structured_content=dict(structured),
+            images=images,
+        )
 
 
 def _safe_error_code(value: Any) -> str:
@@ -205,6 +316,10 @@ def _safe_error_message(code: str) -> str:
 __all__ = [
     "XhsMcpClient",
     "XhsMcpClientError",
+    "XhsLoginSessionResult",
+    "XhsLoginStatusResult",
+    "XhsMcpImage",
+    "XhsMcpToolResponse",
     "XhsNoteDetailResult",
     "XhsSearchItem",
     "XhsSearchResult",

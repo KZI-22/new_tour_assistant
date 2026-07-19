@@ -13,10 +13,16 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
+from app.clients.xhs_mcp_client import XhsLoginSessionResult
 from app.core.settings import Settings
 from app.graphs.xhs_trip_state import XhsTripPlanningState
 from app.schemas.chat import ChatMessage
-from app.schemas.tool_execution import ChatStreamEvent, MessageDeltaEvent, PlanningStageEvent
+from app.schemas.tool_execution import (
+    ChatStreamEvent,
+    MessageDeltaEvent,
+    PlanningStageEvent,
+    XhsLoginRequiredEvent,
+)
 from app.schemas.xhs_planning import (
     XhsItineraryPlan,
     XhsPlanSource,
@@ -77,6 +83,9 @@ class _XhsTripPlanningRun:
         workflow.add_node("understand_request", self.understand_request)
         workflow.add_node("check_required_fields", self.check_required_fields)
         workflow.add_node("ask_clarification", self.ask_clarification)
+        workflow.add_node("check_xhs_login", self.check_xhs_login)
+        workflow.add_node("start_xhs_login", self.start_xhs_login)
+        workflow.add_node("wait_xhs_login", self.wait_xhs_login)
         workflow.add_node("collect_xhs_evidence", self.collect_xhs_evidence)
         workflow.add_node("generate_itinerary", self.generate_itinerary)
         workflow.add_node("finalize_response", self.finalize_response)
@@ -86,9 +95,20 @@ class _XhsTripPlanningRun:
         workflow.add_conditional_edges(
             "check_required_fields",
             self._route_after_requirements,
-            {"clarify": "ask_clarification", "collect": "collect_xhs_evidence"},
+            {"clarify": "ask_clarification", "login": "check_xhs_login"},
         )
         workflow.add_edge("ask_clarification", END)
+        workflow.add_conditional_edges(
+            "check_xhs_login",
+            self._route_after_login_check,
+            {"logged_in": "collect_xhs_evidence", "login_required": "start_xhs_login"},
+        )
+        workflow.add_conditional_edges(
+            "start_xhs_login",
+            self._route_after_login_start,
+            {"logged_in": "collect_xhs_evidence", "wait": "wait_xhs_login"},
+        )
+        workflow.add_edge("wait_xhs_login", "collect_xhs_evidence")
         workflow.add_edge("collect_xhs_evidence", "generate_itinerary")
         workflow.add_edge("generate_itinerary", "finalize_response")
         workflow.add_edge("finalize_response", END)
@@ -100,6 +120,8 @@ class _XhsTripPlanningRun:
             "request": None,
             "missing_fields": [],
             "requirement_errors": [],
+            "xhs_logged_in": False,
+            "xhs_login_session": None,
             "search_keyword": None,
             "research": None,
             "plan": None,
@@ -172,6 +194,175 @@ class _XhsTripPlanningRun:
             "current_stage": "checking_requirements",
         }
 
+    async def check_xhs_login(self, _: XhsTripPlanningState) -> dict[str, Any]:
+        writer = get_stream_writer()
+        _stage(writer, "checking_xhs_login", "正在检查小红书登录状态", "running")
+        try:
+            login = await self._research_service.check_login()
+        except XhsResearchError as exc:
+            _stage(
+                writer,
+                "checking_xhs_login",
+                "正在检查小红书登录状态",
+                "failed",
+                detail=exc.message,
+            )
+            raise XhsTripPlanningError(exc.code, exc.message) from exc
+        _stage(
+            writer,
+            "checking_xhs_login",
+            "正在检查小红书登录状态",
+            "success",
+            detail="小红书已登录。" if login.is_logged_in else "需要扫码登录小红书。",
+        )
+        return {
+            "xhs_logged_in": login.is_logged_in,
+            "current_stage": "checking_xhs_login",
+        }
+
+    async def start_xhs_login(self, _: XhsTripPlanningState) -> dict[str, Any]:
+        writer = get_stream_writer()
+        session = await self._start_login(writer)
+        return {
+            "xhs_logged_in": session.status == "succeeded",
+            "xhs_login_session": session,
+            "current_stage": "waiting_xhs_login",
+        }
+
+    async def wait_xhs_login(self, state: XhsTripPlanningState) -> dict[str, Any]:
+        session = state.get("xhs_login_session")
+        if session is None:
+            raise XhsTripPlanningError(
+                "XHS_LOGIN_SESSION_MISSING",
+                "小红书登录会话不可用，请重新发起规划。",
+            )
+        completed = await self._wait_login(get_stream_writer(), session)
+        return {
+            "xhs_logged_in": True,
+            "xhs_login_session": completed,
+            "current_stage": "waiting_xhs_login",
+        }
+
+    async def _start_login(self, writer: Any) -> XhsLoginSessionResult:
+        _stage(writer, "waiting_xhs_login", "等待扫码登录小红书", "running")
+        try:
+            session = await self._research_service.start_login()
+        except XhsResearchError as exc:
+            _stage(
+                writer,
+                "waiting_xhs_login",
+                "等待扫码登录小红书",
+                "failed",
+                detail=exc.message,
+            )
+            raise XhsTripPlanningError(exc.code, exc.message) from exc
+        if session.status == "succeeded":
+            _stage(
+                writer,
+                "waiting_xhs_login",
+                "等待扫码登录小红书",
+                "success",
+                detail="小红书登录成功。",
+            )
+            return session
+        if session.status != "pending":
+            _raise_login_terminal(writer, session)
+        image = session.qr_image
+        if image is None or image.mime_type != "image/png":
+            _stage(
+                writer,
+                "waiting_xhs_login",
+                "等待扫码登录小红书",
+                "failed",
+                detail="登录服务没有返回可用的二维码。",
+            )
+            raise XhsTripPlanningError(
+                "XHS_LOGIN_QR_MISSING",
+                "小红书登录二维码不可用，请稍后重试。",
+            )
+        writer(
+            XhsLoginRequiredEvent(
+                login_id=session.login_id,
+                expires_at=session.expires_at,
+                qr_mime_type="image/png",
+                qr_data_base64=image.data_base64,
+                message=session.message or "请使用小红书扫描二维码登录。",
+            )
+        )
+        return session
+
+    async def _wait_login(
+        self,
+        writer: Any,
+        session: XhsLoginSessionResult,
+    ) -> XhsLoginSessionResult:
+        try:
+            while True:
+                await asyncio.sleep(self._settings.xhs_login_poll_seconds)
+                current = await self._research_service.get_login_status(session.login_id)
+                if current.status == "pending":
+                    continue
+                if current.status == "succeeded":
+                    _stage(
+                        writer,
+                        "waiting_xhs_login",
+                        "等待扫码登录小红书",
+                        "success",
+                        detail="小红书登录成功。",
+                    )
+                    return current
+                _raise_login_terminal(writer, current)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(self._research_service.cancel_login(session.login_id))
+            except Exception as exc:
+                logger.warning(
+                    "Could not cancel XHS login session exception_type=%s",
+                    type(exc).__name__,
+                )
+            raise
+        except XhsResearchError as exc:
+            _stage(
+                writer,
+                "waiting_xhs_login",
+                "等待扫码登录小红书",
+                "failed",
+                detail=exc.message,
+            )
+            raise XhsTripPlanningError(exc.code, exc.message) from exc
+
+    async def _recover_login_after_search(self, writer: Any) -> None:
+        _stage(writer, "checking_xhs_login", "正在重新检查小红书登录状态", "running")
+        try:
+            login = await self._research_service.check_login()
+        except XhsResearchError as exc:
+            _stage(
+                writer,
+                "checking_xhs_login",
+                "正在重新检查小红书登录状态",
+                "failed",
+                detail=exc.message,
+            )
+            raise XhsTripPlanningError(exc.code, exc.message) from exc
+        _stage(
+            writer,
+            "checking_xhs_login",
+            "正在重新检查小红书登录状态",
+            "success",
+        )
+        if login.is_logged_in:
+            return
+        session = await self._start_login(writer)
+        if session.status == "pending":
+            await self._wait_login(writer, session)
+        _stage(
+            writer,
+            "searching_xhs",
+            "正在搜索小红书攻略",
+            "running",
+            detail="登录已恢复，正在重新搜索。",
+        )
+
     async def collect_xhs_evidence(self, state: XhsTripPlanningState) -> dict[str, Any]:
         request = state.get("request")
         if request is None or not request.destination_city or request.duration_days is None:
@@ -195,10 +386,19 @@ class _XhsTripPlanningRun:
                 _stage(writer, "reading_xhs_posts", "正在读取小红书笔记正文", "running")
 
         try:
-            research = await self._research_service.collect(
-                keyword,
-                on_search_complete=on_search_complete,
-            )
+            try:
+                research = await self._research_service.collect(
+                    keyword,
+                    on_search_complete=on_search_complete,
+                )
+            except XhsResearchError as exc:
+                if exc.code != "NOT_LOGGED_IN":
+                    raise
+                await self._recover_login_after_search(writer)
+                research = await self._research_service.collect(
+                    keyword,
+                    on_search_complete=on_search_complete,
+                )
         except XhsResearchError as exc:
             failed_stage = "reading_xhs_posts" if reading_started else "searching_xhs"
             display_name = "正在读取小红书笔记正文" if reading_started else "正在搜索小红书攻略"
@@ -299,7 +499,16 @@ class _XhsTripPlanningRun:
     def _route_after_requirements(state: XhsTripPlanningState) -> str:
         if state.get("missing_fields") or state.get("requirement_errors"):
             return "clarify"
-        return "collect"
+        return "login"
+
+    @staticmethod
+    def _route_after_login_check(state: XhsTripPlanningState) -> str:
+        return "logged_in" if state.get("xhs_logged_in") else "login_required"
+
+    @staticmethod
+    def _route_after_login_start(state: XhsTripPlanningState) -> str:
+        session = state.get("xhs_login_session")
+        return "logged_in" if session and session.status == "succeeded" else "wait"
 
     async def _structured(
         self,
@@ -520,6 +729,35 @@ def _stage(
             detail=detail,
         )
     )
+
+
+def _raise_login_terminal(writer: Any, session: XhsLoginSessionResult) -> None:
+    errors = {
+        "expired": (
+            "XHS_LOGIN_EXPIRED",
+            "小红书登录二维码已过期，请重新发起规划。",
+        ),
+        "cancelled": (
+            "XHS_LOGIN_CANCELLED",
+            "小红书登录已取消，请重新发起规划。",
+        ),
+        "failed": (
+            "XHS_LOGIN_FAILED",
+            "小红书登录失败，请稍后重试。",
+        ),
+    }
+    code, message = errors.get(
+        session.status,
+        ("XHS_LOGIN_FAILED", "小红书登录失败，请稍后重试。"),
+    )
+    _stage(
+        writer,
+        "waiting_xhs_login",
+        "等待扫码登录小红书",
+        "failed",
+        detail=session.message or message,
+    )
+    raise XhsTripPlanningError(code, message)
 
 
 __all__ = ["XhsTripPlanner", "XhsTripPlanningError", "build_search_keyword"]

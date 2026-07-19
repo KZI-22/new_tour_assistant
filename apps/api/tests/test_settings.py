@@ -76,6 +76,8 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("XHS_MCP_AUTH_TOKEN", "private-token")
     monkeypatch.setenv("XHS_MCP_TIMEOUT_SECONDS", "70")
     monkeypatch.setenv("XHS_EVIDENCE_MAX_CHARS", "8000")
+    monkeypatch.setenv("XHS_LOGIN_POLL_SECONDS", "2.5")
+    monkeypatch.setenv("XHS_SSE_HEARTBEAT_SECONDS", "16")
 
     settings = get_settings()
 
@@ -94,4 +96,6 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     assert settings.xhs_mcp_auth_token == "private-token"
     assert settings.xhs_mcp_timeout_seconds == 70
     assert settings.xhs_evidence_max_chars == 8000
+    assert settings.xhs_login_poll_seconds == 2.5
+    assert settings.xhs_sse_heartbeat_seconds == 16
     assert "private-token" not in repr(settings)

@@ -84,12 +84,21 @@ export type PlanningStageUpdate = {
   detail: string | null;
 };
 
+export type XhsLoginRequiredUpdate = {
+  login_id: string;
+  expires_at: string;
+  qr_mime_type: "image/png";
+  qr_data_base64: string;
+  message: string;
+};
+
 type StreamCallbacks = {
   onToken: (delta: string) => void;
   onConversation?: (conversation: { id: string; title: string }) => void;
   onToolCall?: (update: ToolCallUpdate) => void;
   onToolResult?: (update: ToolResultUpdate) => void;
   onPlanningStage?: (update: PlanningStageUpdate) => void;
+  onXhsLoginRequired?: (update: XhsLoginRequiredUpdate) => void;
   onDone?: () => void;
 };
 
@@ -253,6 +262,17 @@ export async function streamChat(
           status: data.status,
           detail: data.detail ?? null,
         });
+      }
+    } else if (parsed.event === "xhs_login_required") {
+      const data = parsed.data as Partial<XhsLoginRequiredUpdate>;
+      if (
+        data.login_id &&
+        data.expires_at &&
+        data.qr_mime_type === "image/png" &&
+        data.qr_data_base64 &&
+        data.message
+      ) {
+        callbacks.onXhsLoginRequired?.(data as XhsLoginRequiredUpdate);
       }
     } else if (parsed.event === "done") {
       callbacks.onDone?.();

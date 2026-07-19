@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -149,6 +150,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
         ) from exc
 
     service = request.app.state.chat_service
+    heartbeat_seconds = request.app.state.settings.xhs_sse_heartbeat_seconds
     stream = None
     try:
         stream = service.stream(
@@ -192,6 +194,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
     async def events() -> AsyncIterator[str]:
         chunks: list[str] = []
         finalized = False
+        next_event_task: asyncio.Task[ChatStreamEvent | str | None] | None = None
         try:
             yield _sse(
                 "conversation",
@@ -211,10 +214,23 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                 if text := _event_text(first_event):
                     chunks.append(text)
                 yield _chat_event_sse(first_event)
-            async for event in stream:
+            next_event_task = asyncio.create_task(anext(stream, None))
+            while True:
+                done, _ = await asyncio.wait(
+                    {next_event_task},
+                    timeout=heartbeat_seconds,
+                )
+                if not done:
+                    yield ": heartbeat\n\n"
+                    continue
+                event = next_event_task.result()
+                next_event_task = None
+                if event is None:
+                    break
                 if text := _event_text(event):
                     chunks.append(text)
                 yield _chat_event_sse(event)
+                next_event_task = asyncio.create_task(anext(stream, None))
             await conversation_service.finish_turn(
                 turn.assistant_message_id,
                 "".join(chunks),
@@ -265,6 +281,13 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                 },
             )
         finally:
+            if next_event_task is not None and not next_event_task.done():
+                next_event_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await next_event_task
+            if stream is not None:
+                with suppress(Exception):
+                    await stream.aclose()
             if not finalized:
                 await asyncio.shield(
                     _finish_safely(

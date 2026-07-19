@@ -27,10 +27,6 @@ def _load_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="The MCP boundary currently discards ImageContent.",
-)
 @pytest.mark.asyncio
 async def test_login_tool_response_preserves_structured_content_and_image(
     monkeypatch: pytest.MonkeyPatch,

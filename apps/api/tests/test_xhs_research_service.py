@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,14 +19,19 @@ from mcp.types import CallToolResult
 
 
 class StubMcpClient(XhsMcpClient):
-    def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, responses: dict[str, Any]) -> None:
         super().__init__("http://127.0.0.1:8765/mcp")
         self.responses = responses
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((name, arguments))
-        return self.responses[name]
+        response = self.responses[name]
+        if isinstance(response, tuple):
+            structured, images = response
+        else:
+            structured, images = response, []
+        return SimpleNamespace(structured_content=structured, images=images)
 
 
 @pytest.mark.asyncio
@@ -159,6 +165,97 @@ async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_supports_login_check_start_status_and_cancel() -> None:
+    pending = {
+        "login_id": "fixture-login",
+        "status": "pending",
+        "created_at": "2026-07-19T10:00:00+08:00",
+        "expires_at": "2026-07-19T10:05:00+08:00",
+        "is_logged_in": False,
+        "qr_mime_type": "image/png",
+        "message": "请扫码登录。",
+    }
+    image = SimpleNamespace(
+        mime_type="image/png",
+        data_base64="c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=",
+    )
+    client = StubMcpClient(
+        {
+            "xhs_check_login": {
+                "is_logged_in": False,
+                "checked_at": "2026-07-19T10:00:00+08:00",
+            },
+            "xhs_start_login": (pending, [image]),
+            "xhs_get_login_status": {**pending, "status": "succeeded", "is_logged_in": True},
+            "xhs_cancel_login": {**pending, "status": "cancelled"},
+        }
+    )
+
+    checked = await client.check_login()
+    started = await client.start_login()
+    succeeded = await client.get_login_status("fixture-login")
+    cancelled = await client.cancel_login("fixture-login")
+
+    assert checked.is_logged_in is False
+    assert started.status == "pending"
+    assert started.qr_image is not None
+    assert started.qr_image.data_base64 == image.data_base64
+    assert succeeded.status == "succeeded"
+    assert succeeded.is_logged_in is True
+    assert cancelled.status == "cancelled"
+    assert client.calls == [
+        ("xhs_check_login", {}),
+        ("xhs_start_login", {"force_restart": False}),
+        ("xhs_get_login_status", {"login_id": "fixture-login"}),
+        ("xhs_cancel_login", {"login_id": "fixture-login"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_accepts_already_succeeded_login_without_qr_image() -> None:
+    client = StubMcpClient(
+        {
+            "xhs_start_login": {
+                "login_id": "fixture-login",
+                "status": "succeeded",
+                "created_at": "2026-07-19T10:00:00+08:00",
+                "expires_at": "2026-07-19T10:05:00+08:00",
+                "is_logged_in": True,
+                "qr_mime_type": None,
+                "message": "已登录。",
+            }
+        }
+    )
+
+    started = await client.start_login()
+
+    assert started.status == "succeeded"
+    assert started.qr_image is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["pending", "succeeded", "expired", "cancelled", "failed"])
+async def test_mcp_client_accepts_all_confirmed_login_session_statuses(status: str) -> None:
+    client = StubMcpClient(
+        {
+            "xhs_get_login_status": {
+                "login_id": "fixture-login",
+                "status": status,
+                "created_at": "2026-07-19T10:00:00+08:00",
+                "expires_at": "2026-07-19T10:05:00+08:00",
+                "is_logged_in": status == "succeeded",
+                "qr_mime_type": "image/png",
+                "message": f"fixture {status}",
+            }
+        }
+    )
+
+    result = await client.get_login_status("fixture-login")
+
+    assert result.status == status
 
 
 class FakeReadClient:

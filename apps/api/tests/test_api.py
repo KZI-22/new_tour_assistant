@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -12,6 +13,7 @@ from app.schemas.tool_execution import (
     PlanningStageEvent,
     ToolCallEvent,
     ToolResultEvent,
+    XhsLoginRequiredEvent,
 )
 from app.services.agent_executor import ToolLoopLimitError
 from app.services.conversation_service import TurnContext
@@ -19,7 +21,7 @@ from app.services.tool_execution import ToolExecutionContext
 from fastapi.testclient import TestClient
 
 
-def make_client(tmp_path: Path) -> TestClient:
+def make_client(tmp_path: Path, *, heartbeat_seconds: float = 15) -> TestClient:
     config_path = tmp_path / "models.yaml"
     config_path.write_text(
         """
@@ -38,6 +40,7 @@ models:
         model_config_path=config_path,
         cors_origins=("http://localhost:3000",),
         log_level="WARNING",
+        xhs_sse_heartbeat_seconds=heartbeat_seconds,
     )
     return TestClient(create_app(settings))
 
@@ -149,6 +152,118 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assert 'event: message_end\ndata: {"type":"message_end"' in response.text
     assert f'event: done\ndata: {{"conversation_id":"{conversation_id}"}}' in response.text
     assert conversation_service.finished == (assistant_message_id, "你好", "completed")
+
+
+def test_stream_chat_serializes_login_qr_without_persisting_it(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    conversation_id = uuid.uuid4()
+    assistant_message_id = uuid.uuid4()
+
+    class FakeChatService:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            execution_context: ToolExecutionContext,
+        ) -> AsyncIterator[XhsLoginRequiredEvent | MessageDeltaEvent]:
+            del model_id, messages, execution_context
+            yield XhsLoginRequiredEvent(
+                login_id="fixture-login",
+                expires_at="2026-07-19T10:05:00+08:00",
+                qr_mime_type="image/png",
+                qr_data_base64="c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=",
+                message="请扫码登录。",
+            )
+            yield MessageDeltaEvent(delta="登录后完成。")
+
+    class FakeConversationService:
+        finished: tuple[uuid.UUID, str, str] | None = None
+
+        async def start_turn(
+            self, requested_id: uuid.UUID | None, model_id: str, content: str
+        ) -> TurnContext:
+            del requested_id, model_id
+            return TurnContext(
+                conversation_id=conversation_id,
+                conversation_title=content,
+                assistant_message_id=assistant_message_id,
+                messages=[ChatMessage(role="user", content=content)],
+            )
+
+        async def finish_turn(
+            self, message_id: uuid.UUID, content: str, message_status: str
+        ) -> None:
+            self.finished = (message_id, content, message_status)
+
+    conversation_service = FakeConversationService()
+    client.app.state.chat_service = FakeChatService()
+    client.app.state.conversation_service = conversation_service
+
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={"model_id": "test-model", "message": "做成都三日游攻略"},
+    )
+
+    assert response.status_code == 200
+    assert 'event: xhs_login_required\ndata: {"type":"xhs_login_required"' in response.text
+    assert "c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=" in response.text
+    assert conversation_service.finished == (assistant_message_id, "登录后完成。", "completed")
+
+
+def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> None:
+    client = make_client(tmp_path, heartbeat_seconds=0.01)
+    conversation_id = uuid.uuid4()
+    assistant_message_id = uuid.uuid4()
+
+    class FakeChatService:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            execution_context: ToolExecutionContext,
+        ) -> AsyncIterator[PlanningStageEvent | MessageDeltaEvent]:
+            del model_id, messages, execution_context
+            yield PlanningStageEvent(
+                stage="waiting_xhs_login",
+                display_name="等待扫码登录小红书",
+                status="running",
+            )
+            await asyncio.sleep(0.035)
+            yield MessageDeltaEvent(delta="扫码后继续。")
+
+    class FakeConversationService:
+        finished: tuple[uuid.UUID, str, str] | None = None
+
+        async def start_turn(
+            self, requested_id: uuid.UUID | None, model_id: str, content: str
+        ) -> TurnContext:
+            del requested_id, model_id
+            return TurnContext(
+                conversation_id=conversation_id,
+                conversation_title=content,
+                assistant_message_id=assistant_message_id,
+                messages=[ChatMessage(role="user", content=content)],
+            )
+
+        async def finish_turn(
+            self, message_id: uuid.UUID, content: str, message_status: str
+        ) -> None:
+            self.finished = (message_id, content, message_status)
+
+    conversation_service = FakeConversationService()
+    client.app.state.chat_service = FakeChatService()
+    client.app.state.conversation_service = conversation_service
+
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={"model_id": "test-model", "message": "登录后继续"},
+    )
+
+    assert response.status_code == 200
+    assert ": heartbeat\n\n" in response.text
+    assert conversation_service.finished == (assistant_message_id, "扫码后继续。", "completed")
 
 
 def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Path) -> None:

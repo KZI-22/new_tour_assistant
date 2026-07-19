@@ -4,6 +4,7 @@ import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -79,6 +80,11 @@ def _router_model(decision: TripRouteDecision | Exception) -> FakeHybridModel:
 class FakeResearchService:
     def __init__(self) -> None:
         self.keywords: list[str] = []
+        self.login_checks = 0
+
+    async def check_login(self) -> SimpleNamespace:
+        self.login_checks += 1
+        return SimpleNamespace(is_logged_in=True)
 
     async def collect(
         self,
@@ -194,6 +200,7 @@ async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
     assert "《成都三日攻略》" in answer
     assert "未查询机票、火车票、酒店库存或实时价格" in answer
     assert model.bind_calls == 0
+    assert research.login_checks == 1
 
 
 @pytest.mark.asyncio
@@ -235,6 +242,7 @@ async def test_xhs_graph_only_asks_for_missing_duration() -> None:
         "请告诉我准备游玩几天。"
     ]
     assert research.keywords == []
+    assert research.login_checks == 0
 
 
 @pytest.mark.asyncio

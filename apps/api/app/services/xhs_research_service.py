@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from app.clients.xhs_mcp_client import (
+    XhsLoginSessionResult,
+    XhsLoginStatusResult,
     XhsMcpClientError,
     XhsNoteDetailResult,
     XhsSearchItem,
@@ -26,6 +28,14 @@ class XhsResearchError(RuntimeError):
 
 
 class XhsReadClient(Protocol):
+    async def check_login(self) -> XhsLoginStatusResult: ...
+
+    async def start_login(self) -> XhsLoginSessionResult: ...
+
+    async def get_login_status(self, login_id: str) -> XhsLoginSessionResult: ...
+
+    async def cancel_login(self, login_id: str) -> XhsLoginSessionResult: ...
+
     async def search_notes(self, keyword: str) -> XhsSearchResult: ...
 
     async def get_note_detail(
@@ -47,6 +57,30 @@ class XhsResearchService:
         self._client = client
         self._evidence_max_chars = evidence_max_chars
 
+    async def check_login(self) -> XhsLoginStatusResult:
+        try:
+            return await self._client.check_login()
+        except XhsMcpClientError as exc:
+            raise _research_error(exc) from exc
+
+    async def start_login(self) -> XhsLoginSessionResult:
+        try:
+            return await self._client.start_login()
+        except XhsMcpClientError as exc:
+            raise _research_error(exc) from exc
+
+    async def get_login_status(self, login_id: str) -> XhsLoginSessionResult:
+        try:
+            return await self._client.get_login_status(login_id)
+        except XhsMcpClientError as exc:
+            raise _research_error(exc) from exc
+
+    async def cancel_login(self, login_id: str) -> XhsLoginSessionResult:
+        try:
+            return await self._client.cancel_login(login_id)
+        except XhsMcpClientError as exc:
+            raise _research_error(exc) from exc
+
     async def collect(
         self,
         keyword: str,
@@ -56,11 +90,7 @@ class XhsResearchService:
         try:
             search = await self._client.search_notes(keyword)
         except XhsMcpClientError as exc:
-            raise XhsResearchError(
-                exc.code,
-                exc.message,
-                retryable=exc.retryable,
-            ) from exc
+            raise _research_error(exc) from exc
 
         candidates = sorted(
             (
@@ -134,6 +164,14 @@ class XhsResearchService:
             posts=posts,
             warnings=warnings,
         )
+
+
+def _research_error(exc: XhsMcpClientError) -> XhsResearchError:
+    return XhsResearchError(
+        exc.code,
+        exc.message,
+        retryable=exc.retryable,
+    )
 
 
 __all__ = ["XhsReadClient", "XhsResearchError", "XhsResearchService"]

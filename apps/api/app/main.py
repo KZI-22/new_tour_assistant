@@ -102,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             evidence_max_chars=current_settings.xhs_evidence_max_chars,
         )
     application.state.model_registry = registry
+    application.state.settings = current_settings
     application.state.chat_service = ChatService(
         registry,
         travel_tools,

@@ -75,6 +75,8 @@ class Settings:
     xhs_mcp_auth_token: str | None = field(default=None, repr=False)
     xhs_mcp_timeout_seconds: float = 75
     xhs_evidence_max_chars: int = 12_000
+    xhs_login_poll_seconds: float = 2
+    xhs_sse_heartbeat_seconds: float = 15
 
     def __post_init__(self) -> None:
         positive_values = {
@@ -92,6 +94,8 @@ class Settings:
             "trip_planner_result_max_length": self.trip_planner_result_max_length,
             "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
             "xhs_evidence_max_chars": self.xhs_evidence_max_chars,
+            "xhs_login_poll_seconds": self.xhs_login_poll_seconds,
+            "xhs_sse_heartbeat_seconds": self.xhs_sse_heartbeat_seconds,
         }
         if any(value <= 0 for value in positive_values.values()):
             raise ValueError("Trip planner limits and timeouts must be positive.")
@@ -160,6 +164,8 @@ def get_settings() -> Settings:
         xhs_mcp_auth_token=os.getenv("XHS_MCP_AUTH_TOKEN") or None,
         xhs_mcp_timeout_seconds=float(os.getenv("XHS_MCP_TIMEOUT_SECONDS", "75")),
         xhs_evidence_max_chars=int(os.getenv("XHS_EVIDENCE_MAX_CHARS", "12000")),
+        xhs_login_poll_seconds=float(os.getenv("XHS_LOGIN_POLL_SECONDS", "2")),
+        xhs_sse_heartbeat_seconds=float(os.getenv("XHS_SSE_HEARTBEAT_SECONDS", "15")),
     )
 
 
