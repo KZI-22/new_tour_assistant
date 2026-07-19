@@ -94,6 +94,8 @@ class PlanningStageEvent(BaseModel):
         "collecting_pois",
         "collecting_weather",
         "calculating_routes",
+        "searching_xhs",
+        "reading_xhs_posts",
         "generating_itinerary",
         "validating_itinerary",
         "revising_itinerary",

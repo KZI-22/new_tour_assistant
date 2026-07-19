@@ -72,6 +72,10 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "35")
     monkeypatch.setenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "25")
     monkeypatch.setenv("TRIP_PLANNER_RESULT_MAX_LENGTH", "12000")
+    monkeypatch.setenv("XHS_MCP_URL", "http://xhs.internal:8765/mcp/")
+    monkeypatch.setenv("XHS_MCP_AUTH_TOKEN", "private-token")
+    monkeypatch.setenv("XHS_MCP_TIMEOUT_SECONDS", "70")
+    monkeypatch.setenv("XHS_EVIDENCE_MAX_CHARS", "8000")
 
     settings = get_settings()
 
@@ -86,3 +90,8 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     assert settings.trip_planner_model_timeout_seconds == 35
     assert settings.trip_planner_request_extraction_timeout_seconds == 25
     assert settings.trip_planner_result_max_length == 12000
+    assert settings.xhs_mcp_url == "http://xhs.internal:8765/mcp"
+    assert settings.xhs_mcp_auth_token == "private-token"
+    assert settings.xhs_mcp_timeout_seconds == 70
+    assert settings.xhs_evidence_max_chars == 8000
+    assert "private-token" not in repr(settings)

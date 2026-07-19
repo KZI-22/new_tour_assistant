@@ -6,7 +6,12 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 TripRoute = Literal["general_agent", "trip_planner", "clarify"]
 TripActionHint = Literal["none", "create", "modify"]
-ClarificationKind = Literal["none", "query_or_plan", "create_or_modify"]
+ClarificationKind = Literal[
+    "none",
+    "query_or_plan",
+    "create_or_modify",
+    "plan_or_query_first",
+]
 RouteReasonCode = Literal[
     "general_conversation",
     "single_travel_query",
@@ -23,9 +28,8 @@ _REASONS_BY_ROUTE: dict[TripRoute, set[RouteReasonCode]] = {
         "create_trip",
         "modify_trip",
         "resume_draft",
-        "mixed_with_planning",
     },
-    "clarify": {"ambiguous_persistence"},
+    "clarify": {"ambiguous_persistence", "mixed_with_planning"},
 }
 
 
@@ -65,6 +69,9 @@ class ResolvedTripRoute(TripRouteDecision):
 _CLARIFICATION_MESSAGES: dict[ClarificationKind, str] = {
     "query_or_plan": "你是只想查询相关信息，还是希望把结果加入行程？",
     "create_or_modify": "你是想新建一份行程，还是修改当前已有的行程？",
+    "plan_or_query_first": (
+        "这个请求同时包含行程规划和单项查询。你想先生成城市行程，还是先查询机票、火车票或酒店信息？"
+    ),
     "none": "",
 }
 

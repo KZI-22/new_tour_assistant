@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.clients.amap_client import AmapClient
 from app.clients.flyai_client import FlyAIClient
+from app.clients.xhs_mcp_client import XhsMcpClient
 from app.core.model_registry import ModelRegistry
 from app.core.request_context import RequestContextMiddleware
 from app.core.settings import Settings, get_settings
@@ -18,6 +19,7 @@ from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
 from app.services.tool_call_log_service import ToolCallLogService
 from app.services.trip_plan_service import TripPlanService
+from app.services.xhs_research_service import XhsResearchService
 from app.tools import build_travel_tools
 
 
@@ -87,6 +89,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_concurrency=current_settings.flyai_max_concurrency,
     )
     travel_tools = build_travel_tools(flyai_client, amap_client)
+    xhs_mcp_client = None
+    xhs_research_service = None
+    if current_settings.trip_planner_enabled:
+        xhs_mcp_client = XhsMcpClient(
+            current_settings.xhs_mcp_url,
+            auth_token=current_settings.xhs_mcp_auth_token,
+            timeout_seconds=current_settings.xhs_mcp_timeout_seconds,
+        )
+        xhs_research_service = XhsResearchService(
+            xhs_mcp_client,
+            evidence_max_chars=current_settings.xhs_evidence_max_chars,
+        )
     application.state.model_registry = registry
     application.state.chat_service = ChatService(
         registry,
@@ -94,12 +108,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_tool_rounds=current_settings.max_tool_rounds,
         tool_timeout_seconds=current_settings.tool_execution_timeout_seconds,
         tool_call_log_writer=tool_call_log_service,
-        trip_plan_service=trip_plan_service,
+        xhs_research_service=xhs_research_service,
         trip_planner_settings=current_settings,
     )
     application.state.conversation_service = conversation_service
     application.state.tool_call_log_service = tool_call_log_service
     application.state.trip_plan_service = trip_plan_service
+    application.state.xhs_mcp_client = xhs_mcp_client
+    application.state.xhs_research_service = xhs_research_service
     application.state.flyai_client = flyai_client
     application.state.amap_client = amap_client
     application.state.travel_tools = travel_tools

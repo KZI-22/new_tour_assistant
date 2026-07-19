@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import Any
+
+import pytest
+from app.clients import xhs_mcp_client as xhs_client_module
+from app.clients.xhs_mcp_client import (
+    XhsMcpClient,
+    XhsMcpClientError,
+    XhsNoteDetail,
+    XhsNoteDetailResult,
+    XhsSearchItem,
+    XhsSearchResult,
+)
+from app.services.xhs_research_service import XhsResearchError, XhsResearchService
+from mcp.types import CallToolResult
+
+
+class StubMcpClient(XhsMcpClient):
+    def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
+        super().__init__("http://127.0.0.1:8765/mcp")
+        self.responses = responses
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, arguments))
+        return self.responses[name]
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_client_sends_bearer_and_reads_structured_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["http_kwargs"] = kwargs
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+    @asynccontextmanager
+    async def fake_streamable_http_client(url: str, **kwargs: Any):
+        captured["url"] = url
+        captured["stream_kwargs"] = kwargs
+        yield object(), object(), lambda: None
+
+    class FakeSession:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            captured["initialized"] = True
+
+        async def call_tool(self, name: str, **kwargs: Any) -> CallToolResult:
+            captured["tool"] = (name, kwargs)
+            return CallToolResult(
+                content=[],
+                structuredContent={"keyword": "成都攻略", "items": []},
+                isError=False,
+            )
+
+    monkeypatch.setattr(xhs_client_module.httpx, "AsyncClient", FakeHttpClient)
+    monkeypatch.setattr(
+        xhs_client_module,
+        "streamable_http_client",
+        fake_streamable_http_client,
+    )
+    monkeypatch.setattr(xhs_client_module, "ClientSession", FakeSession)
+
+    result = await XhsMcpClient(
+        "http://xhs.internal:8765/mcp",
+        auth_token="private-token",
+    ).search_notes("成都攻略")
+
+    assert result.keyword == "成都攻略"
+    assert captured["http_kwargs"]["headers"] == {"Authorization": "Bearer private-token"}
+    assert captured["url"] == "http://xhs.internal:8765/mcp"
+    assert captured["stream_kwargs"]["terminate_on_close"] is False
+    assert captured["initialized"] is True
+
+
+def _search_item(index: int, *, detail_available: bool = True) -> XhsSearchItem:
+    return XhsSearchItem(
+        note_id=f"note-{index}",
+        xsec_token=f"secret-{index}",
+        detail_available=detail_available,
+        index=index,
+        title=f"搜索标题 {index}",
+        author={"nickname": f"作者 {index}"},
+    )
+
+
+def _detail(index: int, description: str | None = None) -> XhsNoteDetailResult:
+    return XhsNoteDetailResult(
+        note_id=f"note-{index}",
+        detail=XhsNoteDetail(
+            note_id=f"note-{index}",
+            title=f"详情标题 {index}",
+            description=description or f"第 {index} 篇攻略正文",
+            published_at="2026-07-01T12:00:00+08:00",
+            author={"nickname": f"详情作者 {index}"},
+            interactions={"liked_count": "100", "collected_count": "50"},
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None:
+    client = StubMcpClient(
+        {
+            "xhs_search_notes": {
+                "keyword": "成都 3天 旅游攻略",
+                "items": [
+                    {
+                        "note_id": "note-1",
+                        "xsec_token": "private-token",
+                        "detail_available": True,
+                        "index": 0,
+                    }
+                ],
+            },
+            "xhs_get_note_detail": {
+                "note_id": "note-1",
+                "detail": {
+                    "note_id": "note-1",
+                    "title": "成都攻略",
+                    "description": "正文",
+                },
+            },
+        }
+    )
+
+    search = await client.search_notes("成都 3天 旅游攻略")
+    await client.get_note_detail(search.items[0].note_id, search.items[0].xsec_token)
+
+    assert client.calls == [
+        (
+            "xhs_search_notes",
+            {"keyword": "成都 3天 旅游攻略", "sort_by": "relevance"},
+        ),
+        (
+            "xhs_get_note_detail",
+            {
+                "note_id": "note-1",
+                "xsec_token": "private-token",
+                "comment_mode": "none",
+            },
+        ),
+    ]
+
+
+class FakeReadClient:
+    def __init__(self) -> None:
+        self.search = XhsSearchResult(
+            keyword="成都 3天 旅游攻略",
+            items=[_search_item(2), _search_item(0), _search_item(1)],
+        )
+        self.detail_calls: list[tuple[str, str]] = []
+
+    async def search_notes(self, _: str) -> XhsSearchResult:
+        return self.search
+
+    async def get_note_detail(self, note_id: str, token: str) -> XhsNoteDetailResult:
+        self.detail_calls.append((note_id, token))
+        if note_id == "note-0":
+            raise XhsMcpClientError("NOTE_UNAVAILABLE", "unavailable")
+        return _detail(int(note_id.rsplit("-", 1)[1]))
+
+
+@pytest.mark.asyncio
+async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private() -> None:
+    client = FakeReadClient()
+    counts: list[int] = []
+
+    result = await XhsResearchService(client, evidence_max_chars=100).collect(
+        "成都 3天 旅游攻略",
+        on_search_complete=counts.append,
+    )
+
+    assert counts == [3]
+    assert [post.note_id for post in result.posts] == ["note-1", "note-2"]
+    assert client.detail_calls == [
+        ("note-0", "secret-0"),
+        ("note-1", "secret-1"),
+        ("note-2", "secret-2"),
+    ]
+    assert "secret-" not in result.model_dump_json()
+    assert result.warnings == ["有 1 篇候选笔记未能读取，已跳过。"]
+
+
+class EmptyReadClient:
+    async def search_notes(self, keyword: str) -> XhsSearchResult:
+        return XhsSearchResult(keyword=keyword, items=[])
+
+    async def get_note_detail(self, note_id: str, token: str) -> XhsNoteDetailResult:
+        raise AssertionError((note_id, token))
+
+
+@pytest.mark.asyncio
+async def test_research_reports_empty_search_without_calling_details() -> None:
+    with pytest.raises(XhsResearchError, match="没有找到") as raised:
+        await XhsResearchService(EmptyReadClient()).collect("不存在的城市 2天 旅游攻略")
+
+    assert raised.value.code == "NO_RESULTS"

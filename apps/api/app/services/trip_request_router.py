@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections.abc import Sequence
 from datetime import date
 from typing import Literal
 
@@ -24,21 +26,24 @@ ROUTER_SYSTEM_PROMPT = """你只负责选择下一条执行链路，不回答用
 可选链路：
 - general_agent：普通聊天、旅游知识问答、单项航班/火车/酒店/天气/POI/路线查询、
   不写入行程的推荐或创作请求。
-- trip_planner：创建、安排、修改或重新规划结构化行程；查询数据并明确加入行程；
-  同时包含规划和单项查询的多意图请求。
-- clarify：仅当普通查询与创建/修改持久化行程之间确实无法判断时使用。
+- trip_planner：基于小红书内容创建、安排、修改或重新规划一个城市的多日旅游攻略。
+  该链路只需要目标城市和游玩天数，不负责查询机票、火车票或酒店。
+- clarify：请求同时包含旅游规划与机票/火车票/酒店等单项查询时，询问用户先做哪一项；
+  或仅当普通查询与创建/修改行程之间确实无法判断时使用。
 
-必须结合最近对话和当前行程状态理解省略表达，不能只看最新一句：
-- 草稿等待补充时，日期、天数、人数、预算、出发地或偏好等简短回复进入 trip_planner，
-  trip_action_hint 使用 create，reason_code 使用 resume_draft。
+必须结合最近对话理解省略表达，不能只看最新一句：
+- 对目标城市或游玩天数的简短补充、对刚生成攻略的调整进入 trip_planner。
 - 仅查询旅行数据且没有要求写入行程时进入 general_agent。
-- 查询后加入行程，或规划同时要求查询/创作时进入 trip_planner。
-- 只有确实需要确认是否写入行程时才进入 clarify。
+- 同时要求规划以及查询机票、火车票或酒店时进入 clarify，clarification_kind 使用
+  plan_or_query_first，reason_code 使用 mixed_with_planning。
+- “亲子、美食、轻松”等偏好不会改变链路；只要核心诉求是生成多日城市行程，就进入
+  trip_planner。
 
-trip_action_hint 仅提示创建或修改：没有正式方案时不要坚持 modify。
-clarify 时，查询还是写入行程使用 query_or_plan；新建还是修改使用 create_or_modify。
-reason_code 应与链路一致：普通对话/单项查询、创建/修改/续接草稿/混合规划，
-或无法判断是否持久化，分别选择对应枚举。
+trip_action_hint 仅提示创建或修改：新攻略使用 create，对最近攻略的调整使用 modify。
+clarify 时，混合请求使用 plan_or_query_first；查询还是写入行程使用 query_or_plan；
+新建还是修改使用 create_or_modify。
+reason_code 应与链路一致：普通对话/单项查询、创建/修改、混合规划或无法判断，分别选择
+对应枚举。
 只输出符合 TripRouteDecision 的严格结构化结果。"""
 
 
@@ -79,6 +84,10 @@ class TripRequestRouter:
         *,
         stored: StoredTripPlan | None,
     ) -> ResolvedTripRoute:
+        latest_user_message = next(
+            (message.content for message in reversed(messages) if message.role == "user"),
+            "",
+        )
         try:
             context = build_route_context(messages, stored=stored)
             model, timeout_seconds = self._registry.create_router_model()
@@ -103,11 +112,10 @@ class TripRequestRouter:
             )
         except Exception as exc:
             logger.warning(
-                "Trip request router failed; using general agent fallback "
-                "exception_type=%s",
+                "Trip request router failed; using deterministic fallback exception_type=%s",
                 type(exc).__name__,
             )
-            return fallback_route()
+            return fallback_route(latest_user_message, recent_messages=messages)
 
 
 def build_route_context(
@@ -125,11 +133,7 @@ def build_route_context(
     ]
     recent_messages = effective_messages[-_MAX_CONTEXT_MESSAGES:]
     latest_user_message = next(
-        (
-            message.content
-            for message in reversed(effective_messages)
-            if message.role == "user"
-        ),
+        (message.content for message in reversed(effective_messages) if message.role == "user"),
         "",
     )
 
@@ -163,13 +167,111 @@ def resolve_planning_intent(
     return "new_trip_plan"
 
 
-def fallback_route() -> ResolvedTripRoute:
+def fallback_route(
+    latest_user_message: str = "",
+    *,
+    recent_messages: Sequence[ChatMessage] | None = None,
+) -> ResolvedTripRoute:
+    if _looks_like_mixed_planning_request(latest_user_message):
+        return ResolvedTripRoute(
+            route="clarify",
+            trip_action_hint="none",
+            clarification_kind="plan_or_query_first",
+            reason_code="mixed_with_planning",
+            source="fallback",
+        )
+    if _looks_like_plan_revision_follow_up(latest_user_message, recent_messages):
+        return ResolvedTripRoute(
+            route="trip_planner",
+            trip_action_hint="modify",
+            clarification_kind="none",
+            reason_code="modify_trip",
+            source="fallback",
+        )
+    if _looks_like_planning_clarification_reply(recent_messages):
+        return ResolvedTripRoute(
+            route="trip_planner",
+            trip_action_hint="create",
+            clarification_kind="none",
+            reason_code="create_trip",
+            source="fallback",
+        )
+    if _looks_like_trip_planning_request(latest_user_message):
+        return ResolvedTripRoute(
+            route="trip_planner",
+            trip_action_hint="create",
+            clarification_kind="none",
+            reason_code="create_trip",
+            source="fallback",
+        )
     return ResolvedTripRoute(
         route="general_agent",
         trip_action_hint="none",
         clarification_kind="none",
         reason_code="general_conversation",
         source="fallback",
+    )
+
+
+def _looks_like_trip_planning_request(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized:
+        return False
+    patterns = (
+        r"(?:帮我|请帮我).{0,6}(?:规划|制定|安排)",
+        (
+            r"(?:规划|制定|安排).{0,16}(?:[零〇一二两三四五六七八九十\d]+\s*[天日]|"
+            r"行程|旅行|旅游|攻略|旅|游)"
+        ),
+        r"(?:生成|做|写).{0,8}(?:攻略|行程)",
+        r"[零〇一二两三四五六七八九十\d]+\s*[天日].{0,8}(?:游|旅|攻略|行程)",
+        r"(?:修改|调整|重做|重新规划).{0,12}(?:攻略|行程|第[零一二三四五六七八九十\d]+天)",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _looks_like_mixed_planning_request(text: str) -> bool:
+    if not _looks_like_trip_planning_request(text):
+        return False
+    query_target = r"(?:机票|航班|火车票|火车|高铁票|高铁|酒店|住宿)"
+    query_action = r"(?:查|查询|搜索|价格|票价|余票|库存|预订|推荐)"
+    return bool(
+        re.search(rf"{query_action}.{{0,12}}{query_target}", text)
+        or re.search(rf"{query_target}.{{0,12}}{query_action}", text)
+    )
+
+
+def _looks_like_planning_clarification_reply(
+    messages: Sequence[ChatMessage] | None,
+) -> bool:
+    if not messages:
+        return False
+    previous_assistant = next(
+        (message.content for message in reversed(messages[:-1]) if message.role == "assistant"),
+        "",
+    )
+    markers = ("目标城市和游玩天数", "想去的目标城市", "准备游玩几天")
+    return any(marker in previous_assistant for marker in markers)
+
+
+def _looks_like_plan_revision_follow_up(
+    text: str,
+    messages: Sequence[ChatMessage] | None,
+) -> bool:
+    if not messages:
+        return False
+    has_recent_plan = any(
+        message.role == "assistant"
+        and ("参考的小红书笔记" in message.content or "## 第 1 天" in message.content)
+        for message in messages[-8:-1]
+    )
+    if not has_recent_plan:
+        return False
+    return bool(
+        re.search(
+            r"(?:第[零〇一二两三四五六七八九十\d]+天|修改|调整|换成|删掉|增加|轻松|紧凑|不要)",
+            text,
+        )
     )
 
 

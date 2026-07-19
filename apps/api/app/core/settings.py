@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -71,6 +71,10 @@ class Settings:
     trip_planner_model_timeout_seconds: float = 45
     trip_planner_request_extraction_timeout_seconds: float = 30
     trip_planner_result_max_length: int = 12_000
+    xhs_mcp_url: str = "http://127.0.0.1:8765/mcp"
+    xhs_mcp_auth_token: str | None = field(default=None, repr=False)
+    xhs_mcp_timeout_seconds: float = 75
+    xhs_evidence_max_chars: int = 12_000
 
     def __post_init__(self) -> None:
         positive_values = {
@@ -86,6 +90,8 @@ class Settings:
                 self.trip_planner_request_extraction_timeout_seconds
             ),
             "trip_planner_result_max_length": self.trip_planner_result_max_length,
+            "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
+            "xhs_evidence_max_chars": self.xhs_evidence_max_chars,
         }
         if any(value <= 0 for value in positive_values.values()):
             raise ValueError("Trip planner limits and timeouts must be positive.")
@@ -93,6 +99,8 @@ class Settings:
             raise ValueError("trip_planner_max_revisions cannot be negative.")
         if self.amap_min_request_interval_seconds < 0:
             raise ValueError("amap_min_request_interval_seconds cannot be negative.")
+        if self.trip_planner_enabled and not self.xhs_mcp_url.startswith(("http://", "https://")):
+            raise ValueError("xhs_mcp_url must use HTTP or HTTPS.")
 
 
 def get_settings() -> Settings:
@@ -136,9 +144,7 @@ def get_settings() -> Settings:
             os.getenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "16")
         ),
         trip_planner_max_hotel_options=int(os.getenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "10")),
-        trip_planner_max_hotel_geocodes=int(
-            os.getenv("TRIP_PLANNER_MAX_HOTEL_GEOCODES", "3")
-        ),
+        trip_planner_max_hotel_geocodes=int(os.getenv("TRIP_PLANNER_MAX_HOTEL_GEOCODES", "3")),
         trip_planner_max_daily_activities=int(os.getenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "5")),
         trip_planner_tool_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_TOOL_TIMEOUT_SECONDS", "130")
@@ -150,6 +156,10 @@ def get_settings() -> Settings:
             os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")
         ),
         trip_planner_result_max_length=int(os.getenv("TRIP_PLANNER_RESULT_MAX_LENGTH", "12000")),
+        xhs_mcp_url=(os.getenv("XHS_MCP_URL") or "http://127.0.0.1:8765/mcp").rstrip("/"),
+        xhs_mcp_auth_token=os.getenv("XHS_MCP_AUTH_TOKEN") or None,
+        xhs_mcp_timeout_seconds=float(os.getenv("XHS_MCP_TIMEOUT_SECONDS", "75")),
+        xhs_evidence_max_chars=int(os.getenv("XHS_EVIDENCE_MAX_CHARS", "12000")),
     )
 
 

@@ -187,6 +187,16 @@ def test_route_decision_rejects_invalid_field_combinations(
         TripRouteDecision.model_validate(invalid)
 
 
+def test_mixed_planning_reason_requires_clarification_route() -> None:
+    decision = TripRouteDecision(
+        route="clarify",
+        clarification_kind="plan_or_query_first",
+        reason_code="mixed_with_planning",
+    )
+
+    assert decision.route == "clarify"
+
+
 @pytest.mark.parametrize(
     ("hint", "has_plan", "has_draft", "reason", "expected"),
     [
@@ -245,7 +255,7 @@ def test_planner_compatibility_mapping(
         ),
     ],
 )
-async def test_router_failures_fall_back_to_general_agent(
+async def test_router_failures_use_deterministic_planning_fallback(
     registry: FakeRegistry,
 ) -> None:
     result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
@@ -253,7 +263,51 @@ async def test_router_failures_fall_back_to_general_agent(
         stored=None,
     )
 
-    assert result.route == "general_agent"
+    assert result.route == "trip_planner"
     assert result.source == "fallback"
-    assert result.trip_action_hint == "none"
+    assert result.trip_action_hint == "create"
     assert result.clarification_kind == "none"
+
+
+@pytest.mark.asyncio
+async def test_router_failure_detects_mixed_planning_request() -> None:
+    registry = FakeRegistry(None, factory_error=RuntimeError("not configured"))
+
+    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
+        [ChatMessage(role="user", content="帮我规划成都三日游，再查一下往返机票")],
+        stored=None,
+    )
+
+    assert result.route == "clarify"
+    assert result.clarification_kind == "plan_or_query_first"
+    assert result.reason_code == "mixed_with_planning"
+
+
+@pytest.mark.asyncio
+async def test_router_failure_detects_plan_without_trip_suffix() -> None:
+    registry = FakeRegistry(None, factory_error=RuntimeError("not configured"))
+
+    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
+        [ChatMessage(role="user", content="帮我规划成都3天")],
+        stored=None,
+    )
+
+    assert result.route == "trip_planner"
+    assert result.reason_code == "create_trip"
+
+
+@pytest.mark.asyncio
+async def test_router_failure_resumes_city_and_duration_clarification() -> None:
+    registry = FakeRegistry(None, factory_error=RuntimeError("not configured"))
+
+    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
+        [
+            ChatMessage(role="user", content="帮我规划杭州旅行"),
+            ChatMessage(role="assistant", content="请告诉我准备游玩几天。"),
+            ChatMessage(role="user", content="3天"),
+        ],
+        stored=None,
+    )
+
+    assert result.route == "trip_planner"
+    assert result.trip_action_hint == "create"

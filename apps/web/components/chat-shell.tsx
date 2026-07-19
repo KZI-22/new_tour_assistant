@@ -50,8 +50,8 @@ type ChatMessage = ApiChatMessage & {
 
 const suggestions = [
   "帮我规划一趟 5 天的东京美食之旅",
-  "第一次去云南，哪些地方值得安排？",
-  "设计一个适合亲子的周末短途旅行",
+  "帮我做一份成都 3 天小红书攻略",
+  "设计一个适合亲子的上海 2 天行程",
   "如何控制欧洲自由行的整体预算？",
 ];
 
@@ -426,7 +426,7 @@ export function ChatShell() {
             当前阶段
           </div>
           <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-            航班、火车、酒店、天气与地图工具已接入，查询过程会显示在回复中。
+            城市行程会参考小红书笔记生成；机票、火车和酒店仍由单项查询处理。
           </p>
         </div>
       </aside>
@@ -521,7 +521,7 @@ export function ChatShell() {
                   下一站，去哪里？
                 </h1>
                 <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)] md:text-base">
-                  和你的 AI 旅行助手聊聊灵感、路线与预算。实时查询结果仍可能变化，请在出行前再次确认。
+                  告诉我目标城市和游玩天数，我会结合小红书笔记整理一份分日攻略。
                 </p>
                 <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {suggestions.map((suggestion) => (

@@ -10,16 +10,16 @@
 - 单 Agent 工具调用闭环，支持多轮决策、同轮并发、统一错误和最大轮数限制。
 - SSE 工具调用状态与前端进度展示，以及脱敏的 PostgreSQL 工具调用审计日志。
 - 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
-- LangGraph 结构化行程规划，支持必要信息追问、实时数据采集、自动校验与有限次修订。
-- PostgreSQL `JSONB` 行程方案及不可变历史版本，支持基于当前方案的局部修改。
+- 独立的小红书 LangGraph 规划链路，只提取目标城市和游玩天数，最多结合两篇笔记正文生成攻略。
+- 通过 Streamable HTTP 接入 `xhs-read-mcp`，浏览器、登录状态和正文读取与主 API 进程隔离。
 - SSE `planning_stage` 规划阶段事件与独立的前端进度展示。
 - Next.js + TypeScript + Tailwind CSS 的响应式聊天界面。
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
-系统会先用确定性规则区分普通聊天/单项查询和完整行程规划。前两类继续使用原有
-`AgentExecutor` 工具循环；完整规划和已有方案修改进入 LangGraph。V1 使用一个编排图、少量
-结构化 LLM 节点和确定性业务节点，没有把九个工具包装成九个子 Agent。
+系统先区分普通聊天/单项查询和城市旅游规划。前两类继续使用原有 `AgentExecutor` 工具循环；
+城市规划和基于最近对话的攻略调整进入独立的小红书 LangGraph。混合请求会先询问用户要执行
+规划还是单项查询，不会让规划图查询机票、火车票或酒店。
 
 ## 项目结构
 
@@ -108,26 +108,34 @@ TOOL_EXECUTION_TIMEOUT_SECONDS=130
 `TOOL_EXECUTION_TIMEOUT_SECONDS` 是单个工具调用的外层安全超时；它应略大于供应商客户端自身的
 超时与重试总时长。
 
-结构化行程规划配置：
+小红书行程规划配置：
 
 ```dotenv
 TRIP_PLANNER_ENABLED=true
 TRIP_PLANNER_MAX_DAYS=5
-TRIP_PLANNER_MAX_REVISIONS=2
-TRIP_PLANNER_MAX_POI_CANDIDATES=20
-TRIP_PLANNER_MAX_TRANSPORT_OPTIONS=16
-TRIP_PLANNER_MAX_HOTEL_OPTIONS=10
-TRIP_PLANNER_MAX_HOTEL_GEOCODES=3
-TRIP_PLANNER_MAX_DAILY_ACTIVITIES=5
-TRIP_PLANNER_TOOL_TIMEOUT_SECONDS=130
 TRIP_PLANNER_MODEL_TIMEOUT_SECONDS=45
 TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS=30
-TRIP_PLANNER_RESULT_MAX_LENGTH=12000
+XHS_MCP_URL=http://127.0.0.1:8765/mcp
+XHS_MCP_AUTH_TOKEN=copy-the-token-from-xhs-read-mcp
+XHS_MCP_TIMEOUT_SECONDS=75
+XHS_EVIDENCE_MAX_CHARS=12000
 ```
 
-V1 支持单个主要目的地和 2–5 天行程。独立的交通、酒店、POI 和天气查询会并发执行；POI
-返回坐标后再执行距离矩阵和代表性路线查询。工具失败可以受控降级，但回复会明确标记缺失数据，
-不会将模型估算包装成实时价格、班次或天气。
+规划链路支持一个目标城市和 1–5 天行程。搜索词固定由城市和天数组合；搜索后按结果顺序读取
+最多两篇可用正文，`xsec_token` 只在 MCP 客户端内部使用，不进入 LangGraph 状态、模型提示、
+日志或数据库。用户原始表达会作为美食、亲子、节奏等软偏好保留，但不会被额外提取成必填字段。
+
+在启动后端前，需要在本机或可访问的私有网络中运行 `xhs-read-mcp`。使用其 Docker Compose 时：
+
+```powershell
+Set-Location <xhs-read-mcp-directory>
+docker compose up -d
+docker compose logs xhs-mcp
+```
+
+首次使用先通过 MCP 登录工具完成扫码，并把服务日志中的地址和 Bearer Token 配置到本项目。
+MCP 必须在某处持续运行；Streamable HTTP 允许它位于 sidecar 或远程内网服务器，但不建议将
+当前单用户服务直接暴露到公网。
 
 `.env` 已被 Git 忽略，不要把真实密钥写入 `config/models.yaml` 或提交到仓库。
 
@@ -180,8 +188,9 @@ conda activate py312
 alembic upgrade head
 ```
 
-迁移 `20260714_0003` 新增 `travel_plans` 和 `travel_plan_versions`。澄清中的需求以 version 0
-草稿保存；第一个完整方案生成 version 1，每次有效修改递增版本并保留旧版本。
+迁移 `20260714_0003` 新增的 `travel_plans` 和 `travel_plan_versions` 属于旧结构化规划图。
+新小红书规划链路只依赖现有会话消息持久化，不再写入这两张表；旧表和已有数据暂时保留，
+不会在本次链路切换中删除。
 
 数据库使用 Docker named volume `postgres_data` 持久保存。普通的 `docker compose down`
 不会删除数据；除非确定要清空所有本地会话，否则不要使用 `docker compose down -v`。
@@ -225,9 +234,9 @@ python -m pytest
 ruff check .
 ```
 
-行程规划的 Fake Model/Fake Tool 测试覆盖请求路由、缺失字段追问、并发数据采集、结构化生成、
-确定性校验、自动修订上限、版本持久化边界和 SSE 阶段事件。数据库、FlyAI、高德及真实模型测试
-仍按对应环境变量显式启用，避免默认消耗外部配额。
+小红书规划测试覆盖请求路由、仅城市/天数追问、搜索词组合、搜索结果与详情字段对齐、最多两篇
+正文选择、Token 隔离、结构化生成和 SSE 阶段事件。MCP 单元测试使用 Fake Client，不访问真实
+小红书；数据库、FlyAI、高德及真实模型测试仍按对应环境变量显式启用，避免默认消耗外部配额。
 
 FlyAI 单元测试全部使用 mock，不消耗请求额度。若要手工执行一次真实航班集成测试，先确认
 `flyai --help` 可用，再在 PowerShell 中设置测试条件：
