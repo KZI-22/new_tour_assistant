@@ -165,9 +165,7 @@ async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
         model,
         _router_model(
             TripRouteDecision(
-                route="trip_planner",
-                trip_action_hint="create",
-                reason_code="create_trip",
+                route="xhs_trip_planner",
             )
         ),
     )
@@ -214,9 +212,7 @@ async def test_xhs_graph_only_asks_for_missing_duration() -> None:
         model,
         _router_model(
             TripRouteDecision(
-                route="trip_planner",
-                trip_action_hint="create",
-                reason_code="create_trip",
+                route="xhs_trip_planner",
             )
         ),
     )
@@ -246,7 +242,7 @@ async def test_chat_service_keeps_single_query_on_existing_agent_executor() -> N
     model = FakeHybridModel({})
     registry = FakeRegistry(
         model,
-        _router_model(TripRouteDecision(route="general_agent", reason_code="single_travel_query")),
+        _router_model(TripRouteDecision(route="general_agent")),
     )
     service = ChatService(
         registry,  # type: ignore[arg-type]
@@ -272,15 +268,22 @@ async def test_chat_service_keeps_single_query_on_existing_agent_executor() -> N
 
 
 @pytest.mark.asyncio
-async def test_mixed_request_is_clarified_without_running_either_chain() -> None:
-    model = FakeHybridModel({})
+async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None:
+    model = FakeHybridModel(
+        {
+            "XhsTripRequestExtraction": [
+                XhsTripRequestExtraction(
+                    request=XhsTripRequest(destination_city="成都", duration_days=3)
+                )
+            ],
+            "XhsItineraryPlan": [_plan()],
+        }
+    )
     registry = FakeRegistry(
         model,
         _router_model(
             TripRouteDecision(
-                route="clarify",
-                clarification_kind="plan_or_query_first",
-                reason_code="mixed_with_planning",
+                route="xhs_trip_planner",
             )
         ),
     )
@@ -300,8 +303,8 @@ async def test_mixed_request_is_clarified_without_running_either_chain() -> None
         )
     ]
 
-    assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == [
-        "这个请求同时包含行程规划和单项查询。你想先生成城市行程，还是先查询机票、火车票或酒店信息？"
-    ]
-    assert research.keywords == []
+    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+    assert research.keywords == ["成都 3天 旅游攻略"]
+    assert "成都三日小红书攻略" in answer
+    assert "未查询机票、火车票、酒店库存或实时价格" in answer
     assert model.bind_calls == 0

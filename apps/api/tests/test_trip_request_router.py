@@ -2,20 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
-from datetime import date
 from typing import Any
 
 import pytest
 from app.schemas.chat import ChatMessage
-from app.schemas.itinerary import TripRequest
 from app.schemas.routing import TripRouteDecision
-from app.services.trip_plan_service import StoredTripPlan
-from app.services.trip_request_router import (
-    TripRequestRouter,
-    build_route_context,
-    resolve_planning_intent,
-)
+from app.services.trip_request_router import TripRequestRouter, build_route_context
 from pydantic import ValidationError
 
 
@@ -87,7 +79,7 @@ class FakeRegistry:
 
 
 @pytest.mark.asyncio
-async def test_router_uses_recent_context_and_draft_summary() -> None:
+async def test_router_uses_only_the_eight_most_recent_conversation_messages() -> None:
     messages = [
         ChatMessage(
             role="user" if index % 2 == 0 else "assistant",
@@ -95,30 +87,12 @@ async def test_router_uses_recent_context_and_draft_summary() -> None:
         )
         for index in range(10)
     ]
-    stored = StoredTripPlan(
-        id=uuid.uuid4(),
-        request=TripRequest(
-            origin="南京",
-            destinations=["杭州"],
-            start_date=date(2026, 7, 20),
-            end_date=date(2026, 7, 23),
-        ),
-        plan=None,
-        status="draft",
-        version=0,
-    )
-    model = FakeRouterModel(
-        TripRouteDecision(
-            route="trip_planner",
-            trip_action_hint="create",
-            reason_code="resume_draft",
-        )
-    )
+    model = FakeRouterModel(TripRouteDecision(route="xhs_trip_planner"))
     registry = FakeRegistry(model)
 
-    result = await TripRequestRouter(registry).route(messages, stored=stored)  # type: ignore[arg-type]
+    result = await TripRequestRouter(registry).route(messages)  # type: ignore[arg-type]
 
-    assert result.route == "trip_planner"
+    assert result.route == "xhs_trip_planner"
     assert result.source == "llm_router"
     assert registry.create_calls == 1
     assert model.schema is TripRouteDecision
@@ -126,18 +100,15 @@ async def test_router_uses_recent_context_and_draft_summary() -> None:
     context_content = model.captured_messages[1].content
     assert isinstance(context_content, str)
     context = json.loads(context_content)
-    assert [item["content"] for item in context["recent_messages"]] == [
-        f"message-{index}" for index in range(2, 10)
-    ]
-    assert context["latest_user_message"] == "message-8"
-    assert context["has_current_plan"] is False
-    assert context["has_draft"] is True
-    assert context["stored_plan_status"] == "draft"
-    assert context["current_plan_summary"] == {
-        "destination": "杭州",
-        "start_date": "2026-07-20",
-        "end_date": "2026-07-23",
-        "has_formal_plan": False,
+    assert context == {
+        "recent_messages": [
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"message-{index}",
+            }
+            for index in range(2, 10)
+        ],
+        "latest_user_message": "message-8",
     }
 
 
@@ -146,88 +117,42 @@ def test_route_context_excludes_system_messages_and_limits_message_size() -> Non
         [
             ChatMessage(role="system", content="internal prompt"),
             ChatMessage(role="user", content=" x " * 5_000),
-        ],
-        stored=None,
+        ]
     )
 
     assert len(context.recent_messages) == 1
     assert context.recent_messages[0].role == "user"
     assert len(context.recent_messages[0].content) == 4_000
-    assert context.current_plan_summary is None
+    assert context.latest_user_message == context.recent_messages[0].content
 
 
-@pytest.mark.parametrize(
-    "invalid",
-    [
-        {
-            "route": "general_agent",
-            "trip_action_hint": "create",
-            "reason_code": "general_conversation",
-        },
-        {
-            "route": "trip_planner",
-            "clarification_kind": "query_or_plan",
-            "reason_code": "create_trip",
-        },
-        {
-            "route": "clarify",
-            "clarification_kind": "none",
-            "reason_code": "ambiguous_persistence",
-        },
-        {
-            "route": "general_agent",
-            "reason_code": "create_trip",
-        },
-    ],
-)
-def test_route_decision_rejects_invalid_field_combinations(
-    invalid: dict[str, Any],
-) -> None:
+@pytest.mark.parametrize("route", ["general_agent", "xhs_trip_planner"])
+def test_route_decision_accepts_only_binary_routes(route: str) -> None:
+    assert TripRouteDecision.model_validate({"route": route}).route == route
+
+
+@pytest.mark.parametrize("route", ["clarify", "trip_planner", "other"])
+def test_route_decision_rejects_removed_routes(route: str) -> None:
     with pytest.raises(ValidationError):
-        TripRouteDecision.model_validate(invalid)
+        TripRouteDecision.model_validate({"route": route})
 
 
-def test_mixed_planning_reason_requires_clarification_route() -> None:
-    decision = TripRouteDecision(
-        route="clarify",
-        clarification_kind="plan_or_query_first",
-        reason_code="mixed_with_planning",
+@pytest.mark.asyncio
+async def test_router_prompt_routes_mixed_planning_requests_to_xhs() -> None:
+    model = FakeRouterModel(TripRouteDecision(route="xhs_trip_planner"))
+    registry = FakeRegistry(model)
+
+    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
+        [ChatMessage(role="user", content="帮我做成都三日游攻略，顺便查一下酒店")]
     )
 
-    assert decision.route == "clarify"
-
-
-@pytest.mark.parametrize(
-    ("hint", "has_plan", "has_draft", "reason", "expected"),
-    [
-        ("create", False, False, "create_trip", "new_trip_plan"),
-        ("modify", True, False, "modify_trip", "modify_trip_plan"),
-        ("modify", False, False, "modify_trip", "new_trip_plan"),
-        ("none", True, False, "modify_trip", "modify_trip_plan"),
-        ("none", False, True, "resume_draft", "new_trip_plan"),
-    ],
-)
-def test_planner_compatibility_mapping(
-    hint: Any,
-    has_plan: bool,
-    has_draft: bool,
-    reason: Any,
-    expected: str,
-) -> None:
-    route = TripRouteDecision(
-        route="trip_planner",
-        trip_action_hint=hint,
-        reason_code=reason,
-    )
-
-    assert (
-        resolve_planning_intent(
-            route,
-            has_current_plan=has_plan,
-            has_draft=has_draft,
-        )
-        == expected
-    )
+    prompt = model.captured_messages[0].content
+    assert isinstance(prompt, str)
+    assert result.route == "xhs_trip_planner"
+    assert "general_agent" in prompt
+    assert "xhs_trip_planner" in prompt
+    assert "混合" in prompt
+    assert "clarify" not in prompt
 
 
 @pytest.mark.asyncio
@@ -245,69 +170,40 @@ def test_planner_compatibility_mapping(
         FakeRegistry(FakeRouterModel(RuntimeError("provider failed"))),
         FakeRegistry(
             FakeRouterModel(
-                TripRouteDecision(
-                    route="general_agent",
-                    reason_code="general_conversation",
-                ),
+                TripRouteDecision(route="xhs_trip_planner"),
                 delay=0.02,
             ),
             timeout_seconds=0.001,
         ),
     ],
 )
-async def test_router_failures_use_deterministic_planning_fallback(
+async def test_router_failures_always_fall_back_to_general_agent(
     registry: FakeRegistry,
 ) -> None:
     result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
-        [ChatMessage(role="user", content="帮我规划成都四日游")],
-        stored=None,
+        [ChatMessage(role="user", content="帮我规划成都四日游并查酒店")]
     )
 
-    assert result.route == "trip_planner"
+    assert result.route == "general_agent"
     assert result.source == "fallback"
-    assert result.trip_action_hint == "create"
-    assert result.clarification_kind == "none"
 
 
 @pytest.mark.asyncio
-async def test_router_failure_detects_mixed_planning_request() -> None:
-    registry = FakeRegistry(None, factory_error=RuntimeError("not configured"))
-
-    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
-        [ChatMessage(role="user", content="帮我规划成都三日游，再查一下往返机票")],
-        stored=None,
-    )
-
-    assert result.route == "clarify"
-    assert result.clarification_kind == "plan_or_query_first"
-    assert result.reason_code == "mixed_with_planning"
-
-
-@pytest.mark.asyncio
-async def test_router_failure_detects_plan_without_trip_suffix() -> None:
-    registry = FakeRegistry(None, factory_error=RuntimeError("not configured"))
-
-    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
-        [ChatMessage(role="user", content="帮我规划成都3天")],
-        stored=None,
-    )
-
-    assert result.route == "trip_planner"
-    assert result.reason_code == "create_trip"
-
-
-@pytest.mark.asyncio
-async def test_router_failure_resumes_city_and_duration_clarification() -> None:
-    registry = FakeRegistry(None, factory_error=RuntimeError("not configured"))
+async def test_recent_plan_adjustment_is_available_to_router_context() -> None:
+    model = FakeRouterModel(TripRouteDecision(route="xhs_trip_planner"))
+    registry = FakeRegistry(model)
 
     result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
         [
-            ChatMessage(role="user", content="帮我规划杭州旅行"),
-            ChatMessage(role="assistant", content="请告诉我准备游玩几天。"),
-            ChatMessage(role="user", content="3天"),
-        ],
-        stored=None,
+            ChatMessage(role="assistant", content="## 第 1 天\n宽窄巷子"),
+            ChatMessage(role="user", content="第二天轻松一点"),
+        ]
     )
 
-    assert result.route == "trip_planner"
-    assert result.trip_action_hint == "create"
+    assert result.route == "xhs_trip_planner"
+    context = json.loads(model.captured_messages[1].content)
+    assert context["latest_user_message"] == "第二天轻松一点"
+    assert [item["role"] for item in context["recent_messages"]] == [
+        "assistant",
+        "user",
+    ]

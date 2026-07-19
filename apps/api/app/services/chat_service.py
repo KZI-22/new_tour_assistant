@@ -12,8 +12,7 @@ from app.core.request_context import get_request_context
 from app.core.settings import Settings
 from app.graphs.xhs_trip_planner import XhsTripPlanner
 from app.schemas.chat import ChatMessage
-from app.schemas.routing import clarification_message
-from app.schemas.tool_execution import ChatStreamEvent, MessageDeltaEvent
+from app.schemas.tool_execution import ChatStreamEvent
 from app.services.agent_executor import MAX_TOOL_ROUNDS, AgentExecutor, ToolEnabledModel
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
@@ -112,14 +111,8 @@ class ChatService:
     ) -> AsyncIterator[ChatStreamEvent]:
         model = self._registry.create_model(model_id)
         if self._trip_planner is not None:
-            route = await self._trip_request_router.route(
-                messages,
-                stored=None,
-            )
-            if route.route == "clarify":
-                yield MessageDeltaEvent(delta=clarification_message(route.clarification_kind))
-                return
-            if route.route == "trip_planner":
+            route = await self._trip_request_router.route(messages)
+            if route.route == "xhs_trip_planner":
                 async for event in self._trip_planner.stream(model, messages):
                     yield event
                 return
