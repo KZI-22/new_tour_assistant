@@ -87,12 +87,12 @@ async def test_router_uses_only_the_eight_most_recent_conversation_messages() ->
         )
         for index in range(10)
     ]
-    model = FakeRouterModel(TripRouteDecision(route="xhs_trip_planner"))
+    model = FakeRouterModel(TripRouteDecision(route="trip_planner"))
     registry = FakeRegistry(model)
 
     result = await TripRequestRouter(registry).route(messages)  # type: ignore[arg-type]
 
-    assert result.route == "xhs_trip_planner"
+    assert result.route == "trip_planner"
     assert result.source == "llm_router"
     assert registry.create_calls == 1
     assert model.schema is TripRouteDecision
@@ -126,20 +126,20 @@ def test_route_context_excludes_system_messages_and_limits_message_size() -> Non
     assert context.latest_user_message == context.recent_messages[0].content
 
 
-@pytest.mark.parametrize("route", ["general_agent", "xhs_trip_planner"])
+@pytest.mark.parametrize("route", ["general_agent", "trip_planner"])
 def test_route_decision_accepts_only_binary_routes(route: str) -> None:
     assert TripRouteDecision.model_validate({"route": route}).route == route
 
 
-@pytest.mark.parametrize("route", ["clarify", "trip_planner", "other"])
+@pytest.mark.parametrize("route", ["clarify", "xhs_trip_planner", "other"])
 def test_route_decision_rejects_removed_routes(route: str) -> None:
     with pytest.raises(ValidationError):
         TripRouteDecision.model_validate({"route": route})
 
 
 @pytest.mark.asyncio
-async def test_router_prompt_routes_mixed_planning_requests_to_xhs() -> None:
-    model = FakeRouterModel(TripRouteDecision(route="xhs_trip_planner"))
+async def test_router_prompt_routes_mixed_planning_requests_to_trip_planner() -> None:
+    model = FakeRouterModel(TripRouteDecision(route="trip_planner"))
     registry = FakeRegistry(model)
 
     result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
@@ -148,9 +148,10 @@ async def test_router_prompt_routes_mixed_planning_requests_to_xhs() -> None:
 
     prompt = model.captured_messages[0].content
     assert isinstance(prompt, str)
-    assert result.route == "xhs_trip_planner"
+    assert result.route == "trip_planner"
     assert "general_agent" in prompt
-    assert "xhs_trip_planner" in prompt
+    assert "trip_planner" in prompt
+    assert "不决定" in prompt
     assert "混合" in prompt
     assert "clarify" not in prompt
 
@@ -170,7 +171,7 @@ async def test_router_prompt_routes_mixed_planning_requests_to_xhs() -> None:
         FakeRegistry(FakeRouterModel(RuntimeError("provider failed"))),
         FakeRegistry(
             FakeRouterModel(
-                TripRouteDecision(route="xhs_trip_planner"),
+                TripRouteDecision(route="trip_planner"),
                 delay=0.02,
             ),
             timeout_seconds=0.001,
@@ -190,7 +191,7 @@ async def test_router_failures_always_fall_back_to_general_agent(
 
 @pytest.mark.asyncio
 async def test_recent_plan_adjustment_is_available_to_router_context() -> None:
-    model = FakeRouterModel(TripRouteDecision(route="xhs_trip_planner"))
+    model = FakeRouterModel(TripRouteDecision(route="trip_planner"))
     registry = FakeRegistry(model)
 
     result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
@@ -200,7 +201,7 @@ async def test_recent_plan_adjustment_is_available_to_router_context() -> None:
         ]
     )
 
-    assert result.route == "xhs_trip_planner"
+    assert result.route == "trip_planner"
     context = json.loads(model.captured_messages[1].content)
     assert context["latest_user_message"] == "第二天轻松一点"
     assert [item["role"] for item in context["recent_messages"]] == [

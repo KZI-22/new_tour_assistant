@@ -60,13 +60,13 @@ class TripWeatherEvidence(TripPlanningModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-PlanningMode = Literal["xhs", "map_weather"]
+PlanningSource = Literal["standard", "xhs"]
 
 
 __all__ = [
     "CityTripRequest",
     "CityTripRequestExtraction",
     "DailyWeatherEvidence",
-    "PlanningMode",
+    "PlanningSource",
     "TripWeatherEvidence",
 ]

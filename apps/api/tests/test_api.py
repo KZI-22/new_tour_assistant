@@ -95,9 +95,11 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
             model_id: str,
             messages: object,
             *,
+            planning_source: str,
             execution_context: ToolExecutionContext,
         ) -> AsyncIterator[MessageDeltaEvent | PlanningStageEvent]:
             assert model_id == "test-model"
+            assert planning_source == "standard"
             assert messages
             assert execution_context.conversation_id == conversation_id
             assert execution_context.assistant_message_id == assistant_message_id
@@ -120,11 +122,16 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
         finished: tuple[uuid.UUID, str, str, list[dict[str, object]]] | None = None
 
         async def start_turn(
-            self, requested_id: uuid.UUID | None, model_id: str, content: str
+            self,
+            requested_id: uuid.UUID | None,
+            model_id: str,
+            content: str,
+            planning_source: str,
         ) -> TurnContext:
             assert requested_id is None
             assert model_id == "test-model"
             assert content == "你好"
+            assert planning_source == "standard"
             return TurnContext(
                 conversation_id=conversation_id,
                 conversation_title="你好",
@@ -155,7 +162,10 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    conversation_event = f'event: conversation\ndata: {{"id":"{conversation_id}","title":"你好"}}'
+    conversation_event = (
+        f'event: conversation\ndata: {{"id":"{conversation_id}","title":"你好",'
+        '"planning_source":"standard"}'
+    )
     assert conversation_event in response.text
     assert 'event: message_start\ndata: {"type":"message_start"' in response.text
     assert 'event: planning_stage\ndata: {"type":"planning_stage"' in response.text
@@ -180,9 +190,10 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
             model_id: str,
             messages: object,
             *,
+            planning_source: str,
             execution_context: ToolExecutionContext,
         ) -> AsyncIterator[XhsLoginRequiredEvent | MessageDeltaEvent]:
-            del model_id, messages, execution_context
+            del model_id, messages, planning_source, execution_context
             yield XhsLoginRequiredEvent(
                 login_id="fixture-login",
                 expires_at="2026-07-19T10:05:00+08:00",
@@ -196,9 +207,13 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
         finished: tuple[uuid.UUID, str, str] | None = None
 
         async def start_turn(
-            self, requested_id: uuid.UUID | None, model_id: str, content: str
+            self,
+            requested_id: uuid.UUID | None,
+            model_id: str,
+            content: str,
+            planning_source: str,
         ) -> TurnContext:
-            del requested_id, model_id
+            del requested_id, model_id, planning_source
             return TurnContext(
                 conversation_id=conversation_id,
                 conversation_title=content,
@@ -233,11 +248,11 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
     assert conversation_service.finished == (assistant_message_id, "登录后完成。", "completed")
 
 
-def test_stream_chat_forwards_explicit_planning_mode(tmp_path: Path) -> None:
+def test_stream_chat_forwards_explicit_planning_source(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     conversation_id = uuid.uuid4()
     assistant_message_id = uuid.uuid4()
-    received_modes: list[str] = []
+    received_sources: list[str] = []
 
     class FakeChatService:
         async def stream(
@@ -245,12 +260,12 @@ def test_stream_chat_forwards_explicit_planning_mode(tmp_path: Path) -> None:
             model_id: str,
             messages: object,
             *,
-            planning_mode: str,
+            planning_source: str,
             execution_context: ToolExecutionContext,
         ) -> AsyncIterator[MessageDeltaEvent]:
             del model_id, messages, execution_context
-            received_modes.append(planning_mode)
-            yield MessageDeltaEvent(delta="地图方案")
+            received_sources.append(planning_source)
+            yield MessageDeltaEvent(delta="小红书方案")
 
     class FakeConversationService:
         async def start_turn(
@@ -258,8 +273,10 @@ def test_stream_chat_forwards_explicit_planning_mode(tmp_path: Path) -> None:
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
+            planning_source: str,
         ) -> TurnContext:
             del requested_id, model_id
+            assert planning_source == "xhs"
             return TurnContext(
                 conversation_id=conversation_id,
                 conversation_title=content,
@@ -277,17 +294,17 @@ def test_stream_chat_forwards_explicit_planning_mode(tmp_path: Path) -> None:
         "/api/v1/chat/stream",
         json={
             "model_id": "test-model",
-            "message": "跳过小红书登录，使用地图与天气继续生成。",
-            "planning_mode": "map_weather",
+            "message": "参考小红书规划成都三日游",
+            "planning_source": "xhs",
         },
     )
 
     assert response.status_code == 200
-    assert received_modes == ["map_weather"]
-    assert "地图方案" in response.text
+    assert received_sources == ["xhs"]
+    assert "小红书方案" in response.text
 
 
-def test_stream_chat_rejects_unknown_planning_mode(tmp_path: Path) -> None:
+def test_stream_chat_rejects_unknown_planning_source(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
     response = client.post(
@@ -295,7 +312,7 @@ def test_stream_chat_rejects_unknown_planning_mode(tmp_path: Path) -> None:
         json={
             "model_id": "test-model",
             "message": "继续生成",
-            "planning_mode": "unknown",
+            "planning_source": "unknown",
         },
     )
 
@@ -313,9 +330,10 @@ def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> No
             model_id: str,
             messages: object,
             *,
+            planning_source: str,
             execution_context: ToolExecutionContext,
         ) -> AsyncIterator[PlanningStageEvent | MessageDeltaEvent]:
-            del model_id, messages, execution_context
+            del model_id, messages, planning_source, execution_context
             yield PlanningStageEvent(
                 stage="waiting_xhs_login",
                 display_name="等待登录小红书",
@@ -328,9 +346,13 @@ def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> No
         finished: tuple[uuid.UUID, str, str] | None = None
 
         async def start_turn(
-            self, requested_id: uuid.UUID | None, model_id: str, content: str
+            self,
+            requested_id: uuid.UUID | None,
+            model_id: str,
+            content: str,
+            planning_source: str,
         ) -> TurnContext:
-            del requested_id, model_id
+            del requested_id, model_id, planning_source
             return TurnContext(
                 conversation_id=conversation_id,
                 conversation_title=content,
@@ -372,9 +394,10 @@ def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Pat
             model_id: str,
             messages: object,
             *,
+            planning_source: str,
             execution_context: ToolExecutionContext,
         ) -> AsyncIterator[ToolCallEvent | ToolResultEvent | MessageDeltaEvent]:
-            del model_id, messages, execution_context
+            del model_id, messages, planning_source, execution_context
             yield ToolCallEvent(
                 tool_call_id="flight-call",
                 tool_name="search_flight",
@@ -406,9 +429,13 @@ def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Pat
 
     class FakeConversationService:
         async def start_turn(
-            self, requested_id: uuid.UUID | None, model_id: str, content: str
+            self,
+            requested_id: uuid.UUID | None,
+            model_id: str,
+            content: str,
+            planning_source: str,
         ) -> TurnContext:
-            del requested_id, model_id
+            del requested_id, model_id, planning_source
             return TurnContext(
                 conversation_id=conversation_id,
                 conversation_title=content,
@@ -466,9 +493,10 @@ def test_stream_chat_returns_controlled_error_when_tool_loop_limit_is_reached(
             model_id: str,
             messages: object,
             *,
+            planning_source: str,
             execution_context: ToolExecutionContext,
         ) -> AsyncIterator[ToolCallEvent]:
-            del model_id, messages, execution_context
+            del model_id, messages, planning_source, execution_context
             yield ToolCallEvent(
                 tool_call_id="loop-call",
                 tool_name="search_flight",
@@ -480,9 +508,13 @@ def test_stream_chat_returns_controlled_error_when_tool_loop_limit_is_reached(
         finished: tuple[uuid.UUID, str, str] | None = None
 
         async def start_turn(
-            self, requested_id: uuid.UUID | None, model_id: str, content: str
+            self,
+            requested_id: uuid.UUID | None,
+            model_id: str,
+            content: str,
+            planning_source: str,
         ) -> TurnContext:
-            del requested_id, model_id
+            del requested_id, model_id, planning_source
             return TurnContext(
                 conversation_id=conversation_id,
                 conversation_title=content,

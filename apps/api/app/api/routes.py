@@ -152,6 +152,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
             payload.conversation_id,
             payload.model_id,
             payload.message,
+            payload.planning_source,
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(
@@ -173,19 +174,12 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
             conversation_id=turn.conversation_id,
             assistant_message_id=turn.assistant_message_id,
         )
-        if payload.planning_mode is None:
-            stream = service.stream(
-                payload.model_id,
-                turn.messages,
-                execution_context=execution_context,
-            )
-        else:
-            stream = service.stream(
-                payload.model_id,
-                turn.messages,
-                planning_mode=payload.planning_mode,
-                execution_context=execution_context,
-            )
+        stream = service.stream(
+            payload.model_id,
+            turn.messages,
+            planning_source=payload.planning_source,
+            execution_context=execution_context,
+        )
         first_event = await anext(stream, None)
     except asyncio.CancelledError:
         if stream is not None:
@@ -227,6 +221,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                 {
                     "id": str(turn.conversation_id),
                     "title": turn.conversation_title,
+                    "planning_source": payload.planning_source,
                 },
             )
             yield _sse(

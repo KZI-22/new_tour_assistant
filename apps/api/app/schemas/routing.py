@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-TripRoute = Literal["general_agent", "xhs_trip_planner"]
+TripRoute = Literal["general_agent", "trip_planner"]
 
 
 class TripRouteDecision(BaseModel):

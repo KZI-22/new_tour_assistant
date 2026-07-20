@@ -16,6 +16,7 @@ from app.schemas.conversation import (
     ConversationSummaryResponse,
     ConversationToolCallResponse,
 )
+from app.schemas.trip_planning import PlanningSource
 
 
 class ConversationNotFoundError(LookupError):
@@ -51,6 +52,7 @@ class ConversationService:
                     id=item.id,
                     title=item.title,
                     model_id=item.model_id,
+                    planning_source=item.planning_source,
                     created_at=item.created_at,
                     updated_at=item.updated_at,
                 )
@@ -109,6 +111,7 @@ class ConversationService:
                 id=conversation.id,
                 title=conversation.title,
                 model_id=conversation.model_id,
+                planning_source=conversation.planning_source,
                 created_at=conversation.created_at,
                 updated_at=conversation.updated_at,
                 messages=messages,
@@ -130,6 +133,7 @@ class ConversationService:
         conversation_id: uuid.UUID | None,
         model_id: str,
         user_content: str,
+        planning_source: PlanningSource = "standard",
     ) -> TurnContext:
         now = datetime.now(UTC)
         async with self._session_factory() as session, session.begin():
@@ -138,6 +142,7 @@ class ConversationService:
                 conversation = Conversation(
                     title=_conversation_title(user_content),
                     model_id=model_id,
+                    planning_source=planning_source,
                     created_at=now,
                     updated_at=now,
                 )
@@ -170,6 +175,7 @@ class ConversationService:
                 )
                 next_sequence = (max_sequence or 0) + 1
                 conversation.model_id = model_id
+                conversation.planning_source = planning_source
                 conversation.updated_at = now
 
             user_message = Message(

@@ -3,6 +3,7 @@
 import {
   ArrowUp,
   Bot,
+  BookOpenText,
   Check,
   ChevronDown,
   CircleStop,
@@ -30,7 +31,7 @@ import {
   fetchConversations,
   fetchModels,
   ModelInfo,
-  PlanningMode,
+  PlanningSource,
   streamChat,
   ToolCallUpdate,
   ToolResultUpdate,
@@ -55,7 +56,7 @@ type ChatMessage = ApiChatMessage & {
 };
 
 type SendMessageOptions = {
-  planningMode?: PlanningMode;
+  planningSource?: PlanningSource;
   allowWhileLoading?: boolean;
 };
 
@@ -78,6 +79,7 @@ export function ChatShell() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [planningSource, setPlanningSource] = useState<PlanningSource>("standard");
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -152,6 +154,7 @@ export function ChatShell() {
   const clearChat = () => {
     abortRef.current?.abort();
     setConversationId(null);
+    setPlanningSource("standard");
     setMessages([]);
     setInput("");
     setError(null);
@@ -172,6 +175,7 @@ export function ChatShell() {
       const conversation = await fetchConversation(id, controller.signal);
       setConversationId(conversation.id);
       setSelectedModel(conversation.model_id);
+      setPlanningSource(conversation.planning_source);
       setMessages(
         conversation.messages
           .filter(
@@ -253,8 +257,9 @@ export function ChatShell() {
         trimmed,
         conversationId,
         {
-          onConversation: ({ id }) => {
+          onConversation: ({ id, planning_source }) => {
             setConversationId(id);
+            setPlanningSource(planning_source);
             void refreshConversations();
           },
           onToken: (delta) => {
@@ -368,7 +373,7 @@ export function ChatShell() {
           onDone: () => void refreshConversations(),
         },
         controller.signal,
-        options.planningMode,
+        options.planningSource ?? planningSource,
       );
     } catch (reason: unknown) {
       const aborted = reason instanceof DOMException && reason.name === "AbortError";
@@ -395,8 +400,9 @@ export function ChatShell() {
     if (fallbackStartingRef.current.has(assistantId) || !currentModel?.available) return;
     fallbackStartingRef.current.add(assistantId);
     abortRef.current?.abort();
+    setPlanningSource("standard");
     const fallbackRequest = sendMessage(MAP_FALLBACK_MESSAGE, {
-      planningMode: "map_weather",
+      planningSource: "standard",
       allowWhileLoading: true,
     });
     setMessages((current) =>
@@ -511,7 +517,7 @@ export function ChatShell() {
             当前阶段
           </div>
           <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-            城市行程会参考小红书笔记生成；机票、火车和酒店仍由单项查询处理。
+            城市行程默认使用地图与天气；开启“小红书灵感”后，规划请求才会参考小红书笔记。
           </p>
         </div>
       </aside>
@@ -606,7 +612,7 @@ export function ChatShell() {
                   下一站，去哪里？
                 </h1>
                 <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)] md:text-base">
-                  告诉我目标城市、游玩天数和开始日期，我会结合小红书笔记与天气整理分日攻略。
+                  告诉我目标城市、游玩天数和开始日期，我会结合地图、路线与天气整理分日攻略。
                 </p>
                 <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {suggestions.map((suggestion) => (
@@ -815,9 +821,31 @@ export function ChatShell() {
                 value={input}
               />
               <div className="mt-2 flex items-center justify-between gap-3">
-                <span className="truncate text-[11px] text-[var(--muted-light)]">
-                  {currentModel ? `${currentModel.display_name} · AI 可能会出错，请核实重要信息` : "未选择模型"}
-                </span>
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    aria-label="切换小红书灵感"
+                    aria-pressed={planningSource === "xhs"}
+                    className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      planningSource === "xhs"
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-black/[0.08] bg-white/70 text-[var(--muted)] hover:bg-black/[0.035]"
+                    }`}
+                    disabled={isLoading || !currentModel?.available}
+                    onClick={() =>
+                      setPlanningSource((current) => (current === "xhs" ? "standard" : "xhs"))
+                    }
+                    title="仅在创建或修改多日行程时参考小红书笔记"
+                    type="button"
+                  >
+                    <BookOpenText size={13} />
+                    小红书灵感
+                  </button>
+                  <span className="hidden truncate text-[11px] text-[var(--muted-light)] sm:inline">
+                    {currentModel
+                      ? `${currentModel.display_name} · AI 可能会出错，请核实重要信息`
+                      : "未选择模型"}
+                  </span>
+                </div>
                 {isLoading ? (
                   <button className="send-button" aria-label="停止生成" onClick={stopGeneration}>
                     <CircleStop size={17} />

@@ -18,12 +18,13 @@ export type ApiChatMessage = {
   content: string;
 };
 
-export type PlanningMode = "xhs" | "map_weather";
+export type PlanningSource = "standard" | "xhs";
 
 export type ConversationSummary = {
   id: string;
   title: string;
   model_id: string;
+  planning_source: PlanningSource;
   created_at: string;
   updated_at: string;
 };
@@ -122,7 +123,11 @@ export type XhsLoginRequiredUpdate = {
 
 type StreamCallbacks = {
   onToken: (delta: string) => void;
-  onConversation?: (conversation: { id: string; title: string }) => void;
+  onConversation?: (conversation: {
+    id: string;
+    title: string;
+    planning_source: PlanningSource;
+  }) => void;
   onToolCall?: (update: ToolCallUpdate) => void;
   onToolResult?: (update: ToolResultUpdate) => void;
   onPlanningStage?: (update: PlanningStageUpdate) => void;
@@ -213,7 +218,7 @@ export async function streamChat(
   conversationId: string | null,
   callbacks: StreamCallbacks,
   signal: AbortSignal,
-  planningMode?: PlanningMode,
+  planningSource: PlanningSource = "standard",
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
@@ -222,7 +227,7 @@ export async function streamChat(
       model_id: modelId,
       message,
       conversation_id: conversationId,
-      planning_mode: planningMode,
+      planning_source: planningSource,
     }),
     signal,
   });
@@ -242,8 +247,18 @@ export async function streamChat(
     const parsed = parseEventFrame(frame.replaceAll("\r\n", "\n"));
     if (!parsed) return;
     if (parsed.event === "conversation") {
-      const data = parsed.data as { id?: string; title?: string };
-      if (data.id && data.title) callbacks.onConversation?.({ id: data.id, title: data.title });
+      const data = parsed.data as {
+        id?: string;
+        title?: string;
+        planning_source?: PlanningSource;
+      };
+      if (data.id && data.title && data.planning_source) {
+        callbacks.onConversation?.({
+          id: data.id,
+          title: data.title,
+          planning_source: data.planning_source,
+        });
+      }
     } else if (parsed.event === "message_delta" || parsed.event === "token") {
       const data = parsed.data as { delta?: string };
       if (data.delta) callbacks.onToken(data.delta);

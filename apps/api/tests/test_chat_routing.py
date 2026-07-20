@@ -163,7 +163,7 @@ def _plan() -> XhsItineraryPlan:
 
 
 @pytest.mark.asyncio
-async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
+async def test_chat_service_routes_city_plan_to_xhs_only_when_opted_in() -> None:
     model = FakeHybridModel(
         {
             "XhsTripRequestExtraction": [
@@ -183,7 +183,7 @@ async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
         model,
         _router_model(
             TripRouteDecision(
-                route="xhs_trip_planner",
+                route="trip_planner",
             )
         ),
     )
@@ -199,6 +199,7 @@ async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
         async for event in service.stream(
             "test",
             [ChatMessage(role="user", content="帮我规划成都三日美食之旅")],
+            planning_source="xhs",
             execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
         )
     ]
@@ -238,7 +239,7 @@ async def test_xhs_graph_only_asks_for_missing_duration() -> None:
         model,
         _router_model(
             TripRouteDecision(
-                route="xhs_trip_planner",
+                route="trip_planner",
             )
         ),
     )
@@ -254,6 +255,7 @@ async def test_xhs_graph_only_asks_for_missing_duration() -> None:
         async for event in service.stream(
             "test",
             [ChatMessage(role="user", content="帮我规划杭州旅行")],
+            planning_source="xhs",
         )
     ]
 
@@ -283,6 +285,7 @@ async def test_chat_service_keeps_single_query_on_existing_agent_executor() -> N
         async for event in service.stream(
             "test",
             [ChatMessage(role="user", content="帮我查明天南京到杭州的高铁")],
+            planning_source="xhs",
             execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
         )
     ]
@@ -314,7 +317,7 @@ async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None
         model,
         _router_model(
             TripRouteDecision(
-                route="xhs_trip_planner",
+                route="trip_planner",
             )
         ),
     )
@@ -331,6 +334,7 @@ async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None
         async for event in service.stream(
             "test",
             [ChatMessage(role="user", content="规划成都三天并查一下机票")],
+            planning_source="xhs",
         )
     ]
 
@@ -342,11 +346,11 @@ async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None
 
 
 @pytest.mark.asyncio
-async def test_explicit_map_mode_bypasses_router_and_xhs_research() -> None:
+async def test_standard_source_routes_planning_intent_to_map_planner() -> None:
     model = FakeHybridModel({})
     registry = FakeRegistry(
         model,
-        _router_model(TripRouteDecision(route="xhs_trip_planner")),
+        _router_model(TripRouteDecision(route="trip_planner")),
     )
     research = FakeResearchService()
     service = ChatService(
@@ -356,7 +360,7 @@ async def test_explicit_map_mode_bypasses_router_and_xhs_research() -> None:
         trip_planner_settings=_settings(),
     )
 
-    class FakeExplicitMapPlanner:
+    class FakeStandardMapPlanner:
         calls = 0
 
         async def stream(
@@ -367,24 +371,23 @@ async def test_explicit_map_mode_bypasses_router_and_xhs_research() -> None:
             route_source: str,
         ) -> Any:
             self.calls += 1
-            assert messages[-1].content == "跳过小红书登录，使用地图与天气继续生成。"
-            assert route_source == "explicit"
+            assert messages[-1].content == "帮我规划成都三日游"
+            assert route_source == "llm_router"
             yield MessageDeltaEvent(delta="地图方案")
 
-    fake_planner = FakeExplicitMapPlanner()
+    fake_planner = FakeStandardMapPlanner()
     service._map_trip_planner = fake_planner  # type: ignore[assignment]
 
     events = [
         event
         async for event in service.stream(
             "test",
-            [ChatMessage(role="user", content="跳过小红书登录，使用地图与天气继续生成。")],
-            planning_mode="map_weather",
+            [ChatMessage(role="user", content="帮我规划成都三日游")],
         )
     ]
 
     assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == ["地图方案"]
     assert fake_planner.calls == 1
-    assert registry.router_calls == 0
+    assert registry.router_calls == 1
     assert research.keywords == []
     assert research.login_checks == 0

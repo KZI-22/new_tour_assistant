@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.schemas.tool_execution import PlanningTraceEvent
+from app.schemas.trip_planning import PlanningSource
 
 
 class ConversationMessageResponse(BaseModel):
@@ -23,6 +24,7 @@ class ConversationSummaryResponse(BaseModel):
     id: UUID
     title: str
     model_id: str
+    planning_source: PlanningSource
     created_at: datetime
     updated_at: datetime
 

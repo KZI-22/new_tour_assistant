@@ -31,7 +31,12 @@ async def test_conversation_round_trip_in_postgres() -> None:
     conversation_id = None
 
     try:
-        turn = await service.start_turn(None, "integration-test-model", "数据库集成测试")
+        turn = await service.start_turn(
+            None,
+            "integration-test-model",
+            "数据库集成测试",
+            "xhs",
+        )
         conversation_id = turn.conversation_id
         await service.finish_turn(
             turn.assistant_message_id,
@@ -98,14 +103,19 @@ async def test_conversation_round_trip_in_postgres() -> None:
         detail = await service.get_conversation(turn.conversation_id)
         assert detail.title == "数据库集成测试"
         assert detail.model_id == "integration-test-model"
+        assert detail.planning_source == "xhs"
         assert [(message.role, message.content, message.status) for message in detail.messages] == [
             ("user", "数据库集成测试", "completed"),
             ("assistant", "数据库回复已保存", "completed"),
         ]
         assert detail.messages[1].debug_trace[0].data == {"keyword": "西安 两日游"}
-        assert turn.conversation_id in {
-            conversation.id for conversation in await service.list_conversations()
-        }
+        conversations = await service.list_conversations()
+        persisted = next(
+            conversation
+            for conversation in conversations
+            if conversation.id == turn.conversation_id
+        )
+        assert persisted.planning_source == "xhs"
         assert len(detail.tool_calls) == 2
         tool_calls_by_id = {item.tool_call_id: item for item in detail.tool_calls}
         assert tool_calls_by_id["database-tool-call"].data_status == "usable"
