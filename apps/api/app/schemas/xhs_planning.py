@@ -28,15 +28,16 @@ class XhsTripRequestExtraction(XhsPlanningModel):
 
 
 class XhsPostEvidence(XhsPlanningModel):
-    reference_id: str
+    reference_id: Literal["source_1", "source_2"]
+    role: Literal["primary", "supplementary"]
     note_id: str
     search_rank: int = Field(ge=1)
     title: str
     author_name: str
     published_at: str | None = None
     content: str = Field(min_length=1)
-    liked_count: str | None = None
-    collected_count: str | None = None
+    liked_count_raw: str | None = None
+    liked_count: int | None = Field(default=None, ge=0)
     queried_at: datetime
 
 
@@ -45,16 +46,31 @@ class XhsResearchResult(XhsPlanningModel):
     posts: list[XhsPostEvidence] = Field(min_length=1, max_length=2)
     warnings: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_source_roles(self) -> Self:
+        expected = [("source_1", "primary")]
+        if len(self.posts) == 2:
+            expected.append(("source_2", "supplementary"))
+        actual = [(post.reference_id, post.role) for post in self.posts]
+        if actual != expected:
+            raise ValueError(
+                "posts must contain primary source_1 then optional supplementary source_2"
+            )
+        return self
+
 
 class XhsPlanActivity(XhsPlanningModel):
     time_of_day: Literal["morning", "afternoon", "evening", "flexible"]
     place_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    source_refs: list[str] = Field(default_factory=list)
+    source_refs: list[Literal["source_1", "source_2"]] = Field(min_length=1)
 
     @field_validator("source_refs")
     @classmethod
-    def normalize_source_refs(cls, value: list[str]) -> list[str]:
+    def normalize_source_refs(
+        cls,
+        value: list[Literal["source_1", "source_2"]],
+    ) -> list[Literal["source_1", "source_2"]]:
         return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
 
@@ -67,11 +83,13 @@ class XhsDayPlan(XhsPlanningModel):
 
 
 class XhsPlanSource(XhsPlanningModel):
-    reference_id: str
+    reference_id: Literal["source_1", "source_2"]
+    role: Literal["primary", "supplementary"]
     note_id: str
     title: str
     author_name: str
     published_at: str | None = None
+    liked_count: int | None = Field(default=None, ge=0)
 
 
 class XhsItineraryPlan(XhsPlanningModel):

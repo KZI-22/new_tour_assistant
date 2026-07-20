@@ -139,7 +139,7 @@ class XhsResearchService:
         if not collected:
             raise XhsResearchError(
                 "NO_USABLE_POSTS",
-                "搜索到了相关笔记，但暂时无法读取正文，请稍后重试。",
+                "搜索到了相关笔记，但暂时没有可用于生成攻略的完整正文，请稍后重试。",
                 retryable=True,
             )
 
@@ -148,18 +148,23 @@ class XhsResearchService:
         posts = [
             XhsPostEvidence(
                 reference_id=f"source_{index}",
+                role="primary" if index == 1 else "supplementary",
                 note_id=result.detail.note_id or item.note_id,
                 search_rank=item.index + 1,
                 title=result.detail.title or item.title or "未命名笔记",
                 author_name=result.detail.author.nickname or item.author.nickname or "未知作者",
                 published_at=result.detail.published_at,
                 content=result.detail.description.strip()[:per_post_limit],
-                liked_count=(
-                    result.detail.interactions.liked_count
-                    or item.interactions.liked_count
+                liked_count_raw=(
+                    item.interactions.liked_count
+                    or result.detail.interactions.liked_count
                     or None
                 ),
-                collected_count=result.detail.interactions.collected_count or None,
+                liked_count=normalize_xhs_count(
+                    item.interactions.liked_count
+                    or result.detail.interactions.liked_count
+                    or None
+                ),
                 queried_at=queried_at,
             )
             for index, (item, result) in enumerate(collected, start=1)

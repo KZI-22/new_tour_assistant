@@ -135,6 +135,12 @@ async def test_research_selects_two_highest_liked_usable_posts() -> None:
     result = await XhsResearchService(client).collect(fixture["keyword"])
 
     assert [post.note_id for post in result.posts] == ["note-high", "note-mid"]
+    assert [(post.reference_id, post.role) for post in result.posts] == [
+        ("source_1", "primary"),
+        ("source_2", "supplementary"),
+    ]
+    assert [post.liked_count for post in result.posts] == [30_000, 12_000]
+    assert [post.liked_count_raw for post in result.posts] == ["3万+", "1.2万"]
     assert client.detail_calls == [
         ("note-high", "fixture-xsec-high"),
         ("note-mid", "fixture-xsec-mid"),
@@ -149,6 +155,7 @@ async def test_research_degrades_to_one_usable_post() -> None:
     result = await XhsResearchService(client).collect(fixture["keyword"])
 
     assert [post.note_id for post in result.posts] == ["note-high"]
+    assert result.posts[0].role == "primary"
     assert result.warnings[0] == "本次只有一篇小红书笔记正文可用，方案依据相对有限。"
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict, deque
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -11,8 +12,10 @@ from typing import Any
 import pytest
 from app.core.settings import Settings
 from app.graphs.xhs_trip_planner import (
+    _GENERATION_SYSTEM_PROMPT,
     XhsTripPlanner,
     XhsTripPlanningError,
+    _generation_prompt,
     _latest_explicit_duration_days,
     build_search_keyword,
 )
@@ -22,16 +25,18 @@ from app.schemas.xhs_planning import (
     XhsDayPlan,
     XhsItineraryPlan,
     XhsPlanActivity,
+    XhsPlanSource,
     XhsPostEvidence,
     XhsResearchResult,
     XhsTripRequest,
     XhsTripRequestExtraction,
 )
+from app.services.xhs_itinerary_renderer import render_xhs_itinerary
 from app.services.xhs_research_service import XhsResearchError
 
 
 def test_build_search_keyword_uses_only_city_and_duration() -> None:
-    assert build_search_keyword(" 成都 ", 3) == "成都 3天 旅游攻略"
+    assert build_search_keyword(" 成都 ", 3) == "成都 3日游 攻略"
 
 
 def test_latest_duration_does_not_treat_ordinal_day_as_trip_length() -> None:
@@ -107,15 +112,18 @@ def _plan() -> XhsItineraryPlan:
 
 def _research() -> XhsResearchResult:
     return XhsResearchResult(
-        keyword="成都 3天 旅游攻略",
+        keyword="成都 3日游 攻略",
         posts=[
             XhsPostEvidence(
                 reference_id="source_1",
+                role="primary",
                 note_id="fixture-note",
                 search_rank=1,
                 title="脱敏笔记",
                 author_name="脱敏作者",
                 content="脱敏测试正文。" * 40,
+                liked_count_raw="3万+",
+                liked_count=30_000,
                 queried_at=datetime.now(UTC),
             )
         ],
@@ -327,3 +335,111 @@ async def test_not_logged_in_search_error_recovers_once_then_retries() -> None:
     assert research.check_calls == 2
     assert research.start_calls == 1
     assert research.collect_calls == 2
+
+
+def test_generation_prompt_encodes_primary_and_supplementary_roles() -> None:
+    primary = _research().posts[0]
+    supplementary = primary.model_copy(
+        update={
+            "reference_id": "source_2",
+            "role": "supplementary",
+            "note_id": "fixture-note-2",
+            "title": "脱敏补充笔记",
+            "liked_count_raw": "1.2万",
+            "liked_count": 12_000,
+            "content": "只用于补充的脱敏正文。" * 30,
+        }
+    )
+    research = XhsResearchResult(
+        keyword="成都 3日游 攻略",
+        posts=[primary, supplementary],
+    )
+
+    prompt = json.loads(
+        _generation_prompt(
+            [ChatMessage(role="user", content="路线紧凑一点")],
+            XhsTripRequest(destination_city="成都", duration_days=3),
+            research,
+        )
+    )
+
+    assert prompt["search"] == {
+        "keyword": "成都 3日游 攻略",
+        "sort_by": "most_liked",
+        "result_scope": "initial_results_only",
+    }
+    assert [(source["reference_id"], source["role"]) for source in prompt["sources"]] == [
+        ("source_1", "primary"),
+        ("source_2", "supplementary"),
+    ]
+    assert prompt["requirements"]["primary_source"] == "source_1"
+    assert "主笔记" in _GENERATION_SYSTEM_PROMPT
+    assert "补充笔记" in _GENERATION_SYSTEM_PROMPT
+    assert primary.content not in _GENERATION_SYSTEM_PROMPT
+
+
+def test_single_post_generation_prompt_does_not_invent_source_2() -> None:
+    prompt = json.loads(
+        _generation_prompt(
+            [],
+            XhsTripRequest(destination_city="成都", duration_days=3),
+            _research(),
+        )
+    )
+
+    assert [source["reference_id"] for source in prompt["sources"]] == ["source_1"]
+    assert prompt["requirements"]["allowed_source_refs"] == ["source_1"]
+    assert "source_2" not in json.dumps(prompt, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_single_post_plan_rejects_activity_that_only_cites_source_2() -> None:
+    research = FakeResearchService(login_checks=[True])
+    invalid_plan = _plan()
+    invalid_plan.days[0].activities[0].source_refs = ["source_2"]
+    planner, model = _planner(research)
+    model.responses["XhsItineraryPlan"] = [invalid_plan]
+
+    with pytest.raises(XhsTripPlanningError) as raised:
+        await _collect_events_with(planner, model)
+
+    assert raised.value.code == "XHS_PLAN_SOURCE_INVALID"
+
+
+async def _collect_events_with(planner: XhsTripPlanner, model: FakeModel) -> list[Any]:
+    return [
+        event
+        async for event in planner.stream(  # type: ignore[arg-type]
+            model,
+            [ChatMessage(role="user", content="帮我做成都三日游攻略")],
+        )
+    ]
+
+
+def test_renderer_displays_roles_likes_and_initial_result_scope() -> None:
+    plan = _plan()
+    plan.sources = [
+        XhsPlanSource(
+            reference_id="source_1",
+            role="primary",
+            note_id="fixture-note",
+            title="脱敏主帖",
+            author_name="脱敏作者",
+            liked_count=52_000,
+        ),
+        XhsPlanSource(
+            reference_id="source_2",
+            role="supplementary",
+            note_id="fixture-note-2",
+            title="脱敏补充帖",
+            author_name="脱敏作者乙",
+            liked_count=38_000,
+        ),
+    ]
+
+    rendered = render_xhs_itinerary(plan)
+
+    assert "[主帖]《脱敏主帖》— 脱敏作者，点赞 5.2 万" in rendered
+    assert "[补充]《脱敏补充帖》— 脱敏作者乙，点赞 3.8 万" in rendered
+    assert "搜索页首次加载结果" in rendered
+    assert "不代表平台全部内容" in rendered

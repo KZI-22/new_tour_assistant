@@ -100,21 +100,27 @@ class FakeResearchService:
             posts=[
                 XhsPostEvidence(
                     reference_id="source_1",
+                    role="primary",
                     note_id="note-1",
                     search_rank=1,
                     title="成都三日攻略",
                     author_name="作者甲",
                     published_at="2026-07-01T12:00:00+08:00",
                     content="第一天宽窄巷子，第二天熊猫基地，第三天人民公园。",
+                    liked_count_raw="3万+",
+                    liked_count=30_000,
                     queried_at=datetime.now(UTC),
                 ),
                 XhsPostEvidence(
                     reference_id="source_2",
+                    role="supplementary",
                     note_id="note-2",
                     search_rank=2,
                     title="成都美食路线",
                     author_name="作者乙",
                     content="建议体验本地小吃并合理安排每天的片区。",
+                    liked_count_raw="1.2万",
+                    liked_count=12_000,
                     queried_at=datetime.now(UTC),
                 ),
             ],
@@ -193,11 +199,14 @@ async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
 
     stages = [event.stage for event in events if isinstance(event, PlanningStageEvent)]
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert research.keywords == ["成都 3天 旅游攻略"]
+    assert research.keywords == ["成都 3日游 攻略"]
     assert "searching_xhs" in stages
     assert "reading_xhs_posts" in stages
     assert "成都三日小红书攻略" in answer
     assert "《成都三日攻略》" in answer
+    assert "[主帖]" in answer
+    assert "点赞 3 万" in answer
+    assert "不代表平台全部内容" in answer
     assert "未查询机票、火车票、酒店库存或实时价格" in answer
     assert model.bind_calls == 0
     assert research.login_checks == 1
@@ -312,7 +321,7 @@ async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None
     ]
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert research.keywords == ["成都 3天 旅游攻略"]
+    assert research.keywords == ["成都 3日游 攻略"]
     assert "成都三日小红书攻略" in answer
     assert "未查询机票、火车票、酒店库存或实时价格" in answer
     assert model.bind_calls == 0

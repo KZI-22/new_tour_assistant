@@ -19,8 +19,8 @@ def render_xhs_itinerary(plan: XhsItineraryPlan) -> str:
         "",
         plan.summary,
         "",
-        f"> 本方案根据 {len(plan.sources)} 篇小红书笔记整理，"
-        "未查询机票、火车票、酒店库存或实时价格。",
+        "> 本方案根据小红书搜索页首次加载结果中的高点赞笔记整理，不代表平台全部内容。"
+        "本次未查询机票、火车票、酒店库存或实时价格。",
     ]
 
     for day in plan.days:
@@ -61,14 +61,34 @@ def render_xhs_itinerary(plan: XhsItineraryPlan) -> str:
     lines.extend(["", "## 参考的小红书笔记", ""])
     for index, source in enumerate(plan.sources, start=1):
         published = f"，发布于 {source.published_at}" if source.published_at else ""
-        lines.append(f"{index}. 《{source.title}》— {source.author_name}{published}")
+        role = "主帖" if source.role == "primary" else "补充"
+        likes = (
+            f"，点赞 {_format_liked_count(source.liked_count)}"
+            if source.liked_count is not None
+            else "，点赞量未知"
+        )
+        lines.append(
+            f"{index}. [{role}]《{source.title}》— {source.author_name}{likes}{published}"
+        )
     lines.extend(
         [
             "",
-            "小红书内容带有作者的主观体验；营业时间、开放状态和现场规则请在出行前再次确认。",
+            "小红书笔记带有作者的主观体验；营业状态、预约规则和现场情况请在出行前再次确认。",
         ]
     )
     return "\n".join(lines)
+
+
+def _format_liked_count(value: int) -> str:
+    if value >= 10_000:
+        return f"{_compact_number(value / 10_000)} 万"
+    if value >= 1_000:
+        return f"{_compact_number(value / 1_000)} 千"
+    return str(value)
+
+
+def _compact_number(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 __all__ = ["render_xhs_itinerary"]
