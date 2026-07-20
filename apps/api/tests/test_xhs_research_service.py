@@ -210,10 +210,6 @@ async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None
             {
                 "keyword": "成都 3天 旅游攻略",
                 "sort_by": "most_liked",
-                "note_type": "any",
-                "publish_time": "any",
-                "search_scope": "any",
-                "location": "any",
             },
         ),
         (
@@ -225,6 +221,15 @@ async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None
             },
         ),
     ]
+
+
+def test_mcp_client_distinguishes_structure_and_note_errors() -> None:
+    assert xhs_client_module._safe_error_message("PAGE_STRUCTURE_CHANGED") == (
+        "小红书搜索或详情页面结构已变化，当前读取规则需要更新。"
+    )
+    assert xhs_client_module._safe_error_message("NOTE_UNAVAILABLE") == (
+        "暂时无法读取所选小红书笔记，请稍后重试。"
+    )
 
 
 @pytest.mark.asyncio

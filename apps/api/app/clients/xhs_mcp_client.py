@@ -122,10 +122,6 @@ class XhsMcpClient:
             {
                 "keyword": keyword,
                 "sort_by": "most_liked",
-                "note_type": "any",
-                "publish_time": "any",
-                "search_scope": "any",
-                "location": "any",
             },
         )
         try:
@@ -330,7 +326,9 @@ def _safe_error_message(code: str) -> str:
         return "读取小红书内容超时，请稍后重试。"
     if code == "RISK_CONTROL":
         return "小红书当前限制了内容读取，请稍后重试。"
-    if code in {"PAGE_STRUCTURE_CHANGED", "NOTE_UNAVAILABLE"}:
+    if code == "PAGE_STRUCTURE_CHANGED":
+        return "小红书搜索或详情页面结构已变化，当前读取规则需要更新。"
+    if code == "NOTE_UNAVAILABLE":
         return "暂时无法读取所选小红书笔记，请稍后重试。"
     return "小红书内容服务当前不可用，请稍后重试。"
 
