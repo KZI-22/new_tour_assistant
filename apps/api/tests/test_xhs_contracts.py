@@ -119,10 +119,6 @@ class FixtureReadClient:
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Liked-count normalization has not been implemented.",
-)
 def test_normalize_xhs_count_contract() -> None:
     fixture = _load_fixture("xhs_post_selection.json")
     normalize = getattr(research_module, "normalize_xhs_count", None)
@@ -131,10 +127,6 @@ def test_normalize_xhs_count_contract() -> None:
         assert normalize(case["value"]) == case["expected"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Research still follows MCP index order instead of normalized likes.",
-)
 @pytest.mark.asyncio
 async def test_research_selects_two_highest_liked_usable_posts() -> None:
     fixture = _load_fixture("xhs_post_selection.json")
@@ -149,10 +141,6 @@ async def test_research_selects_two_highest_liked_usable_posts() -> None:
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="The minimum usable body length contract has not been implemented.",
-)
 @pytest.mark.asyncio
 async def test_research_degrades_to_one_usable_post() -> None:
     fixture = _load_fixture("xhs_post_selection.json")
@@ -164,10 +152,6 @@ async def test_research_degrades_to_one_usable_post() -> None:
     assert result.warnings[0] == "本次只有一篇小红书笔记正文可用，方案依据相对有限。"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Short bodies are not yet rejected as unusable evidence.",
-)
 @pytest.mark.asyncio
 async def test_research_reports_zero_usable_posts() -> None:
     fixture = _load_fixture("xhs_post_selection.json")

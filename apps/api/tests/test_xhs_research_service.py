@@ -105,6 +105,7 @@ def _search_item(index: int, *, detail_available: bool = True) -> XhsSearchItem:
         index=index,
         title=f"搜索标题 {index}",
         author={"nickname": f"作者 {index}"},
+        interactions={"liked_count": str(100 - index)},
     )
 
 
@@ -114,7 +115,7 @@ def _detail(index: int, description: str | None = None) -> XhsNoteDetailResult:
         detail=XhsNoteDetail(
             note_id=f"note-{index}",
             title=f"详情标题 {index}",
-            description=description or f"第 {index} 篇攻略正文",
+            description=description or f"第 {index} 篇攻略正文。" * 40,
             published_at="2026-07-01T12:00:00+08:00",
             author={"nickname": f"详情作者 {index}"},
             interactions={"liked_count": "100", "collected_count": "50"},
@@ -154,7 +155,14 @@ async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None
     assert client.calls == [
         (
             "xhs_search_notes",
-            {"keyword": "成都 3天 旅游攻略", "sort_by": "relevance"},
+            {
+                "keyword": "成都 3天 旅游攻略",
+                "sort_by": "most_liked",
+                "note_type": "any",
+                "publish_time": "any",
+                "search_scope": "any",
+                "location": "any",
+            },
         ),
         (
             "xhs_get_note_detail",
@@ -281,7 +289,11 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
     client = FakeReadClient()
     counts: list[int] = []
 
-    result = await XhsResearchService(client, evidence_max_chars=100).collect(
+    result = await XhsResearchService(
+        client,
+        evidence_max_chars=100,
+        min_post_content_chars=1,
+    ).collect(
         "成都 3天 旅游攻略",
         on_search_complete=counts.append,
     )
@@ -311,3 +323,50 @@ async def test_research_reports_empty_search_without_calling_details() -> None:
         await XhsResearchService(EmptyReadClient()).collect("不存在的城市 2天 旅游攻略")
 
     assert raised.value.code == "NO_RESULTS"
+
+
+@pytest.mark.asyncio
+async def test_research_limits_candidates_after_filtering_sorting_and_deduplication() -> None:
+    class CandidateClient:
+        def __init__(self) -> None:
+            self.detail_calls: list[tuple[str, str]] = []
+
+        async def search_notes(self, keyword: str) -> XhsSearchResult:
+            items = [
+                XhsSearchItem(
+                    note_id=f"note-{index}",
+                    xsec_token=f"token-{index}",
+                    detail_available=True,
+                    index=index,
+                    interactions={"liked_count": str(index)},
+                )
+                for index in range(7)
+            ]
+            items.append(
+                XhsSearchItem(
+                    note_id="note-6",
+                    xsec_token="duplicate-token",
+                    detail_available=True,
+                    index=7,
+                    interactions={"liked_count": "999"},
+                )
+            )
+            return XhsSearchResult(keyword=keyword, items=items)
+
+        async def get_note_detail(self, note_id: str, token: str) -> XhsNoteDetailResult:
+            self.detail_calls.append((note_id, token))
+            raise XhsMcpClientError("NOTE_UNAVAILABLE", "fixture unavailable")
+
+    client = CandidateClient()
+
+    with pytest.raises(XhsResearchError) as raised:
+        await XhsResearchService(client, min_post_content_chars=1).collect("成都 3日游 攻略")
+
+    assert raised.value.code == "NO_USABLE_POSTS"
+    assert client.detail_calls == [
+        ("note-6", "duplicate-token"),
+        ("note-5", "token-5"),
+        ("note-4", "token-4"),
+        ("note-3", "token-3"),
+        ("note-2", "token-2"),
+    ]

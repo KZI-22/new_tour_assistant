@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from app.clients.xhs_mcp_client import (
@@ -16,7 +18,9 @@ from app.clients.xhs_mcp_client import (
 from app.schemas.xhs_planning import XhsPostEvidence, XhsResearchResult
 
 _MAX_POSTS = 2
-_MAX_DETAIL_ATTEMPTS = 6
+_DETAIL_BATCH_SIZE = 2
+_COUNT_PATTERN = re.compile(r"^(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>[千萬万]?)\+?$")
+_COUNT_MULTIPLIERS = {"": 1, "千": 1_000, "万": 10_000, "萬": 10_000}
 
 
 class XhsResearchError(RuntimeError):
@@ -51,11 +55,19 @@ class XhsResearchService:
         client: XhsReadClient,
         *,
         evidence_max_chars: int = 12_000,
+        min_post_content_chars: int = 200,
+        detail_candidate_limit: int = 5,
     ) -> None:
         if evidence_max_chars <= 0:
             raise ValueError("evidence_max_chars must be positive")
+        if min_post_content_chars <= 0:
+            raise ValueError("min_post_content_chars must be positive")
+        if detail_candidate_limit <= 0:
+            raise ValueError("detail_candidate_limit must be positive")
         self._client = client
         self._evidence_max_chars = evidence_max_chars
+        self._min_post_content_chars = min_post_content_chars
+        self._detail_candidate_limit = detail_candidate_limit
 
     async def check_login(self) -> XhsLoginStatusResult:
         try:
@@ -92,14 +104,7 @@ class XhsResearchService:
         except XhsMcpClientError as exc:
             raise _research_error(exc) from exc
 
-        candidates = sorted(
-            (
-                item
-                for item in search.items
-                if item.detail_available and item.note_id and item.xsec_token
-            ),
-            key=lambda item: item.index,
-        )[:_MAX_DETAIL_ATTEMPTS]
+        candidates = _select_candidates(search.items, self._detail_candidate_limit)
         if on_search_complete is not None:
             on_search_complete(len(candidates))
         if not candidates:
@@ -112,8 +117,8 @@ class XhsResearchService:
         failed_details = 0
         cursor = 0
         while len(collected) < _MAX_POSTS and cursor < len(candidates):
-            needed = _MAX_POSTS - len(collected)
-            batch = candidates[cursor : cursor + needed]
+            batch_size = min(_DETAIL_BATCH_SIZE, _MAX_POSTS - len(collected))
+            batch = candidates[cursor : cursor + batch_size]
             cursor += len(batch)
             results = await asyncio.gather(
                 *(self._client.get_note_detail(item.note_id, item.xsec_token) for item in batch),
@@ -125,7 +130,8 @@ class XhsResearchService:
                 if isinstance(result, BaseException):
                     failed_details += 1
                     continue
-                if not result.detail.description.strip():
+                content = result.detail.description.strip()
+                if len(content) < self._min_post_content_chars:
                     failed_details += 1
                     continue
                 collected.append((item, result))
@@ -148,7 +154,11 @@ class XhsResearchService:
                 author_name=result.detail.author.nickname or item.author.nickname or "未知作者",
                 published_at=result.detail.published_at,
                 content=result.detail.description.strip()[:per_post_limit],
-                liked_count=result.detail.interactions.liked_count or None,
+                liked_count=(
+                    result.detail.interactions.liked_count
+                    or item.interactions.liked_count
+                    or None
+                ),
                 collected_count=result.detail.interactions.collected_count or None,
                 queried_at=queried_at,
             )
@@ -174,4 +184,58 @@ def _research_error(exc: XhsMcpClientError) -> XhsResearchError:
     )
 
 
-__all__ = ["XhsReadClient", "XhsResearchError", "XhsResearchService"]
+def normalize_xhs_count(value: str | None) -> int | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().replace(",", "")
+    if not normalized:
+        return None
+    match = _COUNT_PATTERN.fullmatch(normalized)
+    if match is None:
+        return None
+    unit = match.group("unit")
+    number_text = match.group("number")
+    if not unit and "." in number_text:
+        return None
+    try:
+        return int(Decimal(number_text) * _COUNT_MULTIPLIERS[unit])
+    except (InvalidOperation, OverflowError):
+        return None
+
+
+def _select_candidates(
+    items: list[XhsSearchItem],
+    limit: int,
+) -> list[XhsSearchItem]:
+    readable = [
+        item
+        for item in items
+        if item.detail_available and item.note_id and item.xsec_token
+    ]
+    ranked = sorted(
+        readable,
+        key=lambda item: _candidate_sort_key(item),
+    )
+    unique: list[XhsSearchItem] = []
+    seen_note_ids: set[str] = set()
+    for item in ranked:
+        if item.note_id in seen_note_ids:
+            continue
+        seen_note_ids.add(item.note_id)
+        unique.append(item)
+        if len(unique) == limit:
+            break
+    return unique
+
+
+def _candidate_sort_key(item: XhsSearchItem) -> tuple[bool, int, int]:
+    liked_count = normalize_xhs_count(item.interactions.liked_count)
+    return liked_count is None, -(liked_count or 0), item.index
+
+
+__all__ = [
+    "XhsReadClient",
+    "XhsResearchError",
+    "XhsResearchService",
+    "normalize_xhs_count",
+]

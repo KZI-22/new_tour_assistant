@@ -76,6 +76,7 @@ class XhsSearchItem(_BoundaryModel):
     index: int = Field(ge=0)
     title: str = ""
     author: _Author = Field(default_factory=_Author)
+    interactions: _Interactions = Field(default_factory=_Interactions)
 
 
 class XhsSearchResult(_BoundaryModel):
@@ -121,7 +122,11 @@ class XhsMcpClient:
             "xhs_search_notes",
             {
                 "keyword": keyword,
-                "sort_by": "relevance",
+                "sort_by": "most_liked",
+                "note_type": "any",
+                "publish_time": "any",
+                "search_scope": "any",
+                "location": "any",
             },
         )
         try:
