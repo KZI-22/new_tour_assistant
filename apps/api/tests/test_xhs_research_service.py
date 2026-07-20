@@ -380,6 +380,45 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
     assert "xsec_token" not in repr(traces)
 
 
+@pytest.mark.asyncio
+async def test_research_builds_five_post_usable_pool_before_selecting_top_two() -> None:
+    class UsablePoolClient:
+        def __init__(self) -> None:
+            self.detail_calls: list[tuple[str, str]] = []
+
+        async def search_notes(self, keyword: str) -> XhsSearchResult:
+            return XhsSearchResult(
+                keyword=keyword,
+                items=[_search_item(index) for index in reversed(range(7))],
+            )
+
+        async def get_note_detail(self, note_id: str, token: str) -> XhsNoteDetailResult:
+            self.detail_calls.append((note_id, token))
+            return _detail(int(note_id.rsplit("-", 1)[1]))
+
+    client = UsablePoolClient()
+    traces: list[XhsResearchTraceUpdate] = []
+
+    result = await XhsResearchService(client, min_post_content_chars=1).collect(
+        "成都 3日游 攻略",
+        on_trace=traces.append,
+    )
+
+    assert client.detail_calls == [
+        ("note-0", "secret-0"),
+        ("note-1", "secret-1"),
+        ("note-2", "secret-2"),
+        ("note-3", "secret-3"),
+        ("note-4", "secret-4"),
+    ]
+    assert [post.note_id for post in result.posts] == ["note-0", "note-1"]
+    evidence_trace = traces[-1]
+    assert evidence_trace.step == "evidence_selected"
+    assert evidence_trace.data["selection_strategy"] == "top_liked_from_usable_pool"
+    assert evidence_trace.data["usable_pool_count"] == 5
+    assert evidence_trace.data["usable_pool_limit"] == 5
+
+
 class EmptyReadClient:
     async def search_notes(self, keyword: str) -> XhsSearchResult:
         return XhsSearchResult(keyword=keyword, items=[])
@@ -397,7 +436,7 @@ async def test_research_reports_empty_search_without_calling_details() -> None:
 
 
 @pytest.mark.asyncio
-async def test_research_limits_candidates_after_filtering_sorting_and_deduplication() -> None:
+async def test_research_exhausts_unique_candidates_when_no_post_is_usable() -> None:
     class CandidateClient:
         def __init__(self) -> None:
             self.detail_calls: list[tuple[str, str]] = []
@@ -444,9 +483,11 @@ async def test_research_limits_candidates_after_filtering_sorting_and_deduplicat
         ("note-4", "token-4"),
         ("note-3", "token-3"),
         ("note-2", "token-2"),
+        ("note-1", "token-1"),
+        ("note-0", "token-0"),
     ]
     search_posts = traces[0].data["posts"]
     assert len(search_posts) == 8
     assert any(post["reason_code"] == "duplicate_note" for post in search_posts)
-    assert any(post["reason_code"] == "candidate_limit" for post in search_posts)
+    assert traces[0].data["usable_pool_limit"] == 5
     assert "duplicate-token" not in repr(traces)

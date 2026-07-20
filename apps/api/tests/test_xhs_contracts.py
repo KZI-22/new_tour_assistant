@@ -142,6 +142,8 @@ async def test_research_selects_two_highest_liked_usable_posts() -> None:
     assert client.detail_calls == [
         ("note-high", "fixture-xsec-high"),
         ("note-mid", "fixture-xsec-mid"),
+        ("note-low", "fixture-xsec-low"),
+        ("note-unknown", "fixture-xsec-unknown"),
     ]
 
 

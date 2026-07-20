@@ -138,7 +138,7 @@ class XhsResearchService:
             )
             raise _research_error(exc) from exc
 
-        candidates = _select_candidates(search.items, self._detail_candidate_limit)
+        candidates = _select_candidates(search.items)
         _emit_trace(
             on_trace,
             XhsResearchTraceUpdate(
@@ -152,7 +152,7 @@ class XhsResearchService:
                     "result_scope": "initial_results_only",
                     "total_count": len(search.items),
                     "candidate_count": len(candidates),
-                    "candidate_limit": self._detail_candidate_limit,
+                    "usable_pool_limit": self._detail_candidate_limit,
                     "posts": _search_trace_posts(search.items, candidates),
                 },
             ),
@@ -165,11 +165,14 @@ class XhsResearchService:
                 "没有找到可读取的小红书攻略笔记，请换个城市名称后重试。",
             )
 
-        collected: list[tuple[XhsSearchItem, XhsNoteDetailResult]] = []
+        usable_posts: list[tuple[XhsSearchItem, XhsNoteDetailResult]] = []
         failed_details = 0
         cursor = 0
-        while len(collected) < _MAX_POSTS and cursor < len(candidates):
-            batch_size = min(_DETAIL_BATCH_SIZE, _MAX_POSTS - len(collected))
+        while len(usable_posts) < self._detail_candidate_limit and cursor < len(candidates):
+            batch_size = min(
+                _DETAIL_BATCH_SIZE,
+                self._detail_candidate_limit - len(usable_posts),
+            )
             batch = candidates[cursor : cursor + batch_size]
             cursor += len(batch)
             attempts = await asyncio.gather(
@@ -222,7 +225,7 @@ class XhsResearchService:
                         ),
                     )
                     continue
-                collected.append((item, result))
+                usable_posts.append((item, result))
                 _emit_trace(
                     on_trace,
                     XhsResearchTraceUpdate(
@@ -233,22 +236,23 @@ class XhsResearchService:
                         data={
                             "note_id": result.detail.note_id or item.note_id,
                             "search_rank": item.index + 1,
-                            "result": "selected",
-                            "reference_id": f"source_{len(collected)}",
+                            "result": "usable",
+                            "usable_pool_position": len(usable_posts),
                             "content_chars": len(content),
                             "content_preview": content[:240],
                         },
                     ),
                 )
 
-        if not collected:
+        if not usable_posts:
             raise XhsResearchError(
                 "NO_USABLE_POSTS",
                 "搜索到了相关笔记，但暂时没有可用于生成攻略的完整正文，请稍后重试。",
                 retryable=True,
             )
 
-        per_post_limit = max(1, self._evidence_max_chars // len(collected))
+        selected_posts = sorted(usable_posts, key=_usable_post_sort_key)[:_MAX_POSTS]
+        per_post_limit = max(1, self._evidence_max_chars // len(selected_posts))
         queried_at = datetime.now(UTC)
         posts = [
             XhsPostEvidence(
@@ -260,19 +264,11 @@ class XhsResearchService:
                 author_name=result.detail.author.nickname or item.author.nickname or "未知作者",
                 published_at=result.detail.published_at,
                 content=result.detail.description.strip()[:per_post_limit],
-                liked_count_raw=(
-                    item.interactions.liked_count
-                    or result.detail.interactions.liked_count
-                    or None
-                ),
-                liked_count=normalize_xhs_count(
-                    item.interactions.liked_count
-                    or result.detail.interactions.liked_count
-                    or None
-                ),
+                liked_count_raw=_liked_count_raw(item, result),
+                liked_count=normalize_xhs_count(_liked_count_raw(item, result)),
                 queried_at=queried_at,
             )
-            for index, (item, result) in enumerate(collected, start=1)
+            for index, (item, result) in enumerate(selected_posts, start=1)
         ]
         warnings: list[str] = []
         if len(posts) == 1:
@@ -286,6 +282,9 @@ class XhsResearchService:
                 title=f"最终采用 {len(posts)} 篇小红书笔记",
                 status="success" if len(posts) == _MAX_POSTS else "partial",
                 data={
+                    "selection_strategy": "top_liked_from_usable_pool",
+                    "usable_pool_count": len(usable_posts),
+                    "usable_pool_limit": self._detail_candidate_limit,
                     "posts": [
                         {
                             "reference_id": post.reference_id,
@@ -360,7 +359,6 @@ def normalize_xhs_count(value: str | None) -> int | None:
 
 def _select_candidates(
     items: list[XhsSearchItem],
-    limit: int,
 ) -> list[XhsSearchItem]:
     readable = [
         item
@@ -378,13 +376,26 @@ def _select_candidates(
             continue
         seen_note_ids.add(item.note_id)
         unique.append(item)
-        if len(unique) == limit:
-            break
     return unique
 
 
 def _candidate_sort_key(item: XhsSearchItem) -> tuple[bool, int, int]:
     liked_count = normalize_xhs_count(item.interactions.liked_count)
+    return liked_count is None, -(liked_count or 0), item.index
+
+
+def _liked_count_raw(
+    item: XhsSearchItem,
+    result: XhsNoteDetailResult,
+) -> str | None:
+    return item.interactions.liked_count or result.detail.interactions.liked_count or None
+
+
+def _usable_post_sort_key(
+    post: tuple[XhsSearchItem, XhsNoteDetailResult],
+) -> tuple[bool, int, int]:
+    item, result = post
+    liked_count = normalize_xhs_count(_liked_count_raw(item, result))
     return liked_count is None, -(liked_count or 0), item.index
 
 
@@ -414,8 +425,8 @@ def _search_trace_posts(
             reason = "重复笔记"
         else:
             selection_status = "rejected"
-            reason_code = "candidate_limit"
-            reason = "超出详情候选上限"
+            reason_code = "not_selected"
+            reason = "未进入详情候选"
         posts.append(
             {
                 "search_rank": item.index + 1,
