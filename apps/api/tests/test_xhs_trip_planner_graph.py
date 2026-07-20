@@ -16,7 +16,6 @@ from app.graphs.xhs_trip_planner import (
     XhsTripPlanner,
     XhsTripPlanningError,
     _generation_prompt,
-    _latest_explicit_duration_days,
     build_search_keyword,
 )
 from app.schemas.chat import ChatMessage
@@ -36,6 +35,7 @@ from app.schemas.xhs_planning import (
     XhsTripRequest,
     XhsTripRequestExtraction,
 )
+from app.services.city_trip_request import latest_explicit_duration_days
 from app.services.xhs_itinerary_renderer import render_xhs_itinerary
 from app.services.xhs_research_service import XhsResearchError, XhsResearchTraceUpdate
 
@@ -51,7 +51,7 @@ def test_latest_duration_does_not_treat_ordinal_day_as_trip_length() -> None:
         ChatMessage(role="user", content="把第二天安排得轻松一点"),
     ]
 
-    assert _latest_explicit_duration_days(messages) is None
+    assert latest_explicit_duration_days(messages) is None
 
 
 def test_latest_explicit_duration_overrides_previous_duration() -> None:
@@ -61,7 +61,7 @@ def test_latest_explicit_duration_overrides_previous_duration() -> None:
         ChatMessage(role="user", content="改成四天吧"),
     ]
 
-    assert _latest_explicit_duration_days(messages) == 4
+    assert latest_explicit_duration_days(messages) == 4
 
 
 class _Runnable:

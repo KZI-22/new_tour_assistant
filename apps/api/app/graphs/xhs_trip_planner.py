@@ -946,52 +946,6 @@ def _conversation_payload(messages: Sequence[ChatMessage]) -> list[dict[str, str
     return payload
 
 
-def _explicit_duration_days(text: str) -> int | None:
-    match = re.search(
-        r"(?<!第)(?:玩|游|行程)?\s*([零〇一二两三四五六七八九十\d]+)\s*[天日]",
-        text,
-    )
-    if match is None:
-        return None
-    return _small_chinese_number(match.group(1))
-
-
-def _latest_explicit_duration_days(messages: Sequence[ChatMessage]) -> int | None:
-    for message in reversed(messages):
-        if message.role == "user":
-            return _explicit_duration_days(message.content)
-    return None
-
-
-def _small_chinese_number(value: str) -> int | None:
-    if value.isdigit():
-        return int(value)
-    digits = {
-        "零": 0,
-        "〇": 0,
-        "一": 1,
-        "二": 2,
-        "两": 2,
-        "三": 3,
-        "四": 4,
-        "五": 5,
-        "六": 6,
-        "七": 7,
-        "八": 8,
-        "九": 9,
-    }
-    if value == "十":
-        return 10
-    if "十" in value:
-        left, _, right = value.partition("十")
-        tens = digits.get(left, 1) if left else 1
-        ones = digits.get(right, 0) if right else 0
-        return tens * 10 + ones
-    if len(value) == 1:
-        return digits.get(value)
-    return None
-
-
 def _clarification_question(missing: Sequence[str], errors: Sequence[str]) -> str:
     parts = list(errors)
     missing_set = set(missing)

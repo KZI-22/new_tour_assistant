@@ -9,10 +9,21 @@ from app.core.request_context import get_request_context
 from app.schemas.chat import ChatMessage
 from app.schemas.trip_planning import CityTripRequest
 
+_SMALL_NUMBER_PATTERN = r"(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})"
 _ISO_DATE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
-_FULL_CHINESE_DATE = re.compile(r"(?<!\d)(\d{4})年(\d{1,2})月(\d{1,2})日?")
-_YEARLESS_CHINESE_DATE = re.compile(r"(?<!\d)(\d{1,2})月(\d{1,2})日")
-_DURATION = re.compile(r"(?<!第)(?:玩|游|行程)?\s*([零〇一二两三四五六七八九十\d]+)\s*[天日]")
+_FULL_CHINESE_DATE = re.compile(
+    rf"(?<!\d)(\d{{4}})\s*年\s*({_SMALL_NUMBER_PATTERN})\s*月\s*"
+    rf"({_SMALL_NUMBER_PATTERN})\s*[日号]?"
+)
+_YEARLESS_CHINESE_DATE = re.compile(
+    rf"(?<!\d)({_SMALL_NUMBER_PATTERN})\s*月\s*({_SMALL_NUMBER_PATTERN})\s*[日号]"
+)
+_ORDINAL_DAY = re.compile(rf"第\s*{_SMALL_NUMBER_PATTERN}\s*[天日]")
+_DURATION_PATTERNS = (
+    re.compile(rf"(?<!第)(?:游玩|行程|玩|游)?\s*({_SMALL_NUMBER_PATTERN})\s*天"),
+    re.compile(rf"(?<!第)(?:游玩|行程|玩|游)\s*({_SMALL_NUMBER_PATTERN})\s*日"),
+    re.compile(rf"(?<!第)({_SMALL_NUMBER_PATTERN})\s*日\s*(?:游|行程)"),
+)
 _CHINESE_DIGITS = {
     "零": 0,
     "〇": 0,
@@ -89,11 +100,15 @@ def clarification_question(missing: Sequence[str], errors: Sequence[str]) -> str
 
 
 def request_extraction_prompt(messages: Sequence[ChatMessage]) -> str:
+    context = get_request_context()
+    current_date = _current_date()
+    timezone = context.time.timezone if context is not None else "system-local"
     return (
         "结合最近对话提取目标城市、游玩天数、出行开始日期、兴趣和饮食偏好。"
         "只有用户明确表达或可由上下文直接继承的值才能填写，不能猜测。"
-        "未提供的必填字段使用 null，未提供的偏好使用空数组。当前请求上下文中的日期和"
-        "时区可用于解释今天、明天和后天。对话如下：\n"
+        "未提供的必填字段使用 null，未提供的偏好使用空数组。"
+        f"当前日期是 {current_date.isoformat()}，时区是 {timezone}；"
+        "无年份的月日按当前年份解释，今天、明天和后天按该日期计算。对话如下：\n"
         f"{json.dumps(conversation_payload(messages), ensure_ascii=False)}"
     )
 
@@ -128,12 +143,20 @@ def explicit_start_date(text: str, *, today: date | None = None) -> date | None:
             return None
     if match := _FULL_CHINESE_DATE.search(text):
         try:
-            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            month = _small_chinese_number(match.group(2))
+            day = _small_chinese_number(match.group(3))
+            if month is None or day is None:
+                return None
+            return date(int(match.group(1)), month, day)
         except ValueError:
             return None
     if match := _YEARLESS_CHINESE_DATE.search(text):
         try:
-            return date(current_date.year, int(match.group(1)), int(match.group(2)))
+            month = _small_chinese_number(match.group(1))
+            day = _small_chinese_number(match.group(2))
+            if month is None or day is None:
+                return None
+            return date(current_date.year, month, day)
         except ValueError:
             return None
     for marker, offset in (("后天", 2), ("明天", 1), ("今天", 0)):
@@ -150,10 +173,13 @@ def latest_explicit_duration_days(messages: Sequence[ChatMessage]) -> int | None
 
 
 def explicit_duration_days(text: str) -> int | None:
-    match = _DURATION.search(text)
-    if match is None:
-        return None
-    return _small_chinese_number(match.group(1))
+    sanitized = text
+    for pattern in (_ISO_DATE, _FULL_CHINESE_DATE, _YEARLESS_CHINESE_DATE, _ORDINAL_DAY):
+        sanitized = pattern.sub(lambda match: " " * len(match.group(0)), sanitized)
+    for pattern in _DURATION_PATTERNS:
+        if match := pattern.search(sanitized):
+            return _small_chinese_number(match.group(1))
+    return None
 
 
 def _small_chinese_number(value: str) -> int | None:
