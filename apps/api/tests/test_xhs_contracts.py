@@ -70,12 +70,16 @@ async def test_login_tool_response_accepts_pending_browser_verification(
     )
     monkeypatch.setattr(xhs_client_module, "ClientSession", FakeSession)
 
-    response = await XhsMcpClient("http://127.0.0.1:8765/mcp").start_login()
+    client = XhsMcpClient("http://127.0.0.1:8765/mcp")
+    try:
+        response = await client.start_login()
 
-    assert response.status == "pending"
-    assert response.login_id == "fixture-login-session"
-    assert "Google Chrome" in response.message
-    assert "验证码" in response.message
+        assert response.status == "pending"
+        assert response.login_id == "fixture-login-session"
+        assert "Google Chrome" in response.message
+        assert "验证码" in response.message
+    finally:
+        await client.aclose()
 
 
 class FixtureReadClient:

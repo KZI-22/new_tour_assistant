@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
+from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any, Literal
 
@@ -107,6 +109,12 @@ class XhsMcpClient:
         self._url = normalized_url
         self._auth_token = auth_token.strip() if auth_token and auth_token.strip() else None
         self._timeout_seconds = timeout_seconds
+        self._session: ClientSession | None = None
+        self._session_stack: AsyncExitStack | None = None
+        self._session_lock = asyncio.Lock()
+
+    async def aclose(self) -> None:
+        await self._reset_session()
 
     async def search_notes(self, keyword: str) -> XhsSearchResult:
         response = await self._call_tool(
@@ -210,39 +218,21 @@ class XhsMcpClient:
         name: str,
         arguments: dict[str, Any],
     ) -> XhsMcpToolResponse:
-        headers: dict[str, str] = {}
-        if self._auth_token is not None:
-            headers["Authorization"] = f"Bearer {self._auth_token}"
-        timeout = httpx.Timeout(self._timeout_seconds)
+        session: ClientSession | None = None
         read_timeout = timedelta(seconds=self._timeout_seconds)
 
         try:
-            async with (
-                httpx.AsyncClient(
-                    headers=headers,
-                    timeout=timeout,
-                    follow_redirects=False,
-                ) as http_client,
-                streamable_http_client(
-                    self._url,
-                    http_client=http_client,
-                    terminate_on_close=False,
-                ) as (read_stream, write_stream, _),
-                ClientSession(
-                    read_stream,
-                    write_stream,
-                    read_timeout_seconds=read_timeout,
-                ) as session,
-            ):
-                await session.initialize()
-                result = await session.call_tool(
-                    name,
-                    arguments=arguments,
-                    read_timeout_seconds=read_timeout,
-                )
-        except XhsMcpClientError:
+            session = await self._get_session()
+            result = await session.call_tool(
+                name,
+                arguments=arguments,
+                read_timeout_seconds=read_timeout,
+            )
+        except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if session is not None:
+                await self._reset_session(expected=session)
             logger.warning(
                 "XHS MCP call failed tool=%s exception_type=%s",
                 name,
@@ -269,6 +259,62 @@ class XhsMcpClient:
         return XhsMcpToolResponse(
             structured_content=dict(structured),
         )
+
+    async def _get_session(self) -> ClientSession:
+        if self._session is not None:
+            return self._session
+
+        async with self._session_lock:
+            if self._session is not None:
+                return self._session
+
+            stack = AsyncExitStack()
+            try:
+                http_client = await stack.enter_async_context(
+                    httpx.AsyncClient(
+                        headers=self._headers(),
+                        timeout=httpx.Timeout(self._timeout_seconds),
+                        follow_redirects=False,
+                    )
+                )
+                read_stream, write_stream, _ = await stack.enter_async_context(
+                    streamable_http_client(
+                        self._url,
+                        http_client=http_client,
+                        terminate_on_close=True,
+                    )
+                )
+                session = await stack.enter_async_context(
+                    ClientSession(
+                        read_stream,
+                        write_stream,
+                        read_timeout_seconds=timedelta(seconds=self._timeout_seconds),
+                    )
+                )
+                await session.initialize()
+            except BaseException:
+                await stack.aclose()
+                raise
+
+            self._session_stack = stack
+            self._session = session
+            return session
+
+    async def _reset_session(self, *, expected: ClientSession | None = None) -> None:
+        async with self._session_lock:
+            if expected is not None and self._session is not expected:
+                return
+            stack = self._session_stack
+            self._session = None
+            self._session_stack = None
+            if stack is not None:
+                await stack.aclose()
+
+    def _headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self._auth_token is not None:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
+        return headers
 
 
 def _safe_error_code(value: Any) -> str:

@@ -54,6 +54,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        if xhs_mcp_client is not None:
+            await xhs_mcp_client.aclose()
         if amap_client is not None:
             await amap_client.aclose()
         if database_engine is not None:

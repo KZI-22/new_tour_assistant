@@ -30,45 +30,82 @@ class StubMcpClient(XhsMcpClient):
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_client_sends_bearer_and_reads_structured_content(
+async def test_streamable_http_client_reuses_stateful_session_across_login_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, Any] = {}
+    captured: dict[str, Any] = {
+        "http_client_count": 0,
+        "http_exit_count": 0,
+        "stream_exit_count": 0,
+        "session_count": 0,
+        "session_exit_count": 0,
+        "initialize_count": 0,
+        "calls": [],
+    }
 
     class FakeHttpClient:
         def __init__(self, **kwargs: Any) -> None:
+            captured["http_client_count"] += 1
             captured["http_kwargs"] = kwargs
 
         async def __aenter__(self) -> FakeHttpClient:
             return self
 
         async def __aexit__(self, *_: Any) -> None:
+            captured["http_exit_count"] += 1
             return None
 
     @asynccontextmanager
     async def fake_streamable_http_client(url: str, **kwargs: Any):
         captured["url"] = url
         captured["stream_kwargs"] = kwargs
-        yield object(), object(), lambda: None
+        try:
+            yield object(), object(), lambda: None
+        finally:
+            captured["stream_exit_count"] += 1
 
     class FakeSession:
         def __init__(self, *_: Any, **__: Any) -> None:
-            pass
+            captured["session_count"] += 1
 
         async def __aenter__(self) -> FakeSession:
             return self
 
         async def __aexit__(self, *_: Any) -> None:
+            captured["session_exit_count"] += 1
             return None
 
         async def initialize(self) -> None:
-            captured["initialized"] = True
+            captured["initialize_count"] += 1
 
         async def call_tool(self, name: str, **kwargs: Any) -> CallToolResult:
-            captured["tool"] = (name, kwargs)
+            captured["calls"].append((name, kwargs))
+            responses = {
+                "xhs_check_login": {
+                    "is_logged_in": False,
+                    "checked_at": "2026-07-20T16:00:00+08:00",
+                },
+                "xhs_start_login": {
+                    "login_id": "fixture-login",
+                    "status": "pending",
+                    "created_at": "2026-07-20T16:00:00+08:00",
+                    "expires_at": "2026-07-20T16:04:00+08:00",
+                    "is_logged_in": False,
+                    "message": "请在 Chrome 中完成登录。",
+                },
+                "xhs_get_login_status": {
+                    "login_id": "fixture-login",
+                    "status": "succeeded",
+                    "created_at": "2026-07-20T16:00:00+08:00",
+                    "expires_at": "2026-07-20T16:04:00+08:00",
+                    "is_logged_in": True,
+                    "message": "登录成功。",
+                },
+                "xhs_search_notes": {"keyword": "成都攻略", "items": []},
+            }
             return CallToolResult(
                 content=[],
-                structuredContent={"keyword": "成都攻略", "items": []},
+                structuredContent=responses[name],
                 isError=False,
             )
 
@@ -80,16 +117,36 @@ async def test_streamable_http_client_sends_bearer_and_reads_structured_content(
     )
     monkeypatch.setattr(xhs_client_module, "ClientSession", FakeSession)
 
-    result = await XhsMcpClient(
+    client = XhsMcpClient(
         "http://xhs.internal:8765/mcp",
         auth_token="private-token",
-    ).search_notes("成都攻略")
+    )
+    checked = await client.check_login()
+    started = await client.start_login()
+    completed = await client.get_login_status(started.login_id)
+    result = await client.search_notes("成都攻略")
 
+    assert checked.is_logged_in is False
+    assert completed.status == "succeeded"
     assert result.keyword == "成都攻略"
     assert captured["http_kwargs"]["headers"] == {"Authorization": "Bearer private-token"}
     assert captured["url"] == "http://xhs.internal:8765/mcp"
-    assert captured["stream_kwargs"]["terminate_on_close"] is False
-    assert captured["initialized"] is True
+    assert captured["stream_kwargs"]["terminate_on_close"] is True
+    assert captured["http_client_count"] == 1
+    assert captured["session_count"] == 1
+    assert captured["initialize_count"] == 1
+    assert [name for name, _ in captured["calls"]] == [
+        "xhs_check_login",
+        "xhs_start_login",
+        "xhs_get_login_status",
+        "xhs_search_notes",
+    ]
+
+    await client.aclose()
+
+    assert captured["session_exit_count"] == 1
+    assert captured["stream_exit_count"] == 1
+    assert captured["http_exit_count"] == 1
 
 
 def _search_item(index: int, *, detail_available: bool = True) -> XhsSearchItem:

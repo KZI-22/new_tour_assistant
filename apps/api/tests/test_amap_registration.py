@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from app.clients.xhs_mcp_client import XhsMcpClient
 from app.core.request_context import get_request_context
 from app.core.settings import Settings
 from app.main import create_app
@@ -79,3 +81,21 @@ def test_fastapi_middleware_injects_trusted_ip_and_time_context(tmp_path: Path) 
     assert response.json()["client_ip"] == "8.8.8.8"
     assert response.json()["client_ip_is_public_ipv4"] is True
     assert response.json()["time"]["timezone"] == "Asia/Shanghai"
+
+
+def test_app_lifespan_closes_xhs_mcp_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[XhsMcpClient] = []
+
+    async def record_close(client: XhsMcpClient) -> None:
+        closed.append(client)
+
+    monkeypatch.setattr(XhsMcpClient, "aclose", record_close)
+    application = create_app(settings(tmp_path, api_key=None))
+
+    with TestClient(application):
+        pass
+
+    assert closed == [application.state.xhs_mcp_client]
