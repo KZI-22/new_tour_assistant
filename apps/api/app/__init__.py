@@ -1,2 +1,1 @@
 """Tour Assistant API package."""
-

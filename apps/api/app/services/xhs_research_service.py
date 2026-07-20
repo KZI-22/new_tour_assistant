@@ -361,9 +361,7 @@ def _select_candidates(
     items: list[XhsSearchItem],
 ) -> list[XhsSearchItem]:
     readable = [
-        item
-        for item in items
-        if item.detail_available and item.note_id and item.xsec_token
+        item for item in items if item.detail_available and item.note_id and item.xsec_token
     ]
     ranked = sorted(
         readable,

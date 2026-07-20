@@ -154,9 +154,7 @@ class ModelRegistry:
         if catalog.router_model is None:
             raise UnavailableModelError("Router model is not configured.")
         entry = next(
-            item
-            for item in catalog.models
-            if item.id == catalog.router_model and item.enabled
+            item for item in catalog.models if item.id == catalog.router_model and item.enabled
         )
         model = self._create_model(entry, temperature_override=0.0)
         return model, entry.timeout_seconds
@@ -196,6 +194,4 @@ class ModelRegistry:
                 **kwargs,
             )
         except Exception as exc:
-            raise UnavailableModelError(
-                f"Could not initialize model '{entry.id}': {exc}"
-            ) from exc
+            raise UnavailableModelError(f"Could not initialize model '{entry.id}': {exc}") from exc

@@ -146,9 +146,7 @@ class ConversationService:
                 next_sequence = 1
             else:
                 conversation = await session.scalar(
-                    select(Conversation)
-                    .where(Conversation.id == conversation_id)
-                    .with_for_update()
+                    select(Conversation).where(Conversation.id == conversation_id).with_for_update()
                 )
                 if conversation is None:
                     raise ConversationNotFoundError(str(conversation_id))

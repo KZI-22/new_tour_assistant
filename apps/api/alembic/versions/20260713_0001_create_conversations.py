@@ -52,9 +52,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.CheckConstraint(
-            "role IN ('system', 'user', 'assistant')", name="ck_messages_role"
-        ),
+        sa.CheckConstraint("role IN ('system', 'user', 'assistant')", name="ck_messages_role"),
         sa.CheckConstraint(
             "status IN ('streaming', 'completed', 'failed', 'interrupted')",
             name="ck_messages_status",
@@ -75,4 +73,3 @@ def downgrade() -> None:
     op.drop_table("messages")
     op.drop_index("ix_conversations_updated_at", table_name="conversations")
     op.drop_table("conversations")
-

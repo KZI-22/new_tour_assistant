@@ -110,15 +110,11 @@ async def test_conversation_round_trip_in_postgres() -> None:
         tool_calls_by_id = {item.tool_call_id: item for item in detail.tool_calls}
         assert tool_calls_by_id["database-tool-call"].data_status == "usable"
         assert tool_calls_by_id["database-tool-call"].normalized_item_count == 2
-        assert tool_calls_by_id["database-rate-limit-call"].error_code == (
-            "PROVIDER_RATE_LIMITED"
-        )
+        assert tool_calls_by_id["database-rate-limit-call"].error_code == ("PROVIDER_RATE_LIMITED")
         assert tool_calls_by_id["database-rate-limit-call"].provider_error_code == "10003"
         async with session_factory() as session:
             tool_log = await session.scalar(
-                select(ToolCallLog).where(
-                    ToolCallLog.tool_call_id == "database-tool-call"
-                )
+                select(ToolCallLog).where(ToolCallLog.tool_call_id == "database-tool-call")
             )
         assert tool_log is not None
         assert tool_log.arguments_json == {"origin": "上海", "destination": "北京"}
