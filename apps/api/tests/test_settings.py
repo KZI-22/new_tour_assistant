@@ -63,15 +63,8 @@ def test_get_settings_reads_amap_and_request_context_configuration(
 def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIP_PLANNER_ENABLED", "false")
     monkeypatch.setenv("TRIP_PLANNER_MAX_DAYS", "4")
-    monkeypatch.setenv("TRIP_PLANNER_MAX_REVISIONS", "1")
-    monkeypatch.setenv("TRIP_PLANNER_MAX_POI_CANDIDATES", "12")
-    monkeypatch.setenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "8")
-    monkeypatch.setenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "6")
-    monkeypatch.setenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "4")
-    monkeypatch.setenv("TRIP_PLANNER_TOOL_TIMEOUT_SECONDS", "80")
     monkeypatch.setenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "35")
     monkeypatch.setenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "25")
-    monkeypatch.setenv("TRIP_PLANNER_RESULT_MAX_LENGTH", "12000")
     monkeypatch.setenv("XHS_MCP_URL", "http://xhs.internal:8765/mcp/")
     monkeypatch.setenv("XHS_MCP_AUTH_TOKEN", "private-token")
     monkeypatch.setenv("XHS_MCP_TIMEOUT_SECONDS", "70")
@@ -85,15 +78,8 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
 
     assert settings.trip_planner_enabled is False
     assert settings.trip_planner_max_days == 4
-    assert settings.trip_planner_max_revisions == 1
-    assert settings.trip_planner_max_poi_candidates == 12
-    assert settings.trip_planner_max_transport_options == 8
-    assert settings.trip_planner_max_hotel_options == 6
-    assert settings.trip_planner_max_daily_activities == 4
-    assert settings.trip_planner_tool_timeout_seconds == 80
     assert settings.trip_planner_model_timeout_seconds == 35
     assert settings.trip_planner_request_extraction_timeout_seconds == 25
-    assert settings.trip_planner_result_max_length == 12000
     assert settings.xhs_mcp_url == "http://xhs.internal:8765/mcp"
     assert settings.xhs_mcp_auth_token == "private-token"
     assert settings.xhs_mcp_timeout_seconds == 70
@@ -103,3 +89,14 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     assert settings.xhs_login_poll_seconds == 2.5
     assert settings.xhs_sse_heartbeat_seconds == 16
     assert "private-token" not in repr(settings)
+    legacy_names = {
+        "trip_planner_max_revisions",
+        "trip_planner_max_poi_candidates",
+        "trip_planner_max_transport_options",
+        "trip_planner_max_hotel_options",
+        "trip_planner_max_hotel_geocodes",
+        "trip_planner_max_daily_activities",
+        "trip_planner_tool_timeout_seconds",
+        "trip_planner_result_max_length",
+    }
+    assert legacy_names.isdisjoint(settings.__dataclass_fields__)

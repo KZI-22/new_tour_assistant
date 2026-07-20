@@ -18,7 +18,6 @@ from app.db.session import create_database
 from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
 from app.services.tool_call_log_service import ToolCallLogService
-from app.services.trip_plan_service import TripPlanService
 from app.services.xhs_research_service import XhsResearchService
 from app.tools import build_travel_tools
 
@@ -33,12 +32,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database_engine = None
     conversation_service = None
     tool_call_log_service = None
-    trip_plan_service = None
     if current_settings.database_url:
         database_engine, session_factory = create_database(current_settings.database_url)
         conversation_service = ConversationService(session_factory)
         tool_call_log_service = ToolCallLogService(session_factory)
-        trip_plan_service = TripPlanService(session_factory)
 
     amap_client = None
     if current_settings.amap_api_key:
@@ -116,7 +113,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.conversation_service = conversation_service
     application.state.tool_call_log_service = tool_call_log_service
-    application.state.trip_plan_service = trip_plan_service
     application.state.xhs_mcp_client = xhs_mcp_client
     application.state.xhs_research_service = xhs_research_service
     application.state.flyai_client = flyai_client

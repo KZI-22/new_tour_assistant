@@ -5,7 +5,7 @@
 - 通过 YAML 配置新增、禁用或删除模型。
 - OpenAI、Anthropic、Google GenAI 及 OpenAI-compatible 接口接入方式。
 - FastAPI + LangChain 的 SSE 流式聊天接口。
-- Python FlyAI CLI 客户端，以及航班、火车、酒店、POI 四个结构化 LangChain Tool。
+- Python FlyAI CLI 客户端，以及航班、火车、酒店三个结构化 LangChain Tool。
 - 高德 Web Service 异步客户端，以及 IP 城市推测、POI、路线、距离矩阵、天气五个结构化 Tool。
 - 单 Agent 工具调用闭环，支持多轮决策、同轮并发、统一错误和最大轮数限制。
 - SSE 工具调用状态与前端进度展示，以及脱敏的 PostgreSQL 工具调用审计日志。
@@ -18,8 +18,8 @@
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
 系统先区分普通聊天/单项查询和城市旅游规划。前两类继续使用原有 `AgentExecutor` 工具循环；
-城市规划和基于最近对话的攻略调整进入独立的小红书 LangGraph。混合请求会先询问用户要执行
-规划还是单项查询，不会让规划图查询机票、火车票或酒店。
+城市规划和基于最近对话的攻略调整进入独立的小红书 LangGraph。混合请求只要核心交付物是攻略，
+就进入小红书规划链路；附带的实时机票、火车票或酒店查询不会在该轮执行。
 
 ## 项目结构
 
@@ -119,11 +119,20 @@ XHS_MCP_URL=http://127.0.0.1:8765/mcp
 XHS_MCP_AUTH_TOKEN=copy-the-token-from-xhs-read-mcp
 XHS_MCP_TIMEOUT_SECONDS=75
 XHS_EVIDENCE_MAX_CHARS=12000
+XHS_MIN_POST_CONTENT_CHARS=200
+XHS_DETAIL_CANDIDATE_LIMIT=5
+XHS_LOGIN_POLL_SECONDS=2
+XHS_SSE_HEARTBEAT_SECONDS=15
 ```
 
-规划链路支持一个目标城市和 1–5 天行程。搜索词固定由城市和天数组合；搜索后按结果顺序读取
-最多两篇可用正文，`xsec_token` 只在 MCP 客户端内部使用，不进入 LangGraph 状态、模型提示、
-日志或数据库。用户原始表达会作为美食、亲子、节奏等软偏好保留，但不会被额外提取成必填字段。
+规划链路支持一个目标城市和 1–5 天行程，搜索词固定为 `{城市} {天数}日游 攻略`。每次搜索前
+都会检查 MCP 登录状态；未登录时通过当前 SSE 返回二维码，扫码成功后自动继续同一请求。搜索固定
+使用 `most_liked` 和其余 `any` 筛选，在首次加载结果中按标准化点赞量选择最多五篇详情候选，
+取得两篇有效正文后停止。第一篇作为主帖决定主体路线，第二篇只补充缺失信息；只有一篇时明确
+降级说明，没有有效正文时不调用生成模型。`xsec_token` 只在 MCP 客户端内部使用，不进入
+LangGraph 状态、模型提示、日志或数据库。
+
+当前规划架构与事实边界见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
 
 在启动后端前，需要在本机或可访问的私有网络中运行 `xhs-read-mcp`。使用其 Docker Compose 时：
 
@@ -234,9 +243,10 @@ python -m pytest
 ruff check .
 ```
 
-小红书规划测试覆盖请求路由、仅城市/天数追问、搜索词组合、搜索结果与详情字段对齐、最多两篇
-正文选择、Token 隔离、结构化生成和 SSE 阶段事件。MCP 单元测试使用 Fake Client，不访问真实
-小红书；数据库、FlyAI、高德及真实模型测试仍按对应环境变量显式启用，避免默认消耗外部配额。
+小红书规划测试覆盖请求路由、仅城市/天数追问、二维码登录、固定搜索协议、点赞量标准化、
+主辅帖选择、Token 隔离、来源白名单、结构化生成和 SSE 阶段事件。MCP 单元测试使用 Fake Client，
+不访问真实小红书；数据库、FlyAI、高德及真实模型测试仍按对应环境变量显式启用，避免默认消耗
+外部配额。
 
 FlyAI 单元测试全部使用 mock，不消耗请求额度。若要手工执行一次真实航班集成测试，先确认
 `flyai --help` 可用，再在 PowerShell 中设置测试条件：

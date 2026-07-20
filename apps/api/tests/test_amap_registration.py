@@ -25,6 +25,7 @@ def test_missing_amap_key_keeps_the_existing_three_flyai_tools(tmp_path: Path) -
     application = create_app(settings(tmp_path, api_key=None))
 
     assert application.state.amap_client is None
+    assert not hasattr(application.state, "trip_plan_service")
     assert {tool.name for tool in application.state.travel_tools} == {
         "search_flight",
         "search_train",

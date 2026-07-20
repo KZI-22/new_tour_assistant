@@ -61,16 +61,8 @@ class Settings:
     trusted_proxy_cidrs: tuple[str, ...] = ()
     trip_planner_enabled: bool = True
     trip_planner_max_days: int = 5
-    trip_planner_max_revisions: int = 2
-    trip_planner_max_poi_candidates: int = 20
-    trip_planner_max_transport_options: int = 16
-    trip_planner_max_hotel_options: int = 10
-    trip_planner_max_hotel_geocodes: int = 3
-    trip_planner_max_daily_activities: int = 5
-    trip_planner_tool_timeout_seconds: float = 130
     trip_planner_model_timeout_seconds: float = 45
     trip_planner_request_extraction_timeout_seconds: float = 30
-    trip_planner_result_max_length: int = 12_000
     xhs_mcp_url: str = "http://127.0.0.1:8765/mcp"
     xhs_mcp_auth_token: str | None = field(default=None, repr=False)
     xhs_mcp_timeout_seconds: float = 75
@@ -83,17 +75,10 @@ class Settings:
     def __post_init__(self) -> None:
         positive_values = {
             "trip_planner_max_days": self.trip_planner_max_days,
-            "trip_planner_max_poi_candidates": self.trip_planner_max_poi_candidates,
-            "trip_planner_max_transport_options": self.trip_planner_max_transport_options,
-            "trip_planner_max_hotel_options": self.trip_planner_max_hotel_options,
-            "trip_planner_max_hotel_geocodes": self.trip_planner_max_hotel_geocodes,
-            "trip_planner_max_daily_activities": self.trip_planner_max_daily_activities,
-            "trip_planner_tool_timeout_seconds": self.trip_planner_tool_timeout_seconds,
             "trip_planner_model_timeout_seconds": self.trip_planner_model_timeout_seconds,
             "trip_planner_request_extraction_timeout_seconds": (
                 self.trip_planner_request_extraction_timeout_seconds
             ),
-            "trip_planner_result_max_length": self.trip_planner_result_max_length,
             "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
             "xhs_evidence_max_chars": self.xhs_evidence_max_chars,
             "xhs_min_post_content_chars": self.xhs_min_post_content_chars,
@@ -103,8 +88,6 @@ class Settings:
         }
         if any(value <= 0 for value in positive_values.values()):
             raise ValueError("Trip planner limits and timeouts must be positive.")
-        if self.trip_planner_max_revisions < 0:
-            raise ValueError("trip_planner_max_revisions cannot be negative.")
         if self.amap_min_request_interval_seconds < 0:
             raise ValueError("amap_min_request_interval_seconds cannot be negative.")
         if self.trip_planner_enabled and not self.xhs_mcp_url.startswith(("http://", "https://")):
@@ -146,24 +129,12 @@ def get_settings() -> Settings:
         trusted_proxy_cidrs=trusted_proxy_cidrs,
         trip_planner_enabled=_environment_bool("TRIP_PLANNER_ENABLED", True),
         trip_planner_max_days=int(os.getenv("TRIP_PLANNER_MAX_DAYS", "5")),
-        trip_planner_max_revisions=int(os.getenv("TRIP_PLANNER_MAX_REVISIONS", "2")),
-        trip_planner_max_poi_candidates=int(os.getenv("TRIP_PLANNER_MAX_POI_CANDIDATES", "20")),
-        trip_planner_max_transport_options=int(
-            os.getenv("TRIP_PLANNER_MAX_TRANSPORT_OPTIONS", "16")
-        ),
-        trip_planner_max_hotel_options=int(os.getenv("TRIP_PLANNER_MAX_HOTEL_OPTIONS", "10")),
-        trip_planner_max_hotel_geocodes=int(os.getenv("TRIP_PLANNER_MAX_HOTEL_GEOCODES", "3")),
-        trip_planner_max_daily_activities=int(os.getenv("TRIP_PLANNER_MAX_DAILY_ACTIVITIES", "5")),
-        trip_planner_tool_timeout_seconds=float(
-            os.getenv("TRIP_PLANNER_TOOL_TIMEOUT_SECONDS", "130")
-        ),
         trip_planner_model_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "45")
         ),
         trip_planner_request_extraction_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")
         ),
-        trip_planner_result_max_length=int(os.getenv("TRIP_PLANNER_RESULT_MAX_LENGTH", "12000")),
         xhs_mcp_url=(os.getenv("XHS_MCP_URL") or "http://127.0.0.1:8765/mcp").rstrip("/"),
         xhs_mcp_auth_token=os.getenv("XHS_MCP_AUTH_TOKEN") or None,
         xhs_mcp_timeout_seconds=float(os.getenv("XHS_MCP_TIMEOUT_SECONDS", "75")),

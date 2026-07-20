@@ -4,16 +4,14 @@ import os
 
 import pytest
 from app.core.settings import PROJECT_ROOT
-from app.db.models import ToolCallLog, TravelPlanVersion
+from app.db.models import ToolCallLog
 from app.db.session import create_database
-from app.schemas.itinerary import DayPlan, ItineraryPlan, TripRequest
 from app.services.conversation_service import ConversationService
 from app.services.tool_call_log_service import (
     ToolCallLogEntry,
     ToolCallLogService,
     ToolCallQualityUpdate,
 )
-from app.services.trip_plan_service import TripPlanService
 from dotenv import load_dotenv
 from sqlalchemy import select
 
@@ -30,7 +28,6 @@ async def test_conversation_round_trip_in_postgres() -> None:
     engine, session_factory = create_database(database_url)
     service = ConversationService(session_factory)
     tool_log_service = ToolCallLogService(session_factory)
-    trip_plan_service = TripPlanService(session_factory)
     conversation_id = None
 
     try:
@@ -114,59 +111,6 @@ async def test_conversation_round_trip_in_postgres() -> None:
         assert tool_log.result_summary == "已取得 2 条可用数据。"
         assert tool_log.provider_error_code is None
 
-        request = TripRequest(
-            origin="南京",
-            destinations=["杭州"],
-            start_date="2026-07-20",
-            end_date="2026-07-21",
-        )
-        plan = ItineraryPlan(
-            title="杭州两日游",
-            origin="南京",
-            destination="杭州",
-            start_date="2026-07-20",
-            end_date="2026-07-21",
-            days=[
-                DayPlan(date="2026-07-20", day_index=1),
-                DayPlan(date="2026-07-21", day_index=2),
-            ],
-        )
-        partial = await trip_plan_service.save_partial_plan(
-            turn.conversation_id,
-            request,
-            plan,
-        )
-        current_partial = await trip_plan_service.get_current(turn.conversation_id)
-        assert partial.status == "draft"
-        assert partial.version == 0
-        assert current_partial is not None and current_partial.plan == plan
-        assert current_partial.status == "draft"
-        assert current_partial.version == 0
-
-        version_one = await trip_plan_service.save_plan(turn.conversation_id, request, plan)
-        updated_plan = plan.model_copy(deep=True)
-        updated_plan.warnings.append("第二版")
-        version_two = await trip_plan_service.save_plan(
-            turn.conversation_id,
-            request,
-            updated_plan,
-            change_summary="增加第二版提醒",
-        )
-        current = await trip_plan_service.get_current(turn.conversation_id)
-        async with session_factory() as session:
-            versions = list(
-                await session.scalars(
-                    select(TravelPlanVersion)
-                    .where(TravelPlanVersion.plan_id == version_one.id)
-                    .order_by(TravelPlanVersion.version)
-                )
-            )
-
-        assert version_one.version == 1
-        assert version_two.version == 2
-        assert current is not None and current.plan == updated_plan
-        assert [item.version for item in versions] == [1, 2]
-        assert versions[0].plan_json["warnings"] == []
     finally:
         if conversation_id is not None:
             await service.delete_conversation(conversation_id)
