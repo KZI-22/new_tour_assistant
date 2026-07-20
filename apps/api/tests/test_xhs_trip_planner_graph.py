@@ -20,7 +20,11 @@ from app.graphs.xhs_trip_planner import (
     build_search_keyword,
 )
 from app.schemas.chat import ChatMessage
-from app.schemas.tool_execution import MessageDeltaEvent, PlanningStageEvent
+from app.schemas.tool_execution import (
+    MessageDeltaEvent,
+    PlanningStageEvent,
+    PlanningTraceEvent,
+)
 from app.schemas.xhs_planning import (
     XhsDayPlan,
     XhsItineraryPlan,
@@ -32,7 +36,7 @@ from app.schemas.xhs_planning import (
     XhsTripRequestExtraction,
 )
 from app.services.xhs_itinerary_renderer import render_xhs_itinerary
-from app.services.xhs_research_service import XhsResearchError
+from app.services.xhs_research_service import XhsResearchError, XhsResearchTraceUpdate
 
 
 def test_build_search_keyword_uses_only_city_and_duration() -> None:
@@ -187,10 +191,51 @@ class FakeResearchService:
         _: str,
         *,
         on_search_complete: Any = None,
+        on_trace: Any = None,
     ) -> XhsResearchResult:
         self.collect_calls += 1
         if on_search_complete is not None:
             on_search_complete(1)
+        if on_trace is not None:
+            on_trace(
+                XhsResearchTraceUpdate(
+                    step="search_results",
+                    title="小红书返回 1 条搜索结果",
+                    status="success",
+                    data={
+                        "keyword": "成都 3日游 攻略",
+                        "total_count": 1,
+                        "candidate_count": 1,
+                        "posts": [
+                            {
+                                "search_rank": 1,
+                                "note_id": "fixture-note",
+                                "title": "脱敏笔记",
+                                "author_name": "脱敏作者",
+                                "liked_count_raw": "3万+",
+                                "selection_status": "candidate",
+                                "reason": "进入详情候选",
+                            }
+                        ],
+                    },
+                )
+            )
+            on_trace(
+                XhsResearchTraceUpdate(
+                    step="evidence_selected",
+                    title="最终采用 1 篇小红书笔记",
+                    status="partial",
+                    data={
+                        "posts": [
+                            {
+                                "reference_id": "source_1",
+                                "note_id": "fixture-note",
+                                "title": "脱敏笔记",
+                            }
+                        ]
+                    },
+                )
+            )
         result = self._collections.popleft()
         if isinstance(result, Exception):
             raise result
@@ -235,6 +280,27 @@ async def test_logged_in_request_searches_without_login_event() -> None:
     assert not any(getattr(event, "type", None) == "xhs_login_required" for event in events)
     stages = [event.stage for event in events if isinstance(event, PlanningStageEvent)]
     assert "checking_xhs_login" in stages
+
+
+@pytest.mark.asyncio
+async def test_planner_emits_ordered_sanitized_debug_trace() -> None:
+    events = await _collect_events(FakeResearchService(login_checks=[True]))
+
+    traces = [event for event in events if isinstance(event, PlanningTraceEvent)]
+
+    assert [trace.sequence for trace in traces] == list(range(1, len(traces) + 1))
+    assert [trace.step for trace in traces[:4]] == [
+        "request_received",
+        "route_selected",
+        "requirements_extracted",
+        "requirements_validated",
+    ]
+    search = next(trace for trace in traces if trace.step == "search_results")
+    assert search.data["keyword"] == "成都 3日游 攻略"
+    assert search.data["posts"][0]["title"] == "脱敏笔记"
+    serialized = json.dumps([trace.model_dump(mode="json") for trace in traces])
+    assert "xsec_token" not in serialized
+    assert "fixture-login" not in serialized
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
+_JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
+
 
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -61,6 +63,11 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    debug_trace_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        _JSON_DOCUMENT,
+        nullable=False,
+        default=list,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -118,9 +125,6 @@ class ToolCallLog(Base):
         Index("ix_tool_call_logs_conversation_created", "conversation_id", "created_at"),
         Index("ix_tool_call_logs_assistant_message", "assistant_message_id"),
     )
-
-
-_JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
 
 
 class TravelPlan(Base):

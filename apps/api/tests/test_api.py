@@ -11,6 +11,7 @@ from app.schemas.chat import ChatMessage
 from app.schemas.tool_execution import (
     MessageDeltaEvent,
     PlanningStageEvent,
+    PlanningTraceEvent,
     ToolCallEvent,
     ToolResultEvent,
     XhsLoginRequiredEvent,
@@ -105,11 +106,18 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
                 display_name="正在理解旅行需求",
                 status="success",
             )
+            yield PlanningTraceEvent(
+                sequence=1,
+                step="search_query_built",
+                title="已组装小红书搜索请求",
+                status="success",
+                data={"keyword": "你好 2日游 攻略"},
+            )
             yield MessageDeltaEvent(delta="你")
             yield MessageDeltaEvent(delta="好")
 
     class FakeConversationService:
-        finished: tuple[uuid.UUID, str, str] | None = None
+        finished: tuple[uuid.UUID, str, str, list[dict[str, object]]] | None = None
 
         async def start_turn(
             self, requested_id: uuid.UUID | None, model_id: str, content: str
@@ -125,9 +133,13 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
             )
 
         async def finish_turn(
-            self, message_id: uuid.UUID, content: str, message_status: str
+            self,
+            message_id: uuid.UUID,
+            content: str,
+            message_status: str,
+            debug_trace: list[dict[str, object]] | None = None,
         ) -> None:
-            self.finished = (message_id, content, message_status)
+            self.finished = (message_id, content, message_status, debug_trace or [])
 
     conversation_service = FakeConversationService()
     client.app.state.chat_service = FakeChatService()
@@ -147,11 +159,14 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assert conversation_event in response.text
     assert 'event: message_start\ndata: {"type":"message_start"' in response.text
     assert 'event: planning_stage\ndata: {"type":"planning_stage"' in response.text
+    assert 'event: planning_trace\ndata: {"type":"planning_trace"' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"你"}' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"好"}' in response.text
     assert 'event: message_end\ndata: {"type":"message_end"' in response.text
     assert f'event: done\ndata: {{"conversation_id":"{conversation_id}"}}' in response.text
-    assert conversation_service.finished == (assistant_message_id, "你好", "completed")
+    assert conversation_service.finished is not None
+    assert conversation_service.finished[:3] == (assistant_message_id, "你好", "completed")
+    assert conversation_service.finished[3][0]["data"] == {"keyword": "你好 2日游 攻略"}
 
 
 def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Path) -> None:
@@ -190,7 +205,11 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
             )
 
         async def finish_turn(
-            self, message_id: uuid.UUID, content: str, message_status: str
+            self,
+            message_id: uuid.UUID,
+            content: str,
+            message_status: str,
+            **_: object,
         ) -> None:
             self.finished = (message_id, content, message_status)
 
@@ -247,7 +266,11 @@ def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> No
             )
 
         async def finish_turn(
-            self, message_id: uuid.UUID, content: str, message_status: str
+            self,
+            message_id: uuid.UUID,
+            content: str,
+            message_status: str,
+            **_: object,
         ) -> None:
             self.finished = (message_id, content, message_status)
 
@@ -321,7 +344,11 @@ def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Pat
             )
 
         async def finish_turn(
-            self, message_id: uuid.UUID, content: str, message_status: str
+            self,
+            message_id: uuid.UUID,
+            content: str,
+            message_status: str,
+            **_: object,
         ) -> None:
             assert message_id == assistant_message_id
             assert content == "航班查询成功，火车查询暂不可用。"
@@ -391,7 +418,11 @@ def test_stream_chat_returns_controlled_error_when_tool_loop_limit_is_reached(
             )
 
         async def finish_turn(
-            self, message_id: uuid.UUID, content: str, message_status: str
+            self,
+            message_id: uuid.UUID,
+            content: str,
+            message_status: str,
+            **_: object,
         ) -> None:
             self.finished = (message_id, content, message_status)
 

@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Protocol
+from time import perf_counter
+from typing import Any, Literal, Protocol
 
 from app.clients.xhs_mcp_client import (
     XhsLoginSessionResult,
@@ -21,6 +23,26 @@ _MAX_POSTS = 2
 _DETAIL_BATCH_SIZE = 2
 _COUNT_PATTERN = re.compile(r"^(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>[千萬万]?)\+?$")
 _COUNT_MULTIPLIERS = {"": 1, "千": 1_000, "万": 10_000, "萬": 10_000}
+
+
+@dataclass(frozen=True, slots=True)
+class XhsResearchTraceUpdate:
+    step: Literal["search_results", "post_detail", "evidence_selected"]
+    title: str
+    status: Literal["success", "partial", "failed", "skipped"]
+    data: dict[str, Any]
+    duration_ms: int | None = None
+
+
+XhsResearchTraceCallback = Callable[[XhsResearchTraceUpdate], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _DetailAttempt:
+    item: XhsSearchItem
+    result: XhsNoteDetailResult | None
+    error: BaseException | None
+    duration_ms: int
 
 
 class XhsResearchError(RuntimeError):
@@ -98,13 +120,43 @@ class XhsResearchService:
         keyword: str,
         *,
         on_search_complete: Callable[[int], None] | None = None,
+        on_trace: XhsResearchTraceCallback | None = None,
     ) -> XhsResearchResult:
+        search_started = perf_counter()
         try:
             search = await self._client.search_notes(keyword)
         except XhsMcpClientError as exc:
+            _emit_trace(
+                on_trace,
+                XhsResearchTraceUpdate(
+                    step="search_results",
+                    title="小红书搜索失败",
+                    status="failed",
+                    duration_ms=_duration_ms(search_started),
+                    data={"keyword": keyword, "error_code": exc.code},
+                ),
+            )
             raise _research_error(exc) from exc
 
         candidates = _select_candidates(search.items, self._detail_candidate_limit)
+        _emit_trace(
+            on_trace,
+            XhsResearchTraceUpdate(
+                step="search_results",
+                title=f"小红书返回 {len(search.items)} 条搜索结果",
+                status="success" if candidates else "failed",
+                duration_ms=_duration_ms(search_started),
+                data={
+                    "keyword": search.keyword or keyword,
+                    "sort_by": "most_liked",
+                    "result_scope": "initial_results_only",
+                    "total_count": len(search.items),
+                    "candidate_count": len(candidates),
+                    "candidate_limit": self._detail_candidate_limit,
+                    "posts": _search_trace_posts(search.items, candidates),
+                },
+            ),
+        )
         if on_search_complete is not None:
             on_search_complete(len(candidates))
         if not candidates:
@@ -120,21 +172,74 @@ class XhsResearchService:
             batch_size = min(_DETAIL_BATCH_SIZE, _MAX_POSTS - len(collected))
             batch = candidates[cursor : cursor + batch_size]
             cursor += len(batch)
-            results = await asyncio.gather(
-                *(self._client.get_note_detail(item.note_id, item.xsec_token) for item in batch),
-                return_exceptions=True,
+            attempts = await asyncio.gather(
+                *(self._read_detail(item) for item in batch),
             )
-            for item, result in zip(batch, results, strict=True):
-                if isinstance(result, asyncio.CancelledError):
-                    raise result
-                if isinstance(result, BaseException):
+            for attempt in attempts:
+                item = attempt.item
+                result = attempt.result
+                if attempt.error is not None:
                     failed_details += 1
+                    error_code = (
+                        attempt.error.code
+                        if isinstance(attempt.error, XhsMcpClientError)
+                        else "DETAIL_READ_FAILED"
+                    )
+                    _emit_trace(
+                        on_trace,
+                        XhsResearchTraceUpdate(
+                            step="post_detail",
+                            title=item.title or "未命名笔记",
+                            status="failed",
+                            duration_ms=attempt.duration_ms,
+                            data={
+                                "note_id": item.note_id,
+                                "search_rank": item.index + 1,
+                                "result": "detail_failed",
+                                "error_code": error_code,
+                            },
+                        ),
+                    )
                     continue
+                assert result is not None
                 content = result.detail.description.strip()
                 if len(content) < self._min_post_content_chars:
                     failed_details += 1
+                    _emit_trace(
+                        on_trace,
+                        XhsResearchTraceUpdate(
+                            step="post_detail",
+                            title=result.detail.title or item.title or "未命名笔记",
+                            status="skipped",
+                            duration_ms=attempt.duration_ms,
+                            data={
+                                "note_id": result.detail.note_id or item.note_id,
+                                "search_rank": item.index + 1,
+                                "result": "content_too_short",
+                                "content_chars": len(content),
+                                "minimum_content_chars": self._min_post_content_chars,
+                            },
+                        ),
+                    )
                     continue
                 collected.append((item, result))
+                _emit_trace(
+                    on_trace,
+                    XhsResearchTraceUpdate(
+                        step="post_detail",
+                        title=result.detail.title or item.title or "未命名笔记",
+                        status="success",
+                        duration_ms=attempt.duration_ms,
+                        data={
+                            "note_id": result.detail.note_id or item.note_id,
+                            "search_rank": item.index + 1,
+                            "result": "selected",
+                            "reference_id": f"source_{len(collected)}",
+                            "content_chars": len(content),
+                            "content_preview": content[:240],
+                        },
+                    ),
+                )
 
         if not collected:
             raise XhsResearchError(
@@ -174,10 +279,55 @@ class XhsResearchService:
             warnings.append("本次只有一篇小红书笔记正文可用，方案依据相对有限。")
         if failed_details:
             warnings.append(f"有 {failed_details} 篇候选笔记未能读取，已跳过。")
+        _emit_trace(
+            on_trace,
+            XhsResearchTraceUpdate(
+                step="evidence_selected",
+                title=f"最终采用 {len(posts)} 篇小红书笔记",
+                status="success" if len(posts) == _MAX_POSTS else "partial",
+                data={
+                    "posts": [
+                        {
+                            "reference_id": post.reference_id,
+                            "role": post.role,
+                            "note_id": post.note_id,
+                            "search_rank": post.search_rank,
+                            "title": post.title,
+                            "author_name": post.author_name,
+                            "liked_count_raw": post.liked_count_raw,
+                            "liked_count": post.liked_count,
+                            "content_chars": len(post.content),
+                        }
+                        for post in posts
+                    ],
+                    "warnings": warnings,
+                },
+            ),
+        )
         return XhsResearchResult(
             keyword=search.keyword or keyword,
             posts=posts,
             warnings=warnings,
+        )
+
+    async def _read_detail(self, item: XhsSearchItem) -> _DetailAttempt:
+        started = perf_counter()
+        try:
+            result = await self._client.get_note_detail(item.note_id, item.xsec_token)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            return _DetailAttempt(
+                item=item,
+                result=None,
+                error=exc,
+                duration_ms=_duration_ms(started),
+            )
+        return _DetailAttempt(
+            item=item,
+            result=result,
+            error=None,
+            duration_ms=_duration_ms(started),
         )
 
 
@@ -238,9 +388,67 @@ def _candidate_sort_key(item: XhsSearchItem) -> tuple[bool, int, int]:
     return liked_count is None, -(liked_count or 0), item.index
 
 
+def _search_trace_posts(
+    items: list[XhsSearchItem],
+    candidates: list[XhsSearchItem],
+) -> list[dict[str, Any]]:
+    candidate_objects = {id(item) for item in candidates}
+    candidate_note_ids = {item.note_id for item in candidates}
+    posts: list[dict[str, Any]] = []
+    for item in sorted(items, key=lambda candidate: candidate.index):
+        if id(item) in candidate_objects:
+            selection_status = "candidate"
+            reason_code = "selected_for_detail"
+            reason = "进入详情候选"
+        elif not item.detail_available:
+            selection_status = "rejected"
+            reason_code = "detail_unavailable"
+            reason = "搜索结果缺少可读取详情"
+        elif not item.note_id or not item.xsec_token:
+            selection_status = "rejected"
+            reason_code = "missing_access_fields"
+            reason = "缺少详情访问参数"
+        elif item.note_id in candidate_note_ids:
+            selection_status = "rejected"
+            reason_code = "duplicate_note"
+            reason = "重复笔记"
+        else:
+            selection_status = "rejected"
+            reason_code = "candidate_limit"
+            reason = "超出详情候选上限"
+        posts.append(
+            {
+                "search_rank": item.index + 1,
+                "note_id": item.note_id,
+                "title": item.title or "未命名笔记",
+                "author_name": item.author.nickname or "未知作者",
+                "liked_count_raw": item.interactions.liked_count or None,
+                "liked_count": normalize_xhs_count(item.interactions.liked_count),
+                "detail_available": item.detail_available,
+                "selection_status": selection_status,
+                "reason_code": reason_code,
+                "reason": reason,
+            }
+        )
+    return posts
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, int((perf_counter() - started) * 1000))
+
+
+def _emit_trace(
+    callback: XhsResearchTraceCallback | None,
+    update: XhsResearchTraceUpdate,
+) -> None:
+    if callback is not None:
+        callback(update)
+
+
 __all__ = [
     "XhsReadClient",
     "XhsResearchError",
     "XhsResearchService",
+    "XhsResearchTraceUpdate",
     "normalize_xhs_count",
 ]

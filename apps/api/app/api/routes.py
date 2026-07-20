@@ -18,7 +18,11 @@ from app.core.model_registry import (
 )
 from app.schemas.chat import ChatRequest, HealthResponse, ModelListResponse
 from app.schemas.conversation import ConversationDetailResponse, ConversationSummaryResponse
-from app.schemas.tool_execution import ChatStreamEvent, MessageDeltaEvent
+from app.schemas.tool_execution import (
+    ChatStreamEvent,
+    MessageDeltaEvent,
+    PlanningTraceEvent,
+)
 from app.services.agent_executor import AgentExecutionError
 from app.services.conversation_service import ConversationNotFoundError, ConversationService
 from app.services.tool_execution import ToolExecutionContext
@@ -45,6 +49,12 @@ def _event_text(event: ChatStreamEvent | str) -> str | None:
     return None
 
 
+def _event_trace(event: ChatStreamEvent | str) -> dict[str, object] | None:
+    if isinstance(event, PlanningTraceEvent):
+        return event.model_dump(mode="json")
+    return None
+
+
 def _conversation_service(request: Request) -> ConversationService:
     service = request.app.state.conversation_service
     if service is None:
@@ -60,9 +70,15 @@ async def _finish_safely(
     message_id: UUID,
     content: str,
     message_status: str,
+    debug_trace: list[dict[str, object]] | None = None,
 ) -> None:
     try:
-        await service.finish_turn(message_id, content, message_status)
+        await service.finish_turn(
+            message_id,
+            content,
+            message_status,
+            debug_trace=debug_trace,
+        )
     except Exception:
         logger.exception("Could not persist assistant message status")
 
@@ -193,6 +209,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
 
     async def events() -> AsyncIterator[str]:
         chunks: list[str] = []
+        debug_trace: list[dict[str, object]] = []
         finalized = False
         next_event_task: asyncio.Task[ChatStreamEvent | str | None] | None = None
         try:
@@ -213,6 +230,8 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
             if first_event is not None:
                 if text := _event_text(first_event):
                     chunks.append(text)
+                if trace := _event_trace(first_event):
+                    debug_trace.append(trace)
                 yield _chat_event_sse(first_event)
             next_event_task = asyncio.create_task(anext(stream, None))
             while True:
@@ -229,12 +248,15 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                     break
                 if text := _event_text(event):
                     chunks.append(text)
+                if trace := _event_trace(event):
+                    debug_trace.append(trace)
                 yield _chat_event_sse(event)
                 next_event_task = asyncio.create_task(anext(stream, None))
             await conversation_service.finish_turn(
                 turn.assistant_message_id,
                 "".join(chunks),
                 "completed",
+                debug_trace=debug_trace,
             )
             finalized = True
             yield _sse(
@@ -253,6 +275,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                 turn.assistant_message_id,
                 "".join(chunks),
                 "failed",
+                debug_trace,
             )
             finalized = True
             yield _sse(
@@ -270,6 +293,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                 turn.assistant_message_id,
                 "".join(chunks),
                 "failed",
+                debug_trace,
             )
             finalized = True
             yield _sse(
@@ -295,6 +319,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
                         turn.assistant_message_id,
                         "".join(chunks),
                         "interrupted",
+                        debug_trace,
                     )
                 )
 

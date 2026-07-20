@@ -37,6 +37,19 @@ async def test_conversation_round_trip_in_postgres() -> None:
             turn.assistant_message_id,
             "数据库回复已保存",
             "completed",
+            debug_trace=[
+                {
+                    "type": "planning_trace",
+                    "sequence": 1,
+                    "step": "search_query_built",
+                    "title": "已生成小红书搜索词",
+                    "status": "success",
+                    "detail": None,
+                    "duration_ms": None,
+                    "data": {"keyword": "西安 两日游"},
+                    "occurred_at": "2026-07-20T08:00:00Z",
+                }
+            ],
         )
         await tool_log_service.record(
             ToolCallLogEntry(
@@ -89,6 +102,7 @@ async def test_conversation_round_trip_in_postgres() -> None:
             ("user", "数据库集成测试", "completed"),
             ("assistant", "数据库回复已保存", "completed"),
         ]
+        assert detail.messages[1].debug_trace[0].data == {"keyword": "西安 两日游"}
         assert turn.conversation_id in {
             conversation.id for conversation in await service.list_conversations()
         }

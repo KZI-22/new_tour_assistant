@@ -91,7 +91,9 @@ class FakeResearchService:
         keyword: str,
         *,
         on_search_complete: Any = None,
+        on_trace: Any = None,
     ) -> XhsResearchResult:
+        del on_trace
         self.keywords.append(keyword)
         if on_search_complete is not None:
             on_search_complete(2)

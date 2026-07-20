@@ -113,7 +113,11 @@ class ChatService:
         if self._trip_planner is not None:
             route = await self._trip_request_router.route(messages)
             if route.route == "xhs_trip_planner":
-                async for event in self._trip_planner.stream(model, messages):
+                async for event in self._trip_planner.stream(
+                    model,
+                    messages,
+                    route_source=route.source,
+                ):
                     yield event
                 return
 

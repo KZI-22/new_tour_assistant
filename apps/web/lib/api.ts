@@ -29,6 +29,7 @@ export type ConversationSummary = {
 export type PersistedMessage = ApiChatMessage & {
   sequence: number;
   status: "streaming" | "completed" | "failed" | "interrupted";
+  debug_trace: PlanningTraceUpdate[];
   created_at: string;
 };
 
@@ -84,6 +85,31 @@ export type PlanningStageUpdate = {
   detail: string | null;
 };
 
+export type PlanningTraceUpdate = {
+  type: "planning_trace";
+  sequence: number;
+  step:
+    | "request_received"
+    | "route_selected"
+    | "requirements_extracted"
+    | "requirements_validated"
+    | "login_checked"
+    | "login_completed"
+    | "search_query_built"
+    | "search_results"
+    | "post_detail"
+    | "evidence_selected"
+    | "itinerary_generated"
+    | "validation_completed"
+    | "response_completed";
+  title: string;
+  status: "running" | "success" | "partial" | "failed" | "skipped";
+  detail: string | null;
+  duration_ms: number | null;
+  data: Record<string, unknown>;
+  occurred_at: string;
+};
+
 export type XhsLoginRequiredUpdate = {
   login_id: string;
   expires_at: string;
@@ -96,6 +122,7 @@ type StreamCallbacks = {
   onToolCall?: (update: ToolCallUpdate) => void;
   onToolResult?: (update: ToolResultUpdate) => void;
   onPlanningStage?: (update: PlanningStageUpdate) => void;
+  onPlanningTrace?: (update: PlanningTraceUpdate) => void;
   onXhsLoginRequired?: (update: XhsLoginRequiredUpdate) => void;
   onDone?: () => void;
 };
@@ -260,6 +287,19 @@ export async function streamChat(
           status: data.status,
           detail: data.detail ?? null,
         });
+      }
+    } else if (parsed.event === "planning_trace") {
+      const data = parsed.data as Partial<PlanningTraceUpdate>;
+      if (
+        data.type === "planning_trace" &&
+        typeof data.sequence === "number" &&
+        data.step &&
+        data.title &&
+        data.status &&
+        data.data &&
+        data.occurred_at
+      ) {
+        callbacks.onPlanningTrace?.(data as PlanningTraceUpdate);
       }
     } else if (parsed.event === "xhs_login_required") {
       const data = parsed.data as Partial<XhsLoginRequiredUpdate>;

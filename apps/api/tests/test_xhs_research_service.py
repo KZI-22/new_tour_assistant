@@ -14,7 +14,11 @@ from app.clients.xhs_mcp_client import (
     XhsSearchItem,
     XhsSearchResult,
 )
-from app.services.xhs_research_service import XhsResearchError, XhsResearchService
+from app.services.xhs_research_service import (
+    XhsResearchError,
+    XhsResearchService,
+    XhsResearchTraceUpdate,
+)
 from mcp.types import CallToolResult
 
 
@@ -337,6 +341,7 @@ class FakeReadClient:
 async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private() -> None:
     client = FakeReadClient()
     counts: list[int] = []
+    traces: list[XhsResearchTraceUpdate] = []
 
     result = await XhsResearchService(
         client,
@@ -345,6 +350,7 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
     ).collect(
         "成都 3天 旅游攻略",
         on_search_complete=counts.append,
+        on_trace=traces.append,
     )
 
     assert counts == [3]
@@ -356,6 +362,22 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
     ]
     assert "secret-" not in result.model_dump_json()
     assert result.warnings == ["有 1 篇候选笔记未能读取，已跳过。"]
+    assert [trace.step for trace in traces] == [
+        "search_results",
+        "post_detail",
+        "post_detail",
+        "post_detail",
+        "evidence_selected",
+    ]
+    search_posts = traces[0].data["posts"]
+    assert [post["title"] for post in search_posts] == [
+        "搜索标题 0",
+        "搜索标题 1",
+        "搜索标题 2",
+    ]
+    assert all(post["selection_status"] == "candidate" for post in search_posts)
+    assert "secret-" not in repr(traces)
+    assert "xsec_token" not in repr(traces)
 
 
 class EmptyReadClient:
@@ -407,9 +429,13 @@ async def test_research_limits_candidates_after_filtering_sorting_and_deduplicat
             raise XhsMcpClientError("NOTE_UNAVAILABLE", "fixture unavailable")
 
     client = CandidateClient()
+    traces: list[XhsResearchTraceUpdate] = []
 
     with pytest.raises(XhsResearchError) as raised:
-        await XhsResearchService(client, min_post_content_chars=1).collect("成都 3日游 攻略")
+        await XhsResearchService(client, min_post_content_chars=1).collect(
+            "成都 3日游 攻略",
+            on_trace=traces.append,
+        )
 
     assert raised.value.code == "NO_USABLE_POSTS"
     assert client.detail_calls == [
@@ -419,3 +445,8 @@ async def test_research_limits_candidates_after_filtering_sorting_and_deduplicat
         ("note-3", "token-3"),
         ("note-2", "token-2"),
     ]
+    search_posts = traces[0].data["posts"]
+    assert len(search_posts) == 8
+    assert any(post["reason_code"] == "duplicate_note" for post in search_posts)
+    assert any(post["reason_code"] == "candidate_limit" for post in search_posts)
+    assert "duplicate-token" not in repr(traces)

@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.tool_execution import PlanningTraceEvent
+
 
 class ConversationMessageResponse(BaseModel):
     id: UUID
@@ -13,6 +15,7 @@ class ConversationMessageResponse(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
     status: Literal["streaming", "completed", "failed", "interrupted"]
+    debug_trace: list[PlanningTraceEvent] = Field(default_factory=list)
     created_at: datetime
 
 

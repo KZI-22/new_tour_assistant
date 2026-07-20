@@ -5,7 +5,8 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any, TypeVar, cast
+from time import perf_counter
+from typing import Any, Literal, TypeVar, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -21,6 +22,7 @@ from app.schemas.tool_execution import (
     ChatStreamEvent,
     MessageDeltaEvent,
     PlanningStageEvent,
+    PlanningTraceEvent,
     XhsLoginRequiredEvent,
 )
 from app.schemas.xhs_planning import (
@@ -32,7 +34,11 @@ from app.schemas.xhs_planning import (
 )
 from app.services.agent_executor import AgentExecutionError
 from app.services.xhs_itinerary_renderer import render_xhs_itinerary
-from app.services.xhs_research_service import XhsResearchError, XhsResearchService
+from app.services.xhs_research_service import (
+    XhsResearchError,
+    XhsResearchService,
+    XhsResearchTraceUpdate,
+)
 
 logger = logging.getLogger(__name__)
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -71,12 +77,15 @@ class XhsTripPlanner:
         self,
         model: BaseChatModel,
         messages: list[ChatMessage],
+        *,
+        route_source: Literal["llm_router", "fallback"] = "llm_router",
     ) -> AsyncIterator[ChatStreamEvent]:
         run = _XhsTripPlanningRun(
             model=model,
             messages=messages,
             research_service=self._research_service,
             settings=self._settings,
+            route_source=route_source,
         )
         async for event in run.stream():
             yield event
@@ -90,12 +99,58 @@ class _XhsTripPlanningRun:
         messages: list[ChatMessage],
         research_service: XhsResearchService,
         settings: Settings,
+        route_source: Literal["llm_router", "fallback"],
     ) -> None:
         self._model = model
         self._messages = messages
         self._research_service = research_service
         self._settings = settings
+        self._route_source = route_source
+        self._trace_sequence = 0
         self._graph = self._build_graph()
+
+    def _trace_event(
+        self,
+        step: str,
+        title: str,
+        status: str,
+        *,
+        detail: str | None = None,
+        duration_ms: int | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> PlanningTraceEvent:
+        self._trace_sequence += 1
+        return PlanningTraceEvent(
+            sequence=self._trace_sequence,
+            step=step,
+            title=title,
+            status=status,
+            detail=detail,
+            duration_ms=duration_ms,
+            data=data or {},
+        )
+
+    def _trace(
+        self,
+        writer: Any,
+        step: str,
+        title: str,
+        status: str,
+        *,
+        detail: str | None = None,
+        duration_ms: int | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        writer(
+            self._trace_event(
+                step,
+                title,
+                status,
+                detail=detail,
+                duration_ms=duration_ms,
+                data=data,
+            )
+        )
 
     def _build_graph(self) -> Any:
         workflow = StateGraph(XhsTripPlanningState)
@@ -134,6 +189,28 @@ class _XhsTripPlanningRun:
         return workflow.compile()
 
     async def stream(self) -> AsyncIterator[ChatStreamEvent]:
+        latest_user_message = next(
+            (message.content for message in reversed(self._messages) if message.role == "user"),
+            "",
+        )
+        yield self._trace_event(
+            "request_received",
+            "收到用户规划请求",
+            "success",
+            data={
+                "latest_user_message": latest_user_message[:2_000],
+                "conversation_message_count": len(self._messages),
+            },
+        )
+        yield self._trace_event(
+            "route_selected",
+            "请求已路由到小红书攻略规划器",
+            "success",
+            data={
+                "route": "xhs_trip_planner",
+                "route_source": self._route_source,
+            },
+        )
         initial: XhsTripPlanningState = {
             "messages": self._messages,
             "request": None,
@@ -153,6 +230,7 @@ class _XhsTripPlanningRun:
     async def understand_request(self, state: XhsTripPlanningState) -> dict[str, Any]:
         writer = get_stream_writer()
         _stage(writer, "understanding_request", "正在提取目标城市和游玩天数", "running")
+        extraction_method = "model"
         try:
             extraction = await self._structured(
                 XhsTripRequestExtraction,
@@ -166,6 +244,7 @@ class _XhsTripPlanningRun:
             )
             request = extraction.request
         except XhsTripPlanningError as exc:
+            extraction_method = "fallback"
             logger.info(
                 "XHS request extraction fell back to deterministic duration code=%s",
                 exc.code,
@@ -173,8 +252,21 @@ class _XhsTripPlanningRun:
             request = XhsTripRequest()
 
         explicit_duration = _latest_explicit_duration_days(state["messages"])
+        explicit_duration_override = explicit_duration is not None
         if explicit_duration is not None:
             request.duration_days = explicit_duration
+        self._trace(
+            writer,
+            "requirements_extracted",
+            "已提取城市和游玩天数",
+            "success",
+            data={
+                "destination_city": request.destination_city,
+                "duration_days": request.duration_days,
+                "extraction_method": extraction_method,
+                "explicit_duration_override": explicit_duration_override,
+            },
+        )
         _stage(writer, "understanding_request", "正在提取目标城市和游玩天数", "success")
         return {
             "request": request,
@@ -195,6 +287,17 @@ class _XhsTripPlanningRun:
             errors.append("游玩天数至少需要 1 天。")
         elif request.duration_days > self._settings.trip_planner_max_days:
             errors.append(f"目前最多支持 {self._settings.trip_planner_max_days} 天的城市攻略。")
+        self._trace(
+            writer,
+            "requirements_validated",
+            "规划参数检查完成",
+            "success" if not missing and not errors else "partial",
+            data={
+                "missing_fields": missing,
+                "validation_errors": errors,
+                "maximum_supported_days": self._settings.trip_planner_max_days,
+            },
+        )
         _stage(writer, "checking_requirements", "正在检查规划所需信息", "success")
         return {
             "missing_fields": missing,
@@ -233,6 +336,13 @@ class _XhsTripPlanningRun:
             "正在检查小红书登录状态",
             "success",
             detail="小红书已登录。" if login.is_logged_in else "需要登录小红书。",
+        )
+        self._trace(
+            writer,
+            "login_checked",
+            "小红书登录状态检查完成",
+            "success" if login.is_logged_in else "partial",
+            data={"is_logged_in": login.is_logged_in},
         )
         return {
             "xhs_logged_in": login.is_logged_in,
@@ -283,6 +393,13 @@ class _XhsTripPlanningRun:
                 "success",
                 detail="小红书登录成功。",
             )
+            self._trace(
+                writer,
+                "login_completed",
+                "小红书登录已恢复",
+                "success",
+                data={"status": "succeeded"},
+            )
             return session
         if session.status != "pending":
             _raise_login_terminal(writer, session)
@@ -314,6 +431,13 @@ class _XhsTripPlanningRun:
                         "等待登录小红书",
                         "success",
                         detail="小红书登录成功。",
+                    )
+                    self._trace(
+                        writer,
+                        "login_completed",
+                        "小红书登录已恢复",
+                        "success",
+                        data={"status": "succeeded"},
                     )
                     return current
                 _raise_login_terminal(writer, current)
@@ -374,6 +498,17 @@ class _XhsTripPlanningRun:
             raise XhsTripPlanningError("XHS_REQUEST_MISSING", "目标城市或游玩天数不完整。")
         keyword = build_search_keyword(request.destination_city, request.duration_days)
         writer = get_stream_writer()
+        self._trace(
+            writer,
+            "search_query_built",
+            "已组装小红书搜索请求",
+            "success",
+            data={
+                "keyword": keyword,
+                "sort_by": "most_liked",
+                "result_scope": "initial_results_only",
+            },
+        )
         _stage(writer, "searching_xhs", "正在搜索高点赞小红书攻略", "running")
         reading_started = False
 
@@ -390,11 +525,22 @@ class _XhsTripPlanningRun:
                 reading_started = True
                 _stage(writer, "reading_xhs_posts", "正在读取小红书笔记正文", "running")
 
+        def on_trace(update: XhsResearchTraceUpdate) -> None:
+            self._trace(
+                writer,
+                update.step,
+                update.title,
+                update.status,
+                duration_ms=update.duration_ms,
+                data=update.data,
+            )
+
         try:
             try:
                 research = await self._research_service.collect(
                     keyword,
                     on_search_complete=on_search_complete,
+                    on_trace=on_trace,
                 )
             except XhsResearchError as exc:
                 if exc.code != "NOT_LOGGED_IN":
@@ -403,6 +549,7 @@ class _XhsTripPlanningRun:
                 research = await self._research_service.collect(
                     keyword,
                     on_search_complete=on_search_complete,
+                    on_trace=on_trace,
                 )
         except XhsResearchError as exc:
             failed_stage = "reading_xhs_posts" if reading_started else "searching_xhs"
@@ -433,6 +580,20 @@ class _XhsTripPlanningRun:
         if request is None or research is None:
             raise XhsTripPlanningError("XHS_EVIDENCE_MISSING", "缺少可用于生成攻略的帖子内容。")
         writer = get_stream_writer()
+        generation_started = perf_counter()
+        self._trace(
+            writer,
+            "itinerary_generated",
+            "正在根据选中证据生成结构化攻略",
+            "running",
+            data={
+                "destination_city": request.destination_city,
+                "duration_days": request.duration_days,
+                "evidence_count": len(research.posts),
+                "evidence_chars": sum(len(post.content) for post in research.posts),
+                "conversation_message_count": len(state["messages"]),
+            },
+        )
         _stage(writer, "generating_itinerary", "正在根据高点赞笔记整理攻略", "running")
         try:
             plan = await self._structured(
@@ -442,6 +603,13 @@ class _XhsTripPlanningRun:
                 timeout_seconds=self._settings.trip_planner_model_timeout_seconds,
             )
         except XhsTripPlanningError:
+            self._trace(
+                writer,
+                "itinerary_generated",
+                "结构化攻略生成失败",
+                "failed",
+                duration_ms=max(0, int((perf_counter() - generation_started) * 1000)),
+            )
             _stage(
                 writer,
                 "generating_itinerary",
@@ -451,6 +619,17 @@ class _XhsTripPlanningRun:
             raise
 
         if plan.duration_days != request.duration_days:
+            self._trace(
+                writer,
+                "validation_completed",
+                "攻略结构校验失败",
+                "failed",
+                detail="模型生成的行程天数与请求不一致。",
+                data={
+                    "expected_duration_days": request.duration_days,
+                    "actual_duration_days": plan.duration_days,
+                },
+            )
             _stage(
                 writer,
                 "generating_itinerary",
@@ -470,6 +649,19 @@ class _XhsTripPlanningRun:
                 if not activity.source_refs or any(
                     reference not in allowed_refs for reference in activity.source_refs
                 ):
+                    self._trace(
+                        writer,
+                        "validation_completed",
+                        "攻略来源引用校验失败",
+                        "failed",
+                        detail="模型生成了无效的活动来源引用。",
+                        data={
+                            "day_index": day.day_index,
+                            "place_name": activity.place_name,
+                            "source_refs": activity.source_refs,
+                            "allowed_source_refs": sorted(allowed_refs),
+                        },
+                    )
                     _stage(
                         writer,
                         "generating_itinerary",
@@ -494,6 +686,34 @@ class _XhsTripPlanningRun:
             for post in research.posts
         ]
         plan.warnings = list(dict.fromkeys([*plan.warnings, *research.warnings]))
+        generation_duration_ms = max(
+            0,
+            int((perf_counter() - generation_started) * 1000),
+        )
+        self._trace(
+            writer,
+            "itinerary_generated",
+            "结构化攻略生成完成",
+            "success",
+            duration_ms=generation_duration_ms,
+            data={
+                "title": plan.title,
+                "day_count": len(plan.days),
+                "activity_count": sum(len(day.activities) for day in plan.days),
+                "source_count": len(plan.sources),
+                "warning_count": len(plan.warnings),
+            },
+        )
+        self._trace(
+            writer,
+            "validation_completed",
+            "攻略天数和来源引用校验通过",
+            "success",
+            data={
+                "duration_days": plan.duration_days,
+                "allowed_source_refs": sorted(allowed_refs),
+            },
+        )
         _stage(writer, "generating_itinerary", "正在根据高点赞笔记整理攻略", "success")
         return {"plan": plan, "current_stage": "generating_itinerary"}
 
@@ -505,6 +725,16 @@ class _XhsTripPlanningRun:
         _stage(writer, "finalizing", "正在整理最终攻略", "running")
         answer = render_xhs_itinerary(plan)
         writer(MessageDeltaEvent(delta=answer))
+        self._trace(
+            writer,
+            "response_completed",
+            "最终攻略已渲染",
+            "success",
+            data={
+                "output_chars": len(answer),
+                "source_count": len(plan.sources),
+            },
+        )
         _stage(writer, "finalizing", "正在整理最终攻略", "success")
         return {
             "final_answer": answer,

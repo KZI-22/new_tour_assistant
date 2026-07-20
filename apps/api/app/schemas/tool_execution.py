@@ -109,6 +109,34 @@ class PlanningStageEvent(BaseModel):
     detail: str | None = None
 
 
+class PlanningTraceEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["planning_trace"] = "planning_trace"
+    sequence: int = Field(ge=1)
+    step: Literal[
+        "request_received",
+        "route_selected",
+        "requirements_extracted",
+        "requirements_validated",
+        "login_checked",
+        "login_completed",
+        "search_query_built",
+        "search_results",
+        "post_detail",
+        "evidence_selected",
+        "itinerary_generated",
+        "validation_completed",
+        "response_completed",
+    ]
+    title: str = Field(min_length=1, max_length=200)
+    status: Literal["running", "success", "partial", "failed", "skipped"]
+    detail: str | None = Field(default=None, max_length=500)
+    duration_ms: int | None = Field(default=None, ge=0)
+    data: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class XhsLoginRequiredEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -123,6 +151,7 @@ type ChatStreamEvent = (
     | ToolCallEvent
     | ToolResultEvent
     | PlanningStageEvent
+    | PlanningTraceEvent
     | XhsLoginRequiredEvent
 )
 
@@ -131,6 +160,7 @@ __all__ = [
     "ChatStreamEvent",
     "MessageDeltaEvent",
     "PlanningStageEvent",
+    "PlanningTraceEvent",
     "ToolCallEvent",
     "ToolError",
     "ToolResult",

@@ -74,6 +74,7 @@ class ConversationService:
                     role=item.role,
                     content=item.content,
                     status=item.status,
+                    debug_trace=item.debug_trace_json or [],
                     created_at=item.created_at,
                 )
                 for item in result
@@ -187,6 +188,7 @@ class ConversationService:
                 role="assistant",
                 content="",
                 status="streaming",
+                debug_trace_json=[],
                 created_at=now,
             )
             session.add_all([user_message, assistant_message])
@@ -210,13 +212,20 @@ class ConversationService:
         assistant_message_id: uuid.UUID,
         content: str,
         message_status: str,
+        debug_trace: list[dict[str, object]] | None = None,
     ) -> None:
         now = datetime.now(UTC)
+        values: dict[str, object] = {
+            "content": content,
+            "status": message_status,
+        }
+        if debug_trace is not None:
+            values["debug_trace_json"] = debug_trace
         async with self._session_factory() as session, session.begin():
             conversation_id = await session.scalar(
                 update(Message)
                 .where(Message.id == assistant_message_id)
-                .values(content=content, status=message_status)
+                .values(**values)
                 .returning(Message.conversation_id)
             )
             if conversation_id is not None:

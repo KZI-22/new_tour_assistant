@@ -21,6 +21,7 @@ import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { PlanningTracePanel } from "@/components/planning-trace-panel";
 import {
   ApiChatMessage,
   ConversationSummary,
@@ -33,6 +34,7 @@ import {
   ToolCallUpdate,
   ToolResultUpdate,
   PlanningStageUpdate,
+  PlanningTraceUpdate,
   XhsLoginRequiredUpdate,
 } from "@/lib/api";
 
@@ -47,6 +49,7 @@ type ToolStatus = {
 type ChatMessage = ApiChatMessage & {
   tools?: ToolStatus[];
   planningStages?: PlanningStageUpdate[];
+  debugTrace?: PlanningTraceUpdate[];
   xhsLogin?: XhsLoginRequiredUpdate & { status: "pending" | "failed" };
 };
 
@@ -167,12 +170,13 @@ export function ChatShell() {
               message.status === "completed" ||
               Boolean(message.content && message.status === "interrupted"),
           )
-          .map(({ id: messageId, role, content }) => ({
-            id: messageId,
-            role,
-            content,
+          .map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            debugTrace: message.debug_trace ?? [],
             tools: (conversation.tool_calls ?? [])
-              .filter((tool) => tool.assistant_message_id === messageId)
+              .filter((tool) => tool.assistant_message_id === message.id)
               .map((tool) => ({
                 id: tool.tool_call_id,
                 toolName: tool.tool_name,
@@ -323,6 +327,22 @@ export function ChatShell() {
                   planningStages: stages.some((stage) => stage.stage === update.stage)
                     ? stages.map((stage) => (stage.stage === update.stage ? update : stage))
                     : [...stages, update],
+                };
+              }),
+            );
+          },
+          onPlanningTrace: (update: PlanningTraceUpdate) => {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== assistantId) return message;
+                const traces = message.debugTrace ?? [];
+                return {
+                  ...message,
+                  debugTrace: traces.some((trace) => trace.sequence === update.sequence)
+                    ? traces.map((trace) =>
+                        trace.sequence === update.sequence ? update : trace,
+                      )
+                    : [...traces, update],
                 };
               }),
             );
@@ -582,6 +602,9 @@ export function ChatShell() {
                     >
                       {message.role === "assistant" ? (
                         <div>
+                          {Boolean(message.debugTrace?.length) && (
+                            <PlanningTracePanel traces={message.debugTrace ?? []} />
+                          )}
                           {Boolean(message.planningStages?.length) && (
                             <div
                               className="mb-3 rounded-xl border border-black/[0.06] bg-black/[0.025] px-3 py-2.5"
