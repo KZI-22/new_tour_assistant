@@ -8,7 +8,6 @@ from typing import Any, Literal
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import ImageContent
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -41,16 +40,10 @@ class _Interactions(_BoundaryModel):
     collected_count: str = ""
 
 
-class XhsMcpImage(_BoundaryModel):
-    mime_type: str
-    data_base64: str = Field(repr=False)
-
-
 class XhsMcpToolResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     structured_content: dict[str, Any]
-    images: list[XhsMcpImage] = Field(default_factory=list, repr=False)
 
 
 class XhsLoginStatusResult(_BoundaryModel):
@@ -64,9 +57,7 @@ class XhsLoginSessionResult(_BoundaryModel):
     created_at: str
     expires_at: str
     is_logged_in: bool = False
-    qr_mime_type: str | None = None
     message: str = ""
-    qr_image: XhsMcpImage | None = Field(default=None, repr=False)
 
 
 class XhsSearchItem(_BoundaryModel):
@@ -178,19 +169,8 @@ class XhsMcpClient:
         except ValidationError as exc:
             raise XhsMcpClientError(
                 "INVALID_RESPONSE",
-                "小红书扫码登录服务返回了无法识别的数据。",
+                "小红书网页登录服务返回了无法识别的数据。",
             ) from exc
-        if session.status == "pending":
-            image = next(
-                (item for item in response.images if item.mime_type == "image/png"),
-                None,
-            )
-            if image is None:
-                raise XhsMcpClientError(
-                    "INVALID_RESPONSE",
-                    "小红书扫码登录服务没有返回二维码图片。",
-                )
-            session.qr_image = image
         return session
 
     async def get_login_status(self, login_id: str) -> XhsLoginSessionResult:
@@ -286,17 +266,8 @@ class XhsMcpClient:
                 "INVALID_RESPONSE",
                 "小红书内容服务没有返回结构化数据。",
             )
-        images = [
-            XhsMcpImage(
-                mime_type=item.mimeType,
-                data_base64=item.data,
-            )
-            for item in result.content
-            if isinstance(item, ImageContent)
-        ]
         return XhsMcpToolResponse(
             structured_content=dict(structured),
-            images=images,
         )
 
 
@@ -308,7 +279,7 @@ def _safe_error_code(value: Any) -> str:
 
 def _safe_error_message(code: str) -> str:
     if code in {"NOT_LOGGED_IN", "LOGIN_EXPIRED"}:
-        return "小红书内容服务尚未登录，请管理员完成扫码登录后重试。"
+        return "小红书内容服务尚未登录，请在本机 Chrome 中完成登录后重试。"
     if code == "TIMEOUT":
         return "读取小红书内容超时，请稍后重试。"
     if code == "RISK_CONTROL":
@@ -323,7 +294,6 @@ __all__ = [
     "XhsMcpClientError",
     "XhsLoginSessionResult",
     "XhsLoginStatusResult",
-    "XhsMcpImage",
     "XhsMcpToolResponse",
     "XhsNoteDetailResult",
     "XhsSearchItem",

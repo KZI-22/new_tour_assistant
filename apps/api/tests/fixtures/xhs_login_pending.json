@@ -2,12 +2,7 @@
   "content": [
     {
       "type": "text",
-      "text": "请使用小红书扫码登录。"
-    },
-    {
-      "type": "image",
-      "data": "c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=",
-      "mimeType": "image/png"
+      "text": "请在已打开的 Google Chrome 中完成手机号、验证码或其他安全验证。"
     }
   ],
   "structuredContent": {
@@ -16,8 +11,7 @@
     "created_at": "2026-07-19T10:00:00+08:00",
     "expires_at": "2026-07-19T10:05:00+08:00",
     "is_logged_in": false,
-    "qr_mime_type": "image/png",
-    "message": "请使用小红书扫码登录。"
+    "message": "请在已打开的 Google Chrome 中完成手机号、验证码或其他安全验证。"
   },
   "isError": false
 }

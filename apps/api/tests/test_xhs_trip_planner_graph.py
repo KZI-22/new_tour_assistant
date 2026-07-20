@@ -130,27 +130,18 @@ def _research() -> XhsResearchResult:
     )
 
 
-def _session(
-    status: str,
-    *,
-    with_qr: bool = False,
-) -> SimpleNamespace:
+def _session(status: str) -> SimpleNamespace:
     return SimpleNamespace(
         login_id="fixture-login",
         status=status,
         created_at="2026-07-19T10:00:00+08:00",
         expires_at="2026-07-19T10:05:00+08:00",
         is_logged_in=status == "succeeded",
-        qr_mime_type="image/png" if with_qr else None,
-        qr_image=(
-            SimpleNamespace(
-                mime_type="image/png",
-                data_base64="c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=",
-            )
-            if with_qr
-            else None
+        message=(
+            "请在已打开的 Google Chrome 中完成手机号、验证码或其他安全验证。"
+            if status == "pending"
+            else f"fixture {status}"
         ),
-        message=f"fixture {status}",
     )
 
 
@@ -179,7 +170,7 @@ class FakeResearchService:
 
     async def start_login(self) -> SimpleNamespace:
         self.start_calls += 1
-        return _session(self._start_status, with_qr=self._start_status == "pending")
+        return _session(self._start_status)
 
     async def get_login_status(self, login_id: str) -> SimpleNamespace:
         assert login_id == "fixture-login"
@@ -232,7 +223,7 @@ async def _collect_events(research: FakeResearchService) -> list[Any]:
 
 
 @pytest.mark.asyncio
-async def test_logged_in_request_searches_without_qr_event() -> None:
+async def test_logged_in_request_searches_without_login_event() -> None:
     research = FakeResearchService(login_checks=[True])
 
     events = await _collect_events(research)
@@ -247,7 +238,7 @@ async def test_logged_in_request_searches_without_qr_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_login_emits_qr_and_continues_after_success() -> None:
+async def test_pending_login_prompts_for_chrome_and_continues_after_success() -> None:
     research = FakeResearchService(
         login_checks=[False],
         statuses=["pending", "pending", "succeeded"],
@@ -258,15 +249,15 @@ async def test_pending_login_emits_qr_and_continues_after_success() -> None:
     login_events = [event for event in events if event.type == "xhs_login_required"]
     assert len(login_events) == 1
     assert login_events[0].login_id == "fixture-login"
-    assert login_events[0].qr_mime_type == "image/png"
-    assert login_events[0].qr_data_base64 == "c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U="
+    assert "Google Chrome" in login_events[0].message
+    assert "验证码" in login_events[0].message
     assert research.status_calls == 3
     assert research.collect_calls == 1
     assert all(not isinstance(event, MessageDeltaEvent) for event in login_events)
 
 
 @pytest.mark.asyncio
-async def test_already_succeeded_start_skips_qr_and_status_polling() -> None:
+async def test_already_succeeded_start_skips_login_event_and_status_polling() -> None:
     research = FakeResearchService(login_checks=[False], start_status="succeeded")
 
     events = await _collect_events(research)

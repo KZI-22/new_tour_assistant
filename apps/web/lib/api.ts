@@ -87,8 +87,6 @@ export type PlanningStageUpdate = {
 export type XhsLoginRequiredUpdate = {
   login_id: string;
   expires_at: string;
-  qr_mime_type: "image/png";
-  qr_data_base64: string;
   message: string;
 };
 
@@ -268,8 +266,6 @@ export async function streamChat(
       if (
         data.login_id &&
         data.expires_at &&
-        data.qr_mime_type === "image/png" &&
-        data.qr_data_base64 &&
         data.message
       ) {
         callbacks.onXhsLoginRequired?.(data as XhsLoginRequiredUpdate);

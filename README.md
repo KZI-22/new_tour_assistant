@@ -126,7 +126,8 @@ XHS_SSE_HEARTBEAT_SECONDS=15
 ```
 
 规划链路支持一个目标城市和 1–5 天行程，搜索词固定为 `{城市} {天数}日游 攻略`。每次搜索前
-都会检查 MCP 登录状态；未登录时通过当前 SSE 返回二维码，扫码成功后自动继续同一请求。搜索固定
+都会检查 MCP 登录状态；未登录时 MCP 会打开本机 Google Chrome，前端提示用户完成手机号、短信
+验证码或其他安全验证，登录成功后自动继续同一请求。搜索固定
 使用 `most_liked` 和其余 `any` 筛选，在首次加载结果中按标准化点赞量选择最多五篇详情候选，
 取得两篇有效正文后停止。第一篇作为主帖决定主体路线，第二篇只补充缺失信息；只有一篇时明确
 降级说明，没有有效正文时不调用生成模型。`xsec_token` 只在 MCP 客户端内部使用，不进入
@@ -134,16 +135,16 @@ LangGraph 状态、模型提示、日志或数据库。
 
 当前规划架构与事实边界见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
 
-在启动后端前，需要在本机或可访问的私有网络中运行 `xhs-read-mcp`。使用其 Docker Compose 时：
+在启动后端前，需要在同一台 Windows 本机以有界面模式运行 `xhs-read-mcp`：
 
 ```powershell
 Set-Location <xhs-read-mcp-directory>
-docker compose up -d
-docker compose logs xhs-mcp
+xhs-read-mcp --transport streamable-http
 ```
 
-首次使用先通过 MCP 登录工具完成扫码，并把服务日志中的地址和 Bearer Token 配置到本项目。
-MCP 必须在某处持续运行；Streamable HTTP 允许它位于 sidecar 或远程内网服务器，但不建议将
+默认服务地址为 `http://127.0.0.1:8765/mcp`。把服务输出的 Bearer Token 配置到本项目后，首次
+规划会自动打开 Google Chrome；在窗口中完成短信验证码或其他安全验证即可。登录状态独立保存在
+`%LOCALAPPDATA%\xhs-read-mcp\chrome-storage_state.json`。MCP 必须在使用期间持续运行，且不应将
 当前单用户服务直接暴露到公网。
 
 `.env` 已被 Git 忽略，不要把真实密钥写入 `config/models.yaml` 或提交到仓库。
@@ -243,7 +244,7 @@ python -m pytest
 ruff check .
 ```
 
-小红书规划测试覆盖请求路由、仅城市/天数追问、二维码登录、固定搜索协议、点赞量标准化、
+小红书规划测试覆盖请求路由、仅城市/天数追问、本机 Chrome 登录、固定搜索协议、点赞量标准化、
 主辅帖选择、Token 隔离、来源白名单、结构化生成和 SSE 阶段事件。MCP 单元测试使用 Fake Client，
 不访问真实小红书；数据库、FlyAI、高德及真实模型测试仍按对应环境变量显式启用，避免默认消耗
 外部配额。

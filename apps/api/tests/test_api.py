@@ -154,7 +154,7 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assert conversation_service.finished == (assistant_message_id, "你好", "completed")
 
 
-def test_stream_chat_serializes_login_qr_without_persisting_it(tmp_path: Path) -> None:
+def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     conversation_id = uuid.uuid4()
     assistant_message_id = uuid.uuid4()
@@ -171,9 +171,7 @@ def test_stream_chat_serializes_login_qr_without_persisting_it(tmp_path: Path) -
             yield XhsLoginRequiredEvent(
                 login_id="fixture-login",
                 expires_at="2026-07-19T10:05:00+08:00",
-                qr_mime_type="image/png",
-                qr_data_base64="c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=",
-                message="请扫码登录。",
+                message="请在已打开的 Google Chrome 中完成验证码。",
             )
             yield MessageDeltaEvent(delta="登录后完成。")
 
@@ -207,7 +205,8 @@ def test_stream_chat_serializes_login_qr_without_persisting_it(tmp_path: Path) -
 
     assert response.status_code == 200
     assert 'event: xhs_login_required\ndata: {"type":"xhs_login_required"' in response.text
-    assert "c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=" in response.text
+    assert "fixture-login" in response.text
+    assert "Google Chrome" in response.text
     assert conversation_service.finished == (assistant_message_id, "登录后完成。", "completed")
 
 
@@ -227,11 +226,11 @@ def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> No
             del model_id, messages, execution_context
             yield PlanningStageEvent(
                 stage="waiting_xhs_login",
-                display_name="等待扫码登录小红书",
+                display_name="等待登录小红书",
                 status="running",
             )
             await asyncio.sleep(0.035)
-            yield MessageDeltaEvent(delta="扫码后继续。")
+            yield MessageDeltaEvent(delta="登录后继续。")
 
     class FakeConversationService:
         finished: tuple[uuid.UUID, str, str] | None = None
@@ -263,7 +262,7 @@ def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> No
 
     assert response.status_code == 200
     assert ": heartbeat\n\n" in response.text
-    assert conversation_service.finished == (assistant_message_id, "扫码后继续。", "completed")
+    assert conversation_service.finished == (assistant_message_id, "登录后继续。", "completed")
 
 
 def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Path) -> None:

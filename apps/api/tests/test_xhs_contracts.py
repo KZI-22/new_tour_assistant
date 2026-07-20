@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -28,7 +27,7 @@ def _load_fixture(name: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_login_tool_response_preserves_structured_content_and_image(
+async def test_login_tool_response_accepts_pending_browser_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _load_fixture("xhs_login_pending.json")
@@ -71,17 +70,12 @@ async def test_login_tool_response_preserves_structured_content_and_image(
     )
     monkeypatch.setattr(xhs_client_module, "ClientSession", FakeSession)
 
-    response = await XhsMcpClient("http://127.0.0.1:8765/mcp")._call_tool(
-        "xhs_start_login",
-        {},
-    )
+    response = await XhsMcpClient("http://127.0.0.1:8765/mcp").start_login()
 
-    assert response.structured_content["status"] == "pending"
-    assert len(response.images) == 1
-    assert response.images[0].mime_type == "image/png"
-    assert base64.b64decode(response.images[0].data_base64) == (
-        b"sanitized-fixture-image"
-    )
+    assert response.status == "pending"
+    assert response.login_id == "fixture-login-session"
+    assert "Google Chrome" in response.message
+    assert "验证码" in response.message
 
 
 class FixtureReadClient:

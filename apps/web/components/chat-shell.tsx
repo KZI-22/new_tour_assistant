@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import {
   ArrowUp,
   Bot,
@@ -625,24 +624,19 @@ export function ChatShell() {
                                   ? "border-red-200 bg-red-50 text-red-800"
                                   : "border-black/[0.08] bg-white"
                               }`}
-                              aria-label="小红书扫码登录"
+                              aria-label="小红书浏览器登录"
                             >
                               {message.xhsLogin.status === "pending" ? (
-                                <Image
-                                  alt="小红书登录二维码"
-                                  className="size-32 shrink-0 rounded-lg border border-black/[0.08]"
-                                  height={128}
-                                  src={`data:${message.xhsLogin.qr_mime_type};base64,${message.xhsLogin.qr_data_base64}`}
-                                  unoptimized
-                                  width={128}
-                                />
+                                <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
+                                  <LoaderCircle className="animate-spin" size={20} />
+                                </div>
                               ) : (
                                 <TriangleAlert className="shrink-0" size={20} />
                               )}
                               <div className="min-w-0">
                                 <p className="font-medium">
                                   {message.xhsLogin.status === "pending"
-                                    ? "请扫码登录小红书"
+                                    ? "请在 Chrome 中登录小红书"
                                     : "小红书登录未完成"}
                                 </p>
                                 <p className="mt-1 text-xs leading-5 opacity-75">
@@ -650,7 +644,7 @@ export function ChatShell() {
                                 </p>
                                 {message.xhsLogin.status === "pending" && (
                                   <p className="mt-1 text-[11px] opacity-60">
-                                    二维码仅在当前请求中显示，过期后请重新发起规划。
+                                    完成验证码或安全验证后，本次规划会自动继续。
                                   </p>
                                 )}
                               </div>

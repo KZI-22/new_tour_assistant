@@ -232,7 +232,7 @@ class _XhsTripPlanningRun:
             "checking_xhs_login",
             "正在检查小红书登录状态",
             "success",
-            detail="小红书已登录。" if login.is_logged_in else "需要扫码登录小红书。",
+            detail="小红书已登录。" if login.is_logged_in else "需要登录小红书。",
         )
         return {
             "xhs_logged_in": login.is_logged_in,
@@ -263,14 +263,14 @@ class _XhsTripPlanningRun:
         }
 
     async def _start_login(self, writer: Any) -> XhsLoginSessionResult:
-        _stage(writer, "waiting_xhs_login", "等待扫码登录小红书", "running")
+        _stage(writer, "waiting_xhs_login", "等待登录小红书", "running")
         try:
             session = await self._research_service.start_login()
         except XhsResearchError as exc:
             _stage(
                 writer,
                 "waiting_xhs_login",
-                "等待扫码登录小红书",
+                "等待登录小红书",
                 "failed",
                 detail=exc.message,
             )
@@ -279,33 +279,19 @@ class _XhsTripPlanningRun:
             _stage(
                 writer,
                 "waiting_xhs_login",
-                "等待扫码登录小红书",
+                "等待登录小红书",
                 "success",
                 detail="小红书登录成功。",
             )
             return session
         if session.status != "pending":
             _raise_login_terminal(writer, session)
-        image = session.qr_image
-        if image is None or image.mime_type != "image/png":
-            _stage(
-                writer,
-                "waiting_xhs_login",
-                "等待扫码登录小红书",
-                "failed",
-                detail="登录服务没有返回可用的二维码。",
-            )
-            raise XhsTripPlanningError(
-                "XHS_LOGIN_QR_MISSING",
-                "小红书登录二维码不可用，请稍后重试。",
-            )
         writer(
             XhsLoginRequiredEvent(
                 login_id=session.login_id,
                 expires_at=session.expires_at,
-                qr_mime_type="image/png",
-                qr_data_base64=image.data_base64,
-                message=session.message or "请使用小红书扫描二维码登录。",
+                message=session.message
+                or "请在已打开的 Google Chrome 中完成小红书登录。",
             )
         )
         return session
@@ -325,7 +311,7 @@ class _XhsTripPlanningRun:
                     _stage(
                         writer,
                         "waiting_xhs_login",
-                        "等待扫码登录小红书",
+                        "等待登录小红书",
                         "success",
                         detail="小红书登录成功。",
                     )
@@ -344,7 +330,7 @@ class _XhsTripPlanningRun:
             _stage(
                 writer,
                 "waiting_xhs_login",
-                "等待扫码登录小红书",
+                "等待登录小红书",
                 "failed",
                 detail=exc.message,
             )
@@ -772,7 +758,7 @@ def _raise_login_terminal(writer: Any, session: XhsLoginSessionResult) -> None:
     errors = {
         "expired": (
             "XHS_LOGIN_EXPIRED",
-            "小红书登录二维码已过期，请重新发起规划。",
+            "小红书登录会话已过期，请重新发起规划。",
         ),
         "cancelled": (
             "XHS_LOGIN_CANCELLED",
@@ -790,7 +776,7 @@ def _raise_login_terminal(writer: Any, session: XhsLoginSessionResult) -> None:
     _stage(
         writer,
         "waiting_xhs_login",
-        "等待扫码登录小红书",
+        "等待登录小红书",
         "failed",
         detail=session.message or message,
     )

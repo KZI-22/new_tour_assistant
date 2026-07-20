@@ -26,12 +26,7 @@ class StubMcpClient(XhsMcpClient):
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((name, arguments))
-        response = self.responses[name]
-        if isinstance(response, tuple):
-            structured, images = response
-        else:
-            structured, images = response, []
-        return SimpleNamespace(structured_content=structured, images=images)
+        return SimpleNamespace(structured_content=self.responses[name])
 
 
 @pytest.mark.asyncio
@@ -183,20 +178,15 @@ async def test_mcp_client_supports_login_check_start_status_and_cancel() -> None
         "created_at": "2026-07-19T10:00:00+08:00",
         "expires_at": "2026-07-19T10:05:00+08:00",
         "is_logged_in": False,
-        "qr_mime_type": "image/png",
-        "message": "请扫码登录。",
+        "message": "请在已打开的 Google Chrome 中完成验证码。",
     }
-    image = SimpleNamespace(
-        mime_type="image/png",
-        data_base64="c2FuaXRpemVkLWZpeHR1cmUtaW1hZ2U=",
-    )
     client = StubMcpClient(
         {
             "xhs_check_login": {
                 "is_logged_in": False,
                 "checked_at": "2026-07-19T10:00:00+08:00",
             },
-            "xhs_start_login": (pending, [image]),
+            "xhs_start_login": pending,
             "xhs_get_login_status": {**pending, "status": "succeeded", "is_logged_in": True},
             "xhs_cancel_login": {**pending, "status": "cancelled"},
         }
@@ -209,8 +199,7 @@ async def test_mcp_client_supports_login_check_start_status_and_cancel() -> None
 
     assert checked.is_logged_in is False
     assert started.status == "pending"
-    assert started.qr_image is not None
-    assert started.qr_image.data_base64 == image.data_base64
+    assert "Google Chrome" in started.message
     assert succeeded.status == "succeeded"
     assert succeeded.is_logged_in is True
     assert cancelled.status == "cancelled"
@@ -223,7 +212,7 @@ async def test_mcp_client_supports_login_check_start_status_and_cancel() -> None
 
 
 @pytest.mark.asyncio
-async def test_mcp_client_accepts_already_succeeded_login_without_qr_image() -> None:
+async def test_mcp_client_accepts_already_succeeded_login() -> None:
     client = StubMcpClient(
         {
             "xhs_start_login": {
@@ -232,7 +221,6 @@ async def test_mcp_client_accepts_already_succeeded_login_without_qr_image() -> 
                 "created_at": "2026-07-19T10:00:00+08:00",
                 "expires_at": "2026-07-19T10:05:00+08:00",
                 "is_logged_in": True,
-                "qr_mime_type": None,
                 "message": "已登录。",
             }
         }
@@ -241,7 +229,6 @@ async def test_mcp_client_accepts_already_succeeded_login_without_qr_image() -> 
     started = await client.start_login()
 
     assert started.status == "succeeded"
-    assert started.qr_image is None
 
 
 @pytest.mark.asyncio
@@ -255,7 +242,6 @@ async def test_mcp_client_accepts_all_confirmed_login_session_statuses(status: s
                 "created_at": "2026-07-19T10:00:00+08:00",
                 "expires_at": "2026-07-19T10:05:00+08:00",
                 "is_logged_in": status == "succeeded",
-                "qr_mime_type": "image/png",
                 "message": f"fixture {status}",
             }
         }
