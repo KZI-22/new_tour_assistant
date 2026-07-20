@@ -130,6 +130,7 @@ async def test_streamable_http_client_reuses_stateful_session_across_login_calls
     assert completed.status == "succeeded"
     assert result.keyword == "成都攻略"
     assert captured["http_kwargs"]["headers"] == {"Authorization": "Bearer private-token"}
+    assert captured["http_kwargs"]["trust_env"] is False
     assert captured["url"] == "http://xhs.internal:8765/mcp"
     assert captured["stream_kwargs"]["terminate_on_close"] is True
     assert captured["http_client_count"] == 1

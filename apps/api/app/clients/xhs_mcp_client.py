@@ -271,6 +271,7 @@ class XhsMcpClient:
                         headers=self._headers(),
                         timeout=httpx.Timeout(self._timeout_seconds),
                         follow_redirects=False,
+                        trust_env=False,
                     )
                 )
                 read_stream, write_stream, _ = await stack.enter_async_context(
