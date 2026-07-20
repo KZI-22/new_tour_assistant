@@ -18,6 +18,8 @@ export type ApiChatMessage = {
   content: string;
 };
 
+export type PlanningMode = "xhs" | "map_weather";
+
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -114,6 +116,8 @@ export type XhsLoginRequiredUpdate = {
   login_id: string;
   expires_at: string;
   message: string;
+  fallback_available?: boolean;
+  fallback_mode?: "map_weather" | null;
 };
 
 type StreamCallbacks = {
@@ -209,6 +213,7 @@ export async function streamChat(
   conversationId: string | null,
   callbacks: StreamCallbacks,
   signal: AbortSignal,
+  planningMode?: PlanningMode,
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
@@ -217,6 +222,7 @@ export async function streamChat(
       model_id: modelId,
       message,
       conversation_id: conversationId,
+      planning_mode: planningMode,
     }),
     signal,
   });

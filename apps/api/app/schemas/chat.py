@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.trip_planning import PlanningMode
+
 
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -19,6 +21,7 @@ class ChatRequest(BaseModel):
     conversation_id: UUID | None = None
     model_id: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=100_000)
+    planning_mode: PlanningMode | None = None
 
 
 class ModelInfo(BaseModel):

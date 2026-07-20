@@ -339,3 +339,52 @@ async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None
     assert "成都三日小红书攻略" in answer
     assert "未查询机票、火车票、酒店库存或实时价格" in answer
     assert model.bind_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_map_mode_bypasses_router_and_xhs_research() -> None:
+    model = FakeHybridModel({})
+    registry = FakeRegistry(
+        model,
+        _router_model(TripRouteDecision(route="xhs_trip_planner")),
+    )
+    research = FakeResearchService()
+    service = ChatService(
+        registry,  # type: ignore[arg-type]
+        [],
+        xhs_research_service=research,  # type: ignore[arg-type]
+        trip_planner_settings=_settings(),
+    )
+
+    class FakeExplicitMapPlanner:
+        calls = 0
+
+        async def stream(
+            self,
+            _: object,
+            messages: list[ChatMessage],
+            *,
+            route_source: str,
+        ) -> Any:
+            self.calls += 1
+            assert messages[-1].content == "跳过小红书登录，使用地图与天气继续生成。"
+            assert route_source == "explicit"
+            yield MessageDeltaEvent(delta="地图方案")
+
+    fake_planner = FakeExplicitMapPlanner()
+    service._map_trip_planner = fake_planner  # type: ignore[assignment]
+
+    events = [
+        event
+        async for event in service.stream(
+            "test",
+            [ChatMessage(role="user", content="跳过小红书登录，使用地图与天气继续生成。")],
+            planning_mode="map_weather",
+        )
+    ]
+
+    assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == ["地图方案"]
+    assert fake_planner.calls == 1
+    assert registry.router_calls == 0
+    assert research.keywords == []
+    assert research.login_checks == 0

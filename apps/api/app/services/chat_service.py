@@ -11,10 +11,18 @@ from app.clients.amap_client import AmapClient
 from app.core.model_registry import ModelRegistry, UnavailableModelError
 from app.core.request_context import get_request_context
 from app.core.settings import Settings
+from app.graphs.map_trip_planner import MapTripPlanner, MapTripPlanningError
 from app.graphs.xhs_trip_planner import XhsTripPlanner
 from app.schemas.chat import ChatMessage
 from app.schemas.tool_execution import ChatStreamEvent
-from app.services.agent_executor import MAX_TOOL_ROUNDS, AgentExecutor, ToolEnabledModel
+from app.schemas.trip_planning import PlanningMode
+from app.services.agent_executor import (
+    MAX_TOOL_ROUNDS,
+    AgentExecutionError,
+    AgentExecutor,
+    ToolEnabledModel,
+)
+from app.services.map_trip_collection_service import MapTripCollectionService
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.trip_request_router import TripRequestRouter
@@ -91,6 +99,14 @@ class ChatService:
             log_writer=tool_call_log_writer,
         )
         self._trip_planner = None
+        self._map_trip_planner = None
+        weather_service = WeatherEvidenceService(amap_client)
+        if trip_planner_settings and trip_planner_settings.trip_planner_enabled:
+            self._map_trip_planner = MapTripPlanner(
+                collection_service=MapTripCollectionService(amap_client),
+                weather_service=weather_service,
+                settings=trip_planner_settings,
+            )
         if (
             trip_planner_settings
             and trip_planner_settings.trip_planner_enabled
@@ -99,7 +115,7 @@ class ChatService:
             self._trip_planner = XhsTripPlanner(
                 research_service=xhs_research_service,
                 settings=trip_planner_settings,
-                weather_service=WeatherEvidenceService(amap_client),
+                weather_service=weather_service,
             )
         elif trip_planner_settings and trip_planner_settings.trip_planner_enabled:
             logger.warning(
@@ -111,9 +127,36 @@ class ChatService:
         model_id: str,
         messages: list[ChatMessage],
         *,
+        planning_mode: PlanningMode | None = None,
         execution_context: ToolExecutionContext | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         model = self._registry.create_model(model_id)
+        if planning_mode == "map_weather":
+            if self._map_trip_planner is None:
+                raise MapTripPlanningError(
+                    "MAP_PLANNING_DISABLED",
+                    "地图规划功能当前未启用。",
+                )
+            async for event in self._map_trip_planner.stream(
+                model,
+                messages,
+                route_source="explicit",
+            ):
+                yield event
+            return
+        if planning_mode == "xhs":
+            if self._trip_planner is None:
+                raise AgentExecutionError(
+                    "XHS_PLANNING_DISABLED",
+                    "小红书攻略功能当前未启用。",
+                )
+            async for event in self._trip_planner.stream(
+                model,
+                messages,
+                route_source="explicit",
+            ):
+                yield event
+            return
         if self._trip_planner is not None:
             route = await self._trip_request_router.route(messages)
             if route.route == "xhs_trip_planner":

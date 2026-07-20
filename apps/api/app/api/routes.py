@@ -169,14 +169,23 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
     heartbeat_seconds = request.app.state.settings.xhs_sse_heartbeat_seconds
     stream = None
     try:
-        stream = service.stream(
-            payload.model_id,
-            turn.messages,
-            execution_context=ToolExecutionContext(
-                conversation_id=turn.conversation_id,
-                assistant_message_id=turn.assistant_message_id,
-            ),
+        execution_context = ToolExecutionContext(
+            conversation_id=turn.conversation_id,
+            assistant_message_id=turn.assistant_message_id,
         )
+        if payload.planning_mode is None:
+            stream = service.stream(
+                payload.model_id,
+                turn.messages,
+                execution_context=execution_context,
+            )
+        else:
+            stream = service.stream(
+                payload.model_id,
+                turn.messages,
+                planning_mode=payload.planning_mode,
+                execution_context=execution_context,
+            )
         first_event = await anext(stream, None)
     except asyncio.CancelledError:
         if stream is not None:

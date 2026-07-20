@@ -144,6 +144,8 @@ class XhsLoginRequiredEvent(BaseModel):
     login_id: str = Field(repr=False)
     expires_at: str
     message: str
+    fallback_available: bool = False
+    fallback_mode: Literal["map_weather"] | None = None
 
 
 type ChatStreamEvent = (

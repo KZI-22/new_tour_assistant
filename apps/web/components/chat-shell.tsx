@@ -30,6 +30,7 @@ import {
   fetchConversations,
   fetchModels,
   ModelInfo,
+  PlanningMode,
   streamChat,
   ToolCallUpdate,
   ToolResultUpdate,
@@ -50,13 +51,20 @@ type ChatMessage = ApiChatMessage & {
   tools?: ToolStatus[];
   planningStages?: PlanningStageUpdate[];
   debugTrace?: PlanningTraceUpdate[];
-  xhsLogin?: XhsLoginRequiredUpdate & { status: "pending" | "failed" };
+  xhsLogin?: XhsLoginRequiredUpdate & { status: "pending" | "failed" | "skipped" };
 };
 
+type SendMessageOptions = {
+  planningMode?: PlanningMode;
+  allowWhileLoading?: boolean;
+};
+
+const MAP_FALLBACK_MESSAGE = "跳过小红书登录，使用地图与天气继续生成。";
+
 const suggestions = [
-  "帮我规划一趟 5 天的东京美食之旅",
-  "帮我做一份成都 3 天小红书攻略",
-  "设计一个适合亲子的上海 2 天行程",
+  "帮我规划一趟明天开始的 5 天东京美食之旅",
+  "帮我做一份后天开始的成都 3 天小红书攻略",
+  "设计一个明天开始、适合亲子的上海 2 天行程",
   "如何控制欧洲自由行的整体预算？",
 ];
 
@@ -78,6 +86,7 @@ export function ChatShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const fallbackStartingRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -217,9 +226,9 @@ export function ChatShell() {
     abortRef.current?.abort();
   };
 
-  const sendMessage = async (content = input) => {
+  const sendMessage = async (content = input, options: SendMessageOptions = {}) => {
     const trimmed = content.trim();
-    if (!trimmed || !currentModel?.available || isLoading) return;
+    if (!trimmed || !currentModel?.available || (isLoading && !options.allowWhileLoading)) return;
 
     const userMessage: ChatMessage = { id: newId(), role: "user", content: trimmed };
     const assistantId = newId();
@@ -359,6 +368,7 @@ export function ChatShell() {
           onDone: () => void refreshConversations(),
         },
         controller.signal,
+        options.planningMode,
       );
     } catch (reason: unknown) {
       const aborted = reason instanceof DOMException && reason.name === "AbortError";
@@ -374,8 +384,39 @@ export function ChatShell() {
         ),
       );
     } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      setIsLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setIsLoading(false);
+      }
+    }
+  };
+
+  const skipXhsLogin = async (assistantId: string) => {
+    if (fallbackStartingRef.current.has(assistantId) || !currentModel?.available) return;
+    fallbackStartingRef.current.add(assistantId);
+    abortRef.current?.abort();
+    const fallbackRequest = sendMessage(MAP_FALLBACK_MESSAGE, {
+      planningMode: "map_weather",
+      allowWhileLoading: true,
+    });
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === assistantId && message.xhsLogin
+          ? {
+              ...message,
+              xhsLogin: {
+                ...message.xhsLogin,
+                status: "skipped" as const,
+                message: "已跳过小红书登录，正在启动地图与天气方案。",
+              },
+            }
+          : message,
+      ),
+    );
+    try {
+      await fallbackRequest;
+    } finally {
+      fallbackStartingRef.current.delete(assistantId);
     }
   };
 
@@ -565,7 +606,7 @@ export function ChatShell() {
                   下一站，去哪里？
                 </h1>
                 <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)] md:text-base">
-                  告诉我目标城市和游玩天数，我会结合小红书笔记整理一份分日攻略。
+                  告诉我目标城市、游玩天数和开始日期，我会结合小红书笔记与天气整理分日攻略。
                 </p>
                 <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {suggestions.map((suggestion) => (
@@ -645,6 +686,8 @@ export function ChatShell() {
                               className={`mb-3 flex items-center gap-3 rounded-xl border px-3 py-3 text-sm ${
                                 message.xhsLogin.status === "failed"
                                   ? "border-red-200 bg-red-50 text-red-800"
+                                  : message.xhsLogin.status === "skipped"
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
                                   : "border-black/[0.08] bg-white"
                               }`}
                               aria-label="小红书浏览器登录"
@@ -653,22 +696,37 @@ export function ChatShell() {
                                 <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
                                   <LoaderCircle className="animate-spin" size={20} />
                                 </div>
+                              ) : message.xhsLogin.status === "skipped" ? (
+                                <Check className="shrink-0" size={20} />
                               ) : (
                                 <TriangleAlert className="shrink-0" size={20} />
                               )}
-                              <div className="min-w-0">
+                              <div className="min-w-0 flex-1">
                                 <p className="font-medium">
                                   {message.xhsLogin.status === "pending"
                                     ? "请在 Chrome 中登录小红书"
-                                    : "小红书登录未完成"}
+                                    : message.xhsLogin.status === "skipped"
+                                      ? "已跳过小红书登录"
+                                      : "小红书登录未完成"}
                                 </p>
                                 <p className="mt-1 text-xs leading-5 opacity-75">
                                   {message.xhsLogin.message}
                                 </p>
                                 {message.xhsLogin.status === "pending" && (
-                                  <p className="mt-1 text-[11px] opacity-60">
-                                    完成验证码或安全验证后，本次规划会自动继续。
-                                  </p>
+                                  <>
+                                    <p className="mt-1 text-[11px] opacity-60">
+                                      完成验证码或安全验证后，本次规划会自动继续。
+                                    </p>
+                                    {message.xhsLogin.fallback_available &&
+                                      message.xhsLogin.fallback_mode === "map_weather" && (
+                                        <button
+                                          className="mt-2 rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-black/[0.035]"
+                                          onClick={() => void skipXhsLogin(message.id)}
+                                        >
+                                          跳过登录，使用地图与天气生成
+                                        </button>
+                                      )}
+                                  </>
                                 )}
                               </div>
                             </div>

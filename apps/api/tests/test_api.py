@@ -187,6 +187,8 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
                 login_id="fixture-login",
                 expires_at="2026-07-19T10:05:00+08:00",
                 message="请在已打开的 Google Chrome 中完成验证码。",
+                fallback_available=True,
+                fallback_mode="map_weather",
             )
             yield MessageDeltaEvent(delta="登录后完成。")
 
@@ -226,7 +228,78 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
     assert 'event: xhs_login_required\ndata: {"type":"xhs_login_required"' in response.text
     assert "fixture-login" in response.text
     assert "Google Chrome" in response.text
+    assert '"fallback_available":true' in response.text
+    assert '"fallback_mode":"map_weather"' in response.text
     assert conversation_service.finished == (assistant_message_id, "登录后完成。", "completed")
+
+
+def test_stream_chat_forwards_explicit_planning_mode(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    conversation_id = uuid.uuid4()
+    assistant_message_id = uuid.uuid4()
+    received_modes: list[str] = []
+
+    class FakeChatService:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            planning_mode: str,
+            execution_context: ToolExecutionContext,
+        ) -> AsyncIterator[MessageDeltaEvent]:
+            del model_id, messages, execution_context
+            received_modes.append(planning_mode)
+            yield MessageDeltaEvent(delta="地图方案")
+
+    class FakeConversationService:
+        async def start_turn(
+            self,
+            requested_id: uuid.UUID | None,
+            model_id: str,
+            content: str,
+        ) -> TurnContext:
+            del requested_id, model_id
+            return TurnContext(
+                conversation_id=conversation_id,
+                conversation_title=content,
+                assistant_message_id=assistant_message_id,
+                messages=[ChatMessage(role="user", content=content)],
+            )
+
+        async def finish_turn(self, *_: object, **__: object) -> None:
+            return None
+
+    client.app.state.chat_service = FakeChatService()
+    client.app.state.conversation_service = FakeConversationService()
+
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={
+            "model_id": "test-model",
+            "message": "跳过小红书登录，使用地图与天气继续生成。",
+            "planning_mode": "map_weather",
+        },
+    )
+
+    assert response.status_code == 200
+    assert received_modes == ["map_weather"]
+    assert "地图方案" in response.text
+
+
+def test_stream_chat_rejects_unknown_planning_mode(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={
+            "model_id": "test-model",
+            "message": "继续生成",
+            "planning_mode": "unknown",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> None:

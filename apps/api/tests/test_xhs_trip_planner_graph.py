@@ -402,6 +402,8 @@ async def test_pending_login_prompts_for_chrome_and_continues_after_success() ->
     assert login_events[0].login_id == "fixture-login"
     assert "Google Chrome" in login_events[0].message
     assert "验证码" in login_events[0].message
+    assert login_events[0].fallback_available is True
+    assert login_events[0].fallback_mode == "map_weather"
     assert research.status_calls == 3
     assert research.collect_calls == 1
     assert all(not isinstance(event, MessageDeltaEvent) for event in login_events)

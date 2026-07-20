@@ -96,7 +96,7 @@ class XhsTripPlanner:
         model: BaseChatModel,
         messages: list[ChatMessage],
         *,
-        route_source: Literal["llm_router", "fallback"] = "llm_router",
+        route_source: Literal["llm_router", "fallback", "explicit"] = "llm_router",
     ) -> AsyncIterator[ChatStreamEvent]:
         run = _XhsTripPlanningRun(
             model=model,
@@ -119,7 +119,7 @@ class _XhsTripPlanningRun:
         research_service: XhsResearchService,
         weather_service: WeatherEvidenceService,
         settings: Settings,
-        route_source: Literal["llm_router", "fallback"],
+        route_source: Literal["llm_router", "fallback", "explicit"],
     ) -> None:
         self._model = model
         self._messages = messages
@@ -422,6 +422,8 @@ class _XhsTripPlanningRun:
                 login_id=session.login_id,
                 expires_at=session.expires_at,
                 message=session.message or "请在已打开的 Google Chrome 中完成小红书登录。",
+                fallback_available=True,
+                fallback_mode="map_weather",
             )
         )
         return session
