@@ -284,7 +284,7 @@ class MapTripCollectionService:
                 search_rank=rank,
                 source_order=rank,
             )
-            for rank, place in enumerate(_unique_valid_places(places), start=1)
+            for rank, place in enumerate(_unique_valid_places(places, city), start=1)
         ]
         if candidates:
             return candidates, warning
@@ -616,11 +616,16 @@ def _same_city(left: str, right: str) -> bool:
     )
 
 
-def _unique_valid_places(places: list[AmapPlace]) -> list[AmapPlace]:
+def _unique_valid_places(places: list[AmapPlace], city: str) -> list[AmapPlace]:
     unique: list[AmapPlace] = []
     seen: set[str] = set()
     for place in places:
-        if not place.poi_id or not place.name or place.poi_id in seen:
+        if (
+            not place.poi_id
+            or not place.name
+            or place.poi_id in seen
+            or (place.city and not _same_city(place.city, city))
+        ):
             continue
         seen.add(place.poi_id)
         unique.append(place)
