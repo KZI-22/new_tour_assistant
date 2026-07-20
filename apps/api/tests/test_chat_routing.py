@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -168,7 +168,11 @@ async def test_chat_service_routes_city_plan_to_new_xhs_graph() -> None:
         {
             "XhsTripRequestExtraction": [
                 XhsTripRequestExtraction(
-                    request=XhsTripRequest(destination_city="成都", duration_days=3)
+                    request=XhsTripRequest(
+                        destination_city="成都",
+                        duration_days=3,
+                        start_date=date(2026, 7, 25),
+                    )
                 )
             ],
             "XhsItineraryPlan": [_plan()],
@@ -220,7 +224,11 @@ async def test_xhs_graph_only_asks_for_missing_duration() -> None:
         {
             "XhsTripRequestExtraction": [
                 XhsTripRequestExtraction(
-                    request=XhsTripRequest(destination_city="杭州", duration_days=None)
+                    request=XhsTripRequest(
+                        destination_city="杭州",
+                        duration_days=None,
+                        start_date=date(2026, 7, 25),
+                    )
                 )
             ]
         }
@@ -292,7 +300,11 @@ async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None
         {
             "XhsTripRequestExtraction": [
                 XhsTripRequestExtraction(
-                    request=XhsTripRequest(destination_city="成都", duration_days=3)
+                    request=XhsTripRequest(
+                        destination_city="成都",
+                        duration_days=3,
+                        start_date=date(2026, 7, 25),
+                    )
                 )
             ],
             "XhsItineraryPlan": [_plan()],

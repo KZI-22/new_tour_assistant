@@ -1,26 +1,24 @@
 from __future__ import annotations
 
+from datetime import date as CalendarDate
 from datetime import datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.schemas.trip_planning import (
+    CityTripRequest,
+    DailyWeatherEvidence,
+    TripWeatherEvidence,
+)
 
 
 class XhsPlanningModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-class XhsTripRequest(XhsPlanningModel):
-    destination_city: str | None = Field(default=None, max_length=80)
-    duration_days: int | None = Field(default=None, ge=1)
-
-    @field_validator("destination_city")
-    @classmethod
-    def normalize_destination_city(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized or None
+class XhsTripRequest(CityTripRequest):
+    pass
 
 
 class XhsTripRequestExtraction(XhsPlanningModel):
@@ -76,9 +74,12 @@ class XhsPlanActivity(XhsPlanningModel):
 
 class XhsDayPlan(XhsPlanningModel):
     day_index: int = Field(ge=1)
+    date: CalendarDate | None = None
     theme: str = Field(min_length=1)
     activities: list[XhsPlanActivity] = Field(min_length=1)
     meal_suggestions: list[str] = Field(default_factory=list)
+    weather: DailyWeatherEvidence | None = None
+    weather_advice: list[str] = Field(default_factory=list)
     tips: list[str] = Field(default_factory=list)
 
 
@@ -96,8 +97,10 @@ class XhsItineraryPlan(XhsPlanningModel):
     title: str = Field(min_length=1)
     destination_city: str = Field(min_length=1)
     duration_days: int = Field(ge=1)
+    start_date: CalendarDate | None = None
     summary: str = Field(min_length=1)
     days: list[XhsDayPlan] = Field(default_factory=list)
+    weather_evidence: TripWeatherEvidence | None = None
     practical_tips: list[str] = Field(default_factory=list)
     sources: list[XhsPlanSource] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

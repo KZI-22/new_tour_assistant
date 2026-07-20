@@ -111,6 +111,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tool_timeout_seconds=current_settings.tool_execution_timeout_seconds,
         tool_call_log_writer=tool_call_log_service,
         xhs_research_service=xhs_research_service,
+        amap_client=amap_client,
         trip_planner_settings=current_settings,
     )
     application.state.conversation_service = conversation_service

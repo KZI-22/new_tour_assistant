@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections import defaultdict, deque
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,6 +25,7 @@ from app.schemas.tool_execution import (
     PlanningStageEvent,
     PlanningTraceEvent,
 )
+from app.schemas.trip_planning import DailyWeatherEvidence, TripWeatherEvidence
 from app.schemas.xhs_planning import (
     XhsDayPlan,
     XhsItineraryPlan,
@@ -130,6 +131,20 @@ def _research() -> XhsResearchResult:
                 liked_count=30_000,
                 queried_at=datetime.now(UTC),
             )
+        ],
+    )
+
+
+def _weather() -> TripWeatherEvidence:
+    return TripWeatherEvidence(
+        city="成都",
+        days=[
+            DailyWeatherEvidence(
+                date=date(2026, 7, 24 + index),
+                coverage="unavailable",
+                unavailable_reason="测试日期未覆盖。",
+            )
+            for index in range(1, 4)
         ],
     )
 
@@ -242,12 +257,39 @@ class FakeResearchService:
         return result
 
 
+class CoordinatedResearchService(FakeResearchService):
+    def __init__(self, release: asyncio.Event) -> None:
+        super().__init__(login_checks=[True])
+        self.started = asyncio.Event()
+        self.release = release
+
+    async def collect(self, *args: Any, **kwargs: Any) -> XhsResearchResult:
+        self.started.set()
+        await self.release.wait()
+        return await super().collect(*args, **kwargs)
+
+
+class CoordinatedWeatherService:
+    def __init__(self, release: asyncio.Event) -> None:
+        self.started = asyncio.Event()
+        self.release = release
+
+    async def collect(self, **_: Any) -> TripWeatherEvidence:
+        self.started.set()
+        await self.release.wait()
+        return _weather()
+
+
 def _planner(research: FakeResearchService) -> tuple[XhsTripPlanner, FakeModel]:
     model = FakeModel(
         {
             "XhsTripRequestExtraction": [
                 XhsTripRequestExtraction(
-                    request=XhsTripRequest(destination_city="成都", duration_days=3)
+                    request=XhsTripRequest(
+                        destination_city="成都",
+                        duration_days=3,
+                        start_date=date(2026, 7, 25),
+                    )
                 )
             ],
             "XhsItineraryPlan": [_plan()],
@@ -263,6 +305,49 @@ async def _collect_events(research: FakeResearchService) -> list[Any]:
         async for event in planner.stream(  # type: ignore[arg-type]
             model,
             [ChatMessage(role="user", content="帮我做成都三日游攻略")],
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_xhs_research_and_weather_collection_overlap() -> None:
+    release = asyncio.Event()
+    research = CoordinatedResearchService(release)
+    weather = CoordinatedWeatherService(release)
+    planner, model = _planner(research)
+    planner = XhsTripPlanner(
+        research_service=research,  # type: ignore[arg-type]
+        settings=_settings(),
+        weather_service=weather,  # type: ignore[arg-type]
+    )
+
+    collecting = asyncio.create_task(
+        _collect_stream(
+            planner,
+            model,
+            [ChatMessage(role="user", content="帮我做成都三日游攻略")],
+        )
+    )
+    await asyncio.wait_for(
+        asyncio.gather(research.started.wait(), weather.started.wait()),
+        timeout=1,
+    )
+    release.set()
+
+    events = await asyncio.wait_for(collecting, timeout=1)
+    assert any(isinstance(event, MessageDeltaEvent) for event in events)
+
+
+async def _collect_stream(
+    planner: XhsTripPlanner,
+    model: FakeModel,
+    messages: list[ChatMessage],
+) -> list[Any]:
+    return [
+        event
+        async for event in planner.stream(  # type: ignore[arg-type]
+            model,
+            messages,
         )
     ]
 
@@ -415,8 +500,13 @@ def test_generation_prompt_encodes_primary_and_supplementary_roles() -> None:
     prompt = json.loads(
         _generation_prompt(
             [ChatMessage(role="user", content="路线紧凑一点")],
-            XhsTripRequest(destination_city="成都", duration_days=3),
+            XhsTripRequest(
+                destination_city="成都",
+                duration_days=3,
+                start_date=date(2026, 7, 25),
+            ),
             research,
+            _weather(),
         )
     )
 
@@ -439,8 +529,13 @@ def test_single_post_generation_prompt_does_not_invent_source_2() -> None:
     prompt = json.loads(
         _generation_prompt(
             [],
-            XhsTripRequest(destination_city="成都", duration_days=3),
+            XhsTripRequest(
+                destination_city="成都",
+                duration_days=3,
+                start_date=date(2026, 7, 25),
+            ),
             _research(),
+            _weather(),
         )
     )
 

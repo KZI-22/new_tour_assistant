@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.schemas.trip_planning import DailyWeatherEvidence
 from app.schemas.xhs_planning import XhsItineraryPlan
 
 _TIME_LABELS = {
@@ -24,7 +25,13 @@ def render_xhs_itinerary(plan: XhsItineraryPlan) -> str:
     ]
 
     for day in plan.days:
-        lines.extend(["", f"## 第 {day.day_index} 天｜{day.theme}"])
+        date_label = f"｜{day.date.isoformat()}" if day.date else ""
+        lines.extend(["", f"## 第 {day.day_index} 天{date_label}｜{day.theme}"])
+        if day.weather is not None:
+            lines.extend(["", _render_weather(day.weather)])
+        if day.weather_advice:
+            lines.extend(["", "**天气建议**", ""])
+            lines.extend(f"- {item}" for item in day.weather_advice)
         for activity in day.activities:
             refs = [
                 source_numbers[reference]
@@ -58,6 +65,21 @@ def render_xhs_itinerary(plan: XhsItineraryPlan) -> str:
         lines.extend(["", "## 使用说明", ""])
         lines.extend(f"- {item}" for item in plan.warnings)
 
+    if plan.weather_evidence is not None:
+        weather = plan.weather_evidence
+        report_time = weather.report_time or "供应商未提供"
+        lines.extend(
+            [
+                "",
+                "## 天气数据说明",
+                "",
+                (
+                    f"- 供应商：高德地图（adcode：{weather.adcode or '未返回'}；"
+                    f"报告时间：{report_time}；查询时间：{weather.queried_at.isoformat()}）"
+                ),
+            ]
+        )
+
     lines.extend(["", "## 参考的小红书笔记", ""])
     for index, source in enumerate(plan.sources, start=1):
         published = f"，发布于 {source.published_at}" if source.published_at else ""
@@ -67,9 +89,7 @@ def render_xhs_itinerary(plan: XhsItineraryPlan) -> str:
             if source.liked_count is not None
             else "，点赞量未知"
         )
-        lines.append(
-            f"{index}. [{role}]《{source.title}》— {source.author_name}{likes}{published}"
-        )
+        lines.append(f"{index}. [{role}]《{source.title}》— {source.author_name}{likes}{published}")
     lines.extend(
         [
             "",
@@ -77,6 +97,16 @@ def render_xhs_itinerary(plan: XhsItineraryPlan) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _render_weather(weather: DailyWeatherEvidence) -> str:
+    if weather.coverage == "unavailable":
+        return f"**天气**：暂无对应日期预报。{weather.unavailable_reason or ''}".rstrip()
+    return (
+        f"**天气**：白天 {weather.day_weather or '未提供'} "
+        f"{weather.day_temperature or '—'}℃；夜间 {weather.night_weather or '未提供'} "
+        f"{weather.night_temperature or '—'}℃。"
+    )
 
 
 def _format_liked_count(value: int) -> str:

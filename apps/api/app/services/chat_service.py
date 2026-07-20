@@ -7,6 +7,7 @@ from typing import cast
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
+from app.clients.amap_client import AmapClient
 from app.core.model_registry import ModelRegistry, UnavailableModelError
 from app.core.request_context import get_request_context
 from app.core.settings import Settings
@@ -17,6 +18,7 @@ from app.services.agent_executor import MAX_TOOL_ROUNDS, AgentExecutor, ToolEnab
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.trip_request_router import TripRequestRouter
+from app.services.weather_evidence_service import WeatherEvidenceService
 from app.services.xhs_research_service import XhsResearchService
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ class ChatService:
         tool_timeout_seconds: float = 130,
         tool_call_log_writer: ToolCallLogWriter | None = None,
         xhs_research_service: XhsResearchService | None = None,
+        amap_client: AmapClient | None = None,
         trip_planner_settings: Settings | None = None,
     ) -> None:
         self._registry = registry
@@ -94,8 +97,9 @@ class ChatService:
             and xhs_research_service is not None
         ):
             self._trip_planner = XhsTripPlanner(
-                xhs_research_service,
-                trip_planner_settings,
+                research_service=xhs_research_service,
+                settings=trip_planner_settings,
+                weather_service=WeatherEvidenceService(amap_client),
             )
         elif trip_planner_settings and trip_planner_settings.trip_planner_enabled:
             logger.warning(
