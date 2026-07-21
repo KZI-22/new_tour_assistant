@@ -115,11 +115,10 @@ class ChatService:
             self._trip_planner = XhsTripPlanner(
                 research_service=xhs_research_service,
                 settings=trip_planner_settings,
-                weather_service=weather_service,
             )
         elif trip_planner_settings and trip_planner_settings.trip_planner_enabled:
             logger.warning(
-                "Trip planner is disabled because the XHS research service is unavailable."
+                "XHS post search is disabled because the research service is unavailable."
             )
 
     async def stream(
@@ -130,24 +129,29 @@ class ChatService:
         planning_source: PlanningSource = "standard",
         execution_context: ToolExecutionContext | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
+        if planning_source == "xhs":
+            if self._trip_planner is None:
+                raise AgentExecutionError(
+                    "XHS_PLANNING_DISABLED",
+                    "小红书原帖检索功能当前未启用。",
+                )
+            async for event in self._trip_planner.stream(
+                messages,
+                route_source="explicit",
+            ):
+                yield event
+            return
+
         model = self._registry.create_model(model_id)
         if self._map_trip_planner is not None or self._trip_planner is not None:
             route = await self._trip_request_router.route(messages)
             if route.route == "trip_planner":
-                if planning_source == "xhs":
-                    if self._trip_planner is None:
-                        raise AgentExecutionError(
-                            "XHS_PLANNING_DISABLED",
-                            "小红书攻略功能当前未启用。",
-                        )
-                    planner = self._trip_planner
-                else:
-                    if self._map_trip_planner is None:
-                        raise MapTripPlanningError(
-                            "MAP_PLANNING_DISABLED",
-                            "标准地图与天气规划功能当前未启用。",
-                        )
-                    planner = self._map_trip_planner
+                if self._map_trip_planner is None:
+                    raise MapTripPlanningError(
+                        "MAP_PLANNING_DISABLED",
+                        "标准地图与天气规划功能当前未启用。",
+                    )
+                planner = self._map_trip_planner
                 async for event in planner.stream(
                     model,
                     messages,

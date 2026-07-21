@@ -111,7 +111,7 @@ TOOL_EXECUTION_TIMEOUT_SECONDS=130
 `TOOL_EXECUTION_TIMEOUT_SECONDS` 是单个工具调用的外层安全超时；它应略大于供应商客户端自身的
 超时与重试总时长。
 
-小红书行程规划配置：
+小红书原帖检索与行程规划配置：
 
 ```dotenv
 TRIP_PLANNER_ENABLED=true
@@ -126,33 +126,33 @@ XHS_MCP_STDIO_CWD=D:/A_Project/xhs_mcp/xhs-read-mcp
 XHS_MCP_URL=http://127.0.0.1:8765/mcp
 XHS_MCP_AUTH_TOKEN=copy-the-token-from-xhs-read-mcp
 XHS_MCP_TIMEOUT_SECONDS=75
-XHS_EVIDENCE_MAX_CHARS=12000
 XHS_MIN_POST_CONTENT_CHARS=200
 XHS_DETAIL_CANDIDATE_LIMIT=5
 XHS_LOGIN_POLL_SECONDS=2
 XHS_SSE_HEARTBEAT_SECONDS=15
 ```
 
-规划链路支持一个目标城市和 1–5 天行程，并要求提供行程开始日期。缺少城市、天数或日期时会先
-合并追问，不检查小红书登录，也不调用高德或内容工具。小红书搜索词固定为
-`{城市} {天数}日游 攻略`。每次搜索前都会检查 MCP 登录状态；未登录时 MCP 会打开本机
-Google Chrome，前端提示用户完成手机号、短信验证码或其他安全验证，登录成功后自动继续同一
-请求。用户也可在卡片中跳过登录：前端会中止旧 SSE 登录等待，并在同一会话启动地图与天气方案。
-搜索固定
-使用 `most_liked` 和其余 `any` 筛选，在首次加载结果中按标准化点赞量选择最多五篇详情候选，
-取得两篇有效正文后停止。第一篇作为主帖决定主体路线，第二篇只补充缺失信息；只有一篇时明确
-降级说明，没有有效正文时不调用生成模型。`xsec_token` 只在 MCP 客户端内部使用，不进入
-LangGraph 状态、模型提示、日志或数据库。
+`planning_source=xhs` 是显式的原帖检索模式：不调用 LLM 路由、字段提取、天气或攻略生成模型，
+也不要求城市、天数和出发日期。系统将最新一条用户消息规范化为空格分隔、最多 200 字符的搜索词，
+调用 MCP 搜索并读取详情，再确定性返回最多两篇帖子的标题、作者、时间、点赞量和完整正文。
+正文不按模型提示预算截断，也不经过 LLM 改写。搜索使用 `most_liked`，在首次加载结果中按标准化
+点赞量选择最多五篇详情候选；只有一篇可用时会明确说明。`xsec_token` 只在 MCP 客户端内部使用，
+不进入规划状态、普通日志或最终回复。
 
-小红书证据与天气在登录完成后并行收集；地图模式下，POI/路线证据与天气并行收集。天气只按高德
-实际返回的自然日期映射，超出预报范围或查询失败的日期会明确标记不可用，不用当前天气冒充未来
+每次检索前都会检查 MCP 登录状态；未登录时 MCP 会打开本机 Google Chrome，前端提示用户完成
+手机号、短信验证码或其他安全验证，登录成功后自动继续同一请求。用户也可在卡片中跳过登录：
+前端会中止旧 SSE 登录等待，并在同一会话启动标准地图与天气方案。
+
+`planning_source=standard` 仍使用原有城市行程规划：要求目标城市、1–5 天时长和开始日期，POI/路线
+证据与天气并行收集。天气只按高德实际返回的自然日期映射，超出预报范围或查询失败的日期会明确
+标记不可用，不用当前天气冒充未来
 预报。地图方案每天最多两个景点，固定按“早餐 → 上午景点 → 午餐 → 下午景点 → 晚餐”输出；
 所有具体地点都必须带高德 POI ID，步行距离或公交路线也必须有高德证据。模型只能整理推荐理由和
 天气建议，不能新增地点、改变顺序或补造供应商事实。
 
 完整规划架构、降级算法与事实边界见
-[`docs/architecture/xhs_map_weather_fallback.md`](docs/architecture/xhs_map_weather_fallback.md)；原小红书
-研究链路的详情见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
+[`docs/architecture/xhs_map_weather_fallback.md`](docs/architecture/xhs_map_weather_fallback.md)；小红书
+原帖检索详情见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
 
 项目支持 `stdio` 和 `streamable-http` 两种 MCP 传输。需要在本机有界面 Chrome 中完成短信验证码时，
 推荐使用 `stdio`：先把约定的小红书 MCP 源码安装到后端所在的 `py312` 环境中：
@@ -164,7 +164,7 @@ python -m pip install -e D:\A_Project\xhs_mcp\xhs-read-mcp
 
 `XHS_MCP_TRANSPORT=stdio` 时，主 API 会在首次调用小红书工具时启动 MCP 子进程，并在 API 关闭时
 回收它；`XHS_MCP_STDIO_COMMAND` 留空表示使用启动 API 的同一个 Python 解释器。参数必须写成 JSON
-字符串数组。首次规划会自动打开 Google Chrome，在窗口中完成短信验证码或其他安全验证即可。
+字符串数组。首次检索会自动打开 Google Chrome，在窗口中完成短信验证码或其他安全验证即可。
 登录状态独立保存在 `%LOCALAPPDATA%\xhs-read-mcp\chrome-storage_state.json`。API 重启会关闭仍在运行的
 MCP 子进程和 Chrome 窗口，但已保存的登录状态仍可在下次启动时复用。
 

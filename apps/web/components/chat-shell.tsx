@@ -64,7 +64,7 @@ const MAP_FALLBACK_MESSAGE = "跳过小红书登录，使用地图与天气继�
 
 const suggestions = [
   "帮我规划一趟明天开始的 5 天东京美食之旅",
-  "帮我做一份后天开始的成都 3 天小红书攻略",
+  "搜索成都 3 天游的小红书高赞原帖",
   "设计一个明天开始、适合亲子的上海 2 天行程",
   "如何控制欧洲自由行的整体预算？",
 ];
@@ -517,7 +517,7 @@ export function ChatShell() {
             当前阶段
           </div>
           <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-            城市行程默认使用地图与天气；开启“小红书灵感”后，规划请求才会参考小红书笔记。
+            城市行程默认使用地图与天气；开启“小红书原帖”后，消息会直接用于搜索并返回原帖正文。
           </p>
         </div>
       </aside>
@@ -823,7 +823,7 @@ export function ChatShell() {
               <div className="mt-2 flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <button
-                    aria-label="切换小红书灵感"
+                    aria-label="切换小红书原帖检索"
                     aria-pressed={planningSource === "xhs"}
                     className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       planningSource === "xhs"
@@ -834,11 +834,11 @@ export function ChatShell() {
                     onClick={() =>
                       setPlanningSource((current) => (current === "xhs" ? "standard" : "xhs"))
                     }
-                    title="仅在创建或修改多日行程时参考小红书笔记"
+                    title="直接搜索小红书并返回最多两篇原帖正文，不经过 AI 改写"
                     type="button"
                   >
                     <BookOpenText size={13} />
-                    小红书灵感
+                    小红书原帖
                   </button>
                   <span className="hidden truncate text-[11px] text-[var(--muted-light)] sm:inline">
                     {currentModel

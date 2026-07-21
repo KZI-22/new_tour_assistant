@@ -76,18 +76,14 @@ class XhsResearchService:
         self,
         client: XhsReadClient,
         *,
-        evidence_max_chars: int = 12_000,
         min_post_content_chars: int = 200,
         detail_candidate_limit: int = 5,
     ) -> None:
-        if evidence_max_chars <= 0:
-            raise ValueError("evidence_max_chars must be positive")
         if min_post_content_chars <= 0:
             raise ValueError("min_post_content_chars must be positive")
         if detail_candidate_limit <= 0:
             raise ValueError("detail_candidate_limit must be positive")
         self._client = client
-        self._evidence_max_chars = evidence_max_chars
         self._min_post_content_chars = min_post_content_chars
         self._detail_candidate_limit = detail_candidate_limit
 
@@ -252,7 +248,6 @@ class XhsResearchService:
             )
 
         selected_posts = sorted(usable_posts, key=_usable_post_sort_key)[:_MAX_POSTS]
-        per_post_limit = max(1, self._evidence_max_chars // len(selected_posts))
         queried_at = datetime.now(UTC)
         posts = [
             XhsPostEvidence(
@@ -263,7 +258,7 @@ class XhsResearchService:
                 title=result.detail.title or item.title or "未命名笔记",
                 author_name=result.detail.author.nickname or item.author.nickname or "未知作者",
                 published_at=result.detail.published_at,
-                content=result.detail.description.strip()[:per_post_limit],
+                content=result.detail.description.strip(),
                 liked_count_raw=_liked_count_raw(item, result),
                 liked_count=normalize_xhs_count(_liked_count_raw(item, result)),
                 queried_at=queried_at,

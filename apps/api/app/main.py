@@ -102,7 +102,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         xhs_research_service = XhsResearchService(
             xhs_mcp_client,
-            evidence_max_chars=current_settings.xhs_evidence_max_chars,
             min_post_content_chars=current_settings.xhs_min_post_content_chars,
             detail_candidate_limit=current_settings.xhs_detail_candidate_limit,
         )

@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from pathlib import Path
-from typing import Any
 
 import pytest
 from app.core.request_context import use_request_context
-from app.core.settings import Settings
-from app.graphs.xhs_trip_planner import XhsTripPlanner
 from app.schemas.chat import ChatMessage
 from app.schemas.context import CurrentTimeContext, TravelRequestContext
-from app.schemas.tool_execution import MessageDeltaEvent
-from app.schemas.xhs_planning import XhsTripRequest, XhsTripRequestExtraction
+from app.schemas.trip_planning import CityTripRequest
 from app.services.city_trip_request import (
     apply_explicit_request_overrides,
     clarification_question,
@@ -20,31 +15,6 @@ from app.services.city_trip_request import (
     request_extraction_prompt,
     validate_city_trip_request,
 )
-
-
-class FakeExtractionInvoker:
-    def __init__(self, response: object) -> None:
-        self.response = response
-
-    async def ainvoke(self, _: object) -> object:
-        return self.response
-
-
-class FakeExtractionModel:
-    def __init__(self, response: object) -> None:
-        self.response = response
-
-    def with_structured_output(self, _: object) -> FakeExtractionInvoker:
-        return FakeExtractionInvoker(self.response)
-
-
-class LoginMustNotRun:
-    def __init__(self) -> None:
-        self.check_login_calls = 0
-
-    async def check_login(self) -> Any:
-        self.check_login_calls += 1
-        raise AssertionError("login must not run before required fields are complete")
 
 
 def test_explicit_start_date_supports_stable_formats_and_simple_relative_dates() -> None:
@@ -96,7 +66,7 @@ def test_date_follow_up_does_not_override_duration_and_uses_current_year() -> No
         ChatMessage(role="assistant", content="请告诉我计划从哪一天开始游玩。"),
         ChatMessage(role="user", content="从七月22日开始"),
     ]
-    model_request = XhsTripRequest(
+    model_request = CityTripRequest(
         destination_city="南京",
         duration_days=3,
         start_date=date(2025, 7, 22),
@@ -118,7 +88,7 @@ def test_date_follow_up_does_not_override_duration_and_uses_current_year() -> No
 
 def test_required_fields_merge_clarification_and_date_only_prompt() -> None:
     missing, errors = validate_city_trip_request(
-        XhsTripRequest(destination_city="成都", duration_days=3),
+        CityTripRequest(destination_city="成都", duration_days=3),
         maximum_days=10,
     )
 
@@ -127,33 +97,3 @@ def test_required_fields_merge_clarification_and_date_only_prompt() -> None:
     assert clarification_question(missing, errors) == (
         "请告诉我计划从哪一天开始游玩，例如“7 月 25 日开始”。"
     )
-
-
-@pytest.mark.asyncio
-async def test_missing_start_date_ends_before_login_or_external_tools() -> None:
-    research = LoginMustNotRun()
-    planner = XhsTripPlanner(
-        research_service=research,  # type: ignore[arg-type]
-        settings=Settings(
-            app_name="test",
-            model_config_path=Path("config/models.yaml"),
-            cors_origins=(),
-            log_level="INFO",
-            trip_planner_enabled=True,
-        ),
-    )
-    model = FakeExtractionModel(
-        XhsTripRequestExtraction(request=XhsTripRequest(destination_city="成都", duration_days=3))
-    )
-
-    events = [
-        event
-        async for event in planner.stream(
-            model,  # type: ignore[arg-type]
-            [ChatMessage(role="user", content="帮我做一份成都三日游攻略")],
-        )
-    ]
-
-    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert "哪一天开始" in answer
-    assert research.check_login_calls == 0

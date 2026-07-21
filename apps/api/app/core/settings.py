@@ -79,7 +79,6 @@ class Settings:
         "--headed",
     )
     xhs_mcp_stdio_cwd: Path | None = None
-    xhs_evidence_max_chars: int = 12_000
     xhs_min_post_content_chars: int = 200
     xhs_detail_candidate_limit: int = 5
     xhs_login_poll_seconds: float = 2
@@ -93,7 +92,6 @@ class Settings:
                 self.trip_planner_request_extraction_timeout_seconds
             ),
             "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
-            "xhs_evidence_max_chars": self.xhs_evidence_max_chars,
             "xhs_min_post_content_chars": self.xhs_min_post_content_chars,
             "xhs_detail_candidate_limit": self.xhs_detail_candidate_limit,
             "xhs_login_poll_seconds": self.xhs_login_poll_seconds,
@@ -165,7 +163,6 @@ def get_settings() -> Settings:
             ("-m", "xhs_read_mcp", "--transport", "stdio", "--headed"),
         ),
         xhs_mcp_stdio_cwd=_environment_optional_path("XHS_MCP_STDIO_CWD"),
-        xhs_evidence_max_chars=int(os.getenv("XHS_EVIDENCE_MAX_CHARS", "12000")),
         xhs_min_post_content_chars=int(os.getenv("XHS_MIN_POST_CONTENT_CHARS", "200")),
         xhs_detail_candidate_limit=int(os.getenv("XHS_DETAIL_CANDIDATE_LIMIT", "5")),
         xhs_login_poll_seconds=float(os.getenv("XHS_LOGIN_POLL_SECONDS", "2")),

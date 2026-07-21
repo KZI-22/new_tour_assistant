@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import uuid
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,17 +11,8 @@ from app.core.settings import Settings
 from app.schemas.chat import ChatMessage
 from app.schemas.routing import TripRouteDecision
 from app.schemas.tool_execution import MessageDeltaEvent, PlanningStageEvent
-from app.schemas.xhs_planning import (
-    XhsDayPlan,
-    XhsItineraryPlan,
-    XhsPlanActivity,
-    XhsPostEvidence,
-    XhsResearchResult,
-    XhsTripRequest,
-    XhsTripRequestExtraction,
-)
+from app.schemas.xhs_planning import XhsPostEvidence, XhsResearchResult
 from app.services.chat_service import ChatService
-from app.services.tool_execution import ToolExecutionContext
 from langchain_core.messages import AIMessage
 
 
@@ -138,136 +128,90 @@ def _settings() -> Settings:
     )
 
 
-def _plan() -> XhsItineraryPlan:
-    return XhsItineraryPlan(
-        title="成都三日小红书攻略",
-        destination_city="成都",
-        duration_days=3,
-        summary="按片区安排三天行程。",
-        days=[
-            XhsDayPlan(
-                day_index=index,
-                theme=f"第 {index} 天主题",
-                activities=[
-                    XhsPlanActivity(
-                        time_of_day="morning",
-                        place_name=f"地点 {index}",
-                        description="根据笔记安排。",
-                        source_refs=["source_1"],
-                    )
-                ],
-            )
-            for index in range(1, 4)
-        ],
-    )
-
-
-@pytest.mark.asyncio
-async def test_chat_service_routes_city_plan_to_xhs_only_when_opted_in() -> None:
-    model = FakeHybridModel(
-        {
-            "XhsTripRequestExtraction": [
-                XhsTripRequestExtraction(
-                    request=XhsTripRequest(
-                        destination_city="成都",
-                        duration_days=3,
-                        start_date=date(2026, 7, 25),
-                    )
-                )
-            ],
-            "XhsItineraryPlan": [_plan()],
-        }
-    )
-    research = FakeResearchService()
+def _service() -> tuple[ChatService, FakeRegistry, FakeHybridModel, FakeResearchService]:
+    model = FakeHybridModel({})
     registry = FakeRegistry(
         model,
-        _router_model(
-            TripRouteDecision(
-                route="trip_planner",
-            )
-        ),
+        _router_model(TripRouteDecision(route="trip_planner")),
     )
+    research = FakeResearchService()
     service = ChatService(
         registry,  # type: ignore[arg-type]
         [],
         xhs_research_service=research,  # type: ignore[arg-type]
         trip_planner_settings=_settings(),
     )
+    return service, registry, model, research
+
+
+@pytest.mark.asyncio
+async def test_explicit_xhs_mode_bypasses_all_llm_calls_and_returns_raw_posts() -> None:
+    service, registry, model, research = _service()
 
     events = [
         event
         async for event in service.stream(
-            "test",
+            "model-that-must-not-be-created",
             [ChatMessage(role="user", content="帮我规划成都三日美食之旅")],
             planning_source="xhs",
-            execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
         )
     ]
 
     stages = [event.stage for event in events if isinstance(event, PlanningStageEvent)]
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert research.keywords == ["成都 3日游 攻略"]
+    assert research.keywords == ["帮我规划成都三日美食之旅"]
     assert "searching_xhs" in stages
     assert "reading_xhs_posts" in stages
-    assert "成都三日小红书攻略" in answer
-    assert "《成都三日攻略》" in answer
-    assert "[主帖]" in answer
-    assert "点赞 3 万" in answer
-    assert "不代表平台全部内容" in answer
-    assert "未查询机票、火车票、酒店库存或实时价格" in answer
+    assert "第一天宽窄巷子，第二天熊猫基地，第三天人民公园。" in answer
+    assert "建议体验本地小吃并合理安排每天的片区。" in answer
+    assert "未经过 LLM 改写" in answer
+    assert registry.model_ids == []
+    assert registry.router_calls == 0
     assert model.bind_calls == 0
-    assert research.login_checks == 1
 
 
 @pytest.mark.asyncio
-async def test_xhs_graph_only_asks_for_missing_duration() -> None:
-    model = FakeHybridModel(
-        {
-            "XhsTripRequestExtraction": [
-                XhsTripRequestExtraction(
-                    request=XhsTripRequest(
-                        destination_city="杭州",
-                        duration_days=None,
-                        start_date=date(2026, 7, 25),
-                    )
-                )
-            ]
-        }
-    )
-    research = FakeResearchService()
-    registry = FakeRegistry(
-        model,
-        _router_model(
-            TripRouteDecision(
-                route="trip_planner",
-            )
-        ),
-    )
-    service = ChatService(
-        registry,  # type: ignore[arg-type]
-        [],
-        xhs_research_service=research,  # type: ignore[arg-type]
-        trip_planner_settings=_settings(),
-    )
+async def test_xhs_mode_does_not_require_duration_or_start_date() -> None:
+    service, registry, _, research = _service()
 
     events = [
         event
         async for event in service.stream(
-            "test",
-            [ChatMessage(role="user", content="帮我规划杭州旅行")],
+            "unused",
+            [ChatMessage(role="user", content="  杭州\n旅行  ")],
             planning_source="xhs",
         )
     ]
 
-    assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == [
-        "请告诉我准备游玩几天。"
-    ]
-    assert research.keywords == []
-    assert research.login_checks == 0
+    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+    assert research.keywords == ["杭州 旅行"]
+    assert "小红书原帖检索结果" in answer
+    assert registry.router_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_chat_service_keeps_single_query_on_existing_agent_executor() -> None:
+async def test_xhs_mode_is_explicit_even_for_a_non_planning_query() -> None:
+    service, registry, model, research = _service()
+
+    events = [
+        event
+        async for event in service.stream(
+            "unused",
+            [ChatMessage(role="user", content="帮我查明天南京到杭州的高铁")],
+            planning_source="xhs",
+        )
+    ]
+
+    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+    assert research.keywords == ["帮我查明天南京到杭州的高铁"]
+    assert "单项查询" not in answer
+    assert registry.model_ids == []
+    assert registry.router_calls == 0
+    assert model.bind_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_standard_general_query_keeps_existing_agent_executor() -> None:
     model = FakeHybridModel({})
     registry = FakeRegistry(
         model,
@@ -285,8 +229,6 @@ async def test_chat_service_keeps_single_query_on_existing_agent_executor() -> N
         async for event in service.stream(
             "test",
             [ChatMessage(role="user", content="帮我查明天南京到杭州的高铁")],
-            planning_source="xhs",
-            execution_context=ToolExecutionContext(uuid.uuid4(), uuid.uuid4()),
         )
     ]
 
@@ -294,71 +236,14 @@ async def test_chat_service_keeps_single_query_on_existing_agent_executor() -> N
         "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
         == "单项查询"
     )
+    assert registry.model_ids == ["test"]
+    assert registry.router_calls == 1
     assert model.bind_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_mixed_request_runs_xhs_planner_without_live_hotel_query() -> None:
-    model = FakeHybridModel(
-        {
-            "XhsTripRequestExtraction": [
-                XhsTripRequestExtraction(
-                    request=XhsTripRequest(
-                        destination_city="成都",
-                        duration_days=3,
-                        start_date=date(2026, 7, 25),
-                    )
-                )
-            ],
-            "XhsItineraryPlan": [_plan()],
-        }
-    )
-    registry = FakeRegistry(
-        model,
-        _router_model(
-            TripRouteDecision(
-                route="trip_planner",
-            )
-        ),
-    )
-    research = FakeResearchService()
-    service = ChatService(
-        registry,  # type: ignore[arg-type]
-        [],
-        xhs_research_service=research,  # type: ignore[arg-type]
-        trip_planner_settings=_settings(),
-    )
-
-    events = [
-        event
-        async for event in service.stream(
-            "test",
-            [ChatMessage(role="user", content="规划成都三天并查一下机票")],
-            planning_source="xhs",
-        )
-    ]
-
-    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert research.keywords == ["成都 3日游 攻略"]
-    assert "成都三日小红书攻略" in answer
-    assert "未查询机票、火车票、酒店库存或实时价格" in answer
-    assert model.bind_calls == 0
-
-
-@pytest.mark.asyncio
 async def test_standard_source_routes_planning_intent_to_map_planner() -> None:
-    model = FakeHybridModel({})
-    registry = FakeRegistry(
-        model,
-        _router_model(TripRouteDecision(route="trip_planner")),
-    )
-    research = FakeResearchService()
-    service = ChatService(
-        registry,  # type: ignore[arg-type]
-        [],
-        xhs_research_service=research,  # type: ignore[arg-type]
-        trip_planner_settings=_settings(),
-    )
+    service, registry, _, research = _service()
 
     class FakeStandardMapPlanner:
         calls = 0

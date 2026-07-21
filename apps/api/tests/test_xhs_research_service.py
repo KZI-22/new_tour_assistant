@@ -428,7 +428,6 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
 
     result = await XhsResearchService(
         client,
-        evidence_max_chars=100,
         min_post_content_chars=1,
     ).collect(
         "成都 3天 旅游攻略",
@@ -438,6 +437,10 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
 
     assert counts == [3]
     assert [post.note_id for post in result.posts] == ["note-1", "note-2"]
+    assert [post.content for post in result.posts] == [
+        _detail(1).detail.description,
+        _detail(2).detail.description,
+    ]
     assert client.detail_calls == [
         ("note-0", "secret-0"),
         ("note-1", "secret-1"),
