@@ -288,6 +288,48 @@ async def test_driving_route_parses_v5_cost_and_steps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_route_cache_reuses_same_direction_but_not_reverse_direction() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=ok(
+                route={
+                    "paths": [
+                        {
+                            "distance": "3200",
+                            "cost": {"duration": "1200"},
+                            "steps": [],
+                        }
+                    ]
+                }
+            ),
+            request=request,
+        )
+
+    client = make_client(handler)
+    forward = RoutePlanInput(
+        origin={"longitude": 118.1, "latitude": 32.1},
+        destination={"longitude": 118.2, "latitude": 32.2},
+        mode=RouteMode.DRIVING,
+    )
+    reverse = RoutePlanInput(
+        origin=forward.destination,
+        destination=forward.origin,
+        mode=RouteMode.DRIVING,
+    )
+
+    await client.plan_route(forward)
+    await client.plan_route(forward)
+    await client.plan_route(reverse)
+
+    assert len(requests) == 2
+    assert requests[0].url.params["origin"] != requests[1].url.params["origin"]
+
+
+@pytest.mark.asyncio
 async def test_matrix_deduplicates_self_pairs_and_splits_provider_batches() -> None:
     calls: list[httpx.Request] = []
 

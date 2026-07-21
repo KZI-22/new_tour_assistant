@@ -12,18 +12,8 @@ class MapPlanningModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-MapPlaceRole = Literal[
-    "breakfast",
-    "morning_attraction",
-    "lunch",
-    "afternoon_attraction",
-    "dinner",
-]
-
-
 class MapPlaceEvidence(MapPlanningModel):
     reference_id: str = Field(min_length=1, max_length=100)
-    role: MapPlaceRole
     poi_id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=200)
     address: str
@@ -33,47 +23,49 @@ class MapPlaceEvidence(MapPlanningModel):
     city: str | None = None
     search_query: str = Field(min_length=1, max_length=100)
     search_rank: int = Field(ge=1)
+    estimated_visit_minutes: int = Field(ge=15, le=360)
+    matched_preferences: list[str] = Field(default_factory=list)
+    selection_reasons: list[str] = Field(default_factory=list)
+    candidate_score: float
 
 
 class RouteLegEvidence(MapPlanningModel):
     origin_ref: str = Field(min_length=1, max_length=100)
     destination_ref: str = Field(min_length=1, max_length=100)
-    mode: Literal["walking", "transit", "unverified"]
+    mode: Literal["walking", "transit", "driving", "estimated", "unverified"]
     distance_meters: int | None = Field(default=None, ge=0)
     duration_seconds: int | None = Field(default=None, ge=0)
+    transfer_count: int | None = Field(default=None, ge=0)
     route_summary: str | None = None
+    is_fallback: bool = False
 
 
 class MapDayEvidence(MapPlanningModel):
     day_index: int = Field(ge=1)
     date: dt.date
-    breakfast: MapPlaceEvidence | None = None
-    morning_attraction: MapPlaceEvidence | None = None
-    lunch: MapPlaceEvidence | None = None
-    afternoon_attraction: MapPlaceEvidence | None = None
-    dinner: MapPlaceEvidence | None = None
+    attractions: list[MapPlaceEvidence] = Field(default_factory=list, max_length=5)
+    estimated_visit_minutes: int = Field(default=0, ge=0)
+    estimated_transport_minutes: int = Field(default=0, ge=0)
     route_legs: list[RouteLegEvidence] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
     def ordered_places(self) -> list[MapPlaceEvidence]:
-        return [
-            place
-            for place in (
-                self.breakfast,
-                self.morning_attraction,
-                self.lunch,
-                self.afternoon_attraction,
-                self.dinner,
-            )
-            if place is not None
-        ]
+        return list(self.attractions)
+
+
+class ExcludedAttractionEvidence(MapPlanningModel):
+    poi_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class MapTripEvidence(MapPlanningModel):
     provider: Literal["amap"] = "amap"
     city: str
+    planning_run_id: str = Field(min_length=1, max_length=100)
     queried_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
     days: list[MapDayEvidence]
+    excluded_attractions: list[ExcludedAttractionEvidence] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -85,6 +77,7 @@ class MapPlaceNarrative(MapPlanningModel):
 class MapDayNarrative(MapPlanningModel):
     day_index: int = Field(ge=1)
     date: dt.date
+    theme: str = Field(min_length=1, max_length=200)
     places: list[MapPlaceNarrative]
     weather_advice: list[str] = Field(default_factory=list)
     tips: list[str] = Field(default_factory=list)
@@ -106,12 +99,12 @@ class MapNarrativePlan(MapPlanningModel):
 
 
 __all__ = [
+    "ExcludedAttractionEvidence",
     "MapDayEvidence",
     "MapDayNarrative",
     "MapNarrativePlan",
     "MapPlaceEvidence",
     "MapPlaceNarrative",
-    "MapPlaceRole",
     "MapTripEvidence",
     "RouteLegEvidence",
 ]

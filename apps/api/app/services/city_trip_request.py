@@ -104,9 +104,10 @@ def request_extraction_prompt(messages: Sequence[ChatMessage]) -> str:
     current_date = _current_date()
     timezone = context.time.timezone if context is not None else "system-local"
     return (
-        "结合最近对话提取目标城市、游玩天数、出行开始日期、兴趣和饮食偏好。"
+        "结合最近对话提取目标城市、游玩天数、出行开始日期和兴趣。"
         "只有用户明确表达或可由上下文直接继承的值才能填写，不能猜测。"
-        "未提供的必填字段使用 null，未提供的偏好使用空数组。"
+        "兴趣只能映射到 Schema 中列出的标准标签，不得自由生成标签；"
+        "未提供的必填字段使用 null，未提供的偏好使用空数组，food_preferences 始终使用空数组。"
         f"当前日期是 {current_date.isoformat()}，时区是 {timezone}；"
         "无年份的月日按当前年份解释，今天、明天和后天按该日期计算。对话如下：\n"
         f"{json.dumps(conversation_payload(messages), ensure_ascii=False)}"

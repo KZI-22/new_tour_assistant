@@ -180,7 +180,7 @@ class AmapClient:
         payload = await self._request(
             endpoint,
             params,
-            cache_namespace="place_search",
+            cache_namespace="place_search_v2",
         )
         pois = [
             place
@@ -300,7 +300,11 @@ class AmapClient:
             city2 = await self._resolve_citycode(query.destination_city or query.city)
             params.update({"city1": city1, "city2": city2})
 
-        payload = await self._request(_ROUTE_ENDPOINTS[query.mode], params)
+        payload = await self._request(
+            _ROUTE_ENDPOINTS[query.mode],
+            params,
+            cache_namespace="route_plan",
+        )
         route = self._dict(payload.get("route"))
         if query.mode == RouteMode.TRANSIT:
             return self._parse_transit_route(query.mode, route)

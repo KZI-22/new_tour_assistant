@@ -3,52 +3,52 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
-from dataclasses import dataclass
+import statistics
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Protocol
+from uuid import uuid4
 
 from app.clients.amap_errors import AmapError
 from app.schemas.amap import (
-    AmapCoordinate,
     AmapCoordinateInput,
     AmapPlace,
-    MatrixEntry,
-    MatrixLocation,
-    MatrixMode,
     PlaceSearchResult,
     RouteMode,
     RoutePlanInput,
     RouteResult,
     SearchPlacesInput,
-    TravelTimeMatrixInput,
-    TravelTimeMatrixResult,
 )
 from app.schemas.map_planning import (
+    ExcludedAttractionEvidence,
     MapDayEvidence,
     MapPlaceEvidence,
-    MapPlaceRole,
     MapTripEvidence,
     RouteLegEvidence,
 )
 from app.schemas.trip_planning import CityTripRequest
+from app.services.attraction_planning_service import (
+    AttractionCandidate,
+    DailyClusterPlanner,
+    PoiSearchTask,
+    build_poi_search_tasks,
+    haversine_km,
+    match_candidate_preferences,
+    merge_and_deduplicate_candidates,
+    score_candidates,
+    select_diverse_candidates,
+    straight_line_transport_minutes,
+)
 
 logger = logging.getLogger(__name__)
 
-_MAX_MATRIX_LOCATIONS = 20
-_MAX_ATTRACTION_CANDIDATES = 20
-_MEAL_CANDIDATE_LIMIT = 5
-_WALKING_DISTANCE_LIMIT_METERS = 1_500
-_WALKING_DURATION_LIMIT_SECONDS = 20 * 60
-_EXCLUDED_ATTRACTION_TYPES = ("餐饮", "酒店", "住宿", "购物", "生活服务", "汽车服务")
+_WALKING_THRESHOLD_KM = 1.5
+_LOCAL_ROUTE_ABNORMAL_SECONDS = 90 * 60
+_LOCAL_ROUTE_CORRECTION_MAX_NEW_EDGES = 6
 
 
 class MapPlanningClient(Protocol):
     async def search_places(self, query: SearchPlacesInput) -> PlaceSearchResult: ...
-
-    async def travel_time_matrix(
-        self,
-        query: TravelTimeMatrixInput,
-    ) -> TravelTimeMatrixResult: ...
 
     async def plan_route(self, query: RoutePlanInput) -> RouteResult: ...
 
@@ -60,32 +60,44 @@ class MapTripCollectionError(RuntimeError):
         self.user_message = user_message
 
 
-@dataclass(frozen=True, slots=True)
-class _Candidate:
-    place: AmapPlace
-    search_query: str
-    search_rank: int
-    source_order: int
-    interest_match: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _DayAttractions:
-    morning: _Candidate
-    afternoon: _Candidate | None
-
-
-@dataclass(frozen=True, slots=True)
-class _MealCandidates:
-    breakfast: list[_Candidate]
-    lunch: list[_Candidate]
-    dinner: list[_Candidate]
-    warnings: list[str]
-
-
 class MapTripCollectionService:
-    def __init__(self, client: MapPlanningClient | None) -> None:
+    def __init__(
+        self,
+        client: MapPlanningClient | None,
+        *,
+        poi_max_concurrency: int = 5,
+        route_max_concurrency: int = 5,
+        poi_page_size: int = 10,
+        max_raw_candidates: int = 60,
+        max_transit_transfers: int = 1,
+        max_transit_duration_minutes: int = 90,
+        max_walk_distance_meters: int = 1_800,
+        cluster_max_iterations: int = 20,
+        data_timeout_seconds: float = 10,
+    ) -> None:
+        positive = (
+            poi_max_concurrency,
+            route_max_concurrency,
+            poi_page_size,
+            max_raw_candidates,
+            max_transit_duration_minutes,
+            max_walk_distance_meters,
+            data_timeout_seconds,
+        )
+        if any(value <= 0 for value in positive):
+            raise ValueError("Map planning limits and timeouts must be positive")
+        if max_transit_transfers < 0 or cluster_max_iterations < 0:
+            raise ValueError("Map planning limits cannot be negative")
         self._client = client
+        self._poi_semaphore = asyncio.Semaphore(poi_max_concurrency)
+        self._route_semaphore = asyncio.Semaphore(route_max_concurrency)
+        self._poi_page_size = poi_page_size
+        self._max_raw_candidates = max_raw_candidates
+        self._max_transit_transfers = max_transit_transfers
+        self._max_transit_duration_minutes = max_transit_duration_minutes
+        self._max_walk_distance_meters = max_walk_distance_meters
+        self._cluster_planner = DailyClusterPlanner(max_iterations=cluster_max_iterations)
+        self._data_timeout_seconds = data_timeout_seconds
 
     async def collect(self, request: CityTripRequest) -> MapTripEvidence:
         if (
@@ -99,578 +111,531 @@ class MapTripCollectionService:
                 "地图规划服务未配置，暂时无法生成地图与天气方案。",
             )
 
+        started_at = monotonic()
+        planning_run_id = str(uuid4())
         queried_at = datetime.now(UTC)
-        candidates, warnings = await self._collect_attractions(request)
+        candidates, warnings, stats = await self._collect_attractions(
+            request,
+            planning_run_id,
+            timeout_seconds=self._data_timeout_seconds,
+        )
         if not candidates:
+            timed_out = any("超时" in warning for warning in warnings)
+            raise MapTripCollectionError(
+                "MAP_POI_COLLECTION_TIMEOUT" if timed_out else "MAP_ATTRACTIONS_EMPTY",
+                (
+                    "高德景点查询超时，暂时无法形成可靠的候选景点。"
+                    if timed_out
+                    else "高德地图没有返回可用于规划的有效景点，请换个城市名称后重试。"
+                ),
+            )
+
+        match_candidate_preferences(candidates, request.interests)
+        score_candidates(candidates)
+        selected, excluded = select_diverse_candidates(candidates, request.duration_days)
+        if not selected:
             raise MapTripCollectionError(
                 "MAP_ATTRACTIONS_EMPTY",
                 "高德地图没有返回可用于规划的有效景点，请换个城市名称后重试。",
             )
-        attraction_matrix = await self._matrix(candidates)
-        days = self._group_attractions(
-            candidates,
-            attraction_matrix,
-            request.duration_days,
-        )
-        if len(days) < request.duration_days:
+        groups = self._cluster_planner.plan(selected, request.duration_days)
+        if len(selected) < request.duration_days * 3:
             warnings.append(
-                f"有效景点仅能覆盖 {len(days)}/{request.duration_days} 个行程日，"
-                "未使用模型猜测地点补足。"
+                f"有效景点仅有 {len(selected)} 个，少于每天 3 个的目标；未使用模型猜测地点补足。"
             )
-        if any(day.afternoon is None for day in days):
-            warnings.append("部分行程日只有一个有效景点，未添加无来源的下午景点。")
 
-        meal_results = await asyncio.gather(
-            *(self._collect_meals(request, day) for day in days),
+        remaining_timeout = max(
+            0.0,
+            self._data_timeout_seconds - (monotonic() - started_at),
         )
-        used_restaurants: set[str] = set()
-        evidence_days: list[MapDayEvidence] = []
-        for index, (attractions, meals) in enumerate(
-            zip(days, meal_results, strict=True),
-            start=1,
-        ):
-            day, day_warnings = await self._build_day(
+        route_groups, route_warnings, route_stats = await self._collect_routes(
+            groups,
+            request.destination_city,
+            planning_run_id,
+            timeout_seconds=remaining_timeout,
+        )
+        warnings.extend(route_warnings)
+
+        evidence_days = [
+            self._build_day(
                 request=request,
                 day_index=index,
                 attractions=attractions,
-                meals=meals,
-                used_restaurants=used_restaurants,
+                legs=legs,
             )
-            evidence_days.append(day)
-            warnings.extend(day_warnings)
-
-        for index in range(len(evidence_days) + 1, request.duration_days + 1):
-            warning = f"第 {index} 天没有可用的高德景点证据，保留为空白规划日。"
-            evidence_days.append(
-                MapDayEvidence(
-                    day_index=index,
-                    date=request.start_date + timedelta(days=index - 1),
-                    warnings=[warning],
-                )
-            )
-            warnings.append(warning)
-
-        return MapTripEvidence(
+            for index, (attractions, legs) in enumerate(route_groups, start=1)
+        ]
+        evidence = MapTripEvidence(
             city=request.destination_city,
+            planning_run_id=planning_run_id,
             queried_at=queried_at,
             days=evidence_days,
+            excluded_attractions=[
+                ExcludedAttractionEvidence(
+                    poi_id=item.place.poi_id,
+                    name=item.place.name,
+                    reason=_exclusion_reason(item, selected),
+                )
+                for item in sorted(excluded, key=lambda candidate: -candidate.score)[:20]
+            ],
             warnings=list(dict.fromkeys(warnings)),
         )
+        elapsed_ms = round((monotonic() - started_at) * 1_000)
+        logger.info(
+            "Map trip data planned planning_run_id=%s city=%s raw_poi_count=%s "
+            "invalid_poi_count=%s exact_duplicate_count=%s fuzzy_duplicate_count=%s "
+            "deduplicated_poi_count=%s selected_poi_count=%s route_api_call_count=%s "
+            "route_fallback_count=%s planning_total_latency_ms=%s",
+            planning_run_id,
+            request.destination_city,
+            stats["raw"],
+            stats["invalid"],
+            stats["exact_duplicates"],
+            stats["fuzzy_duplicates"],
+            len(candidates),
+            len(selected),
+            route_stats["api_calls"],
+            route_stats["fallbacks"],
+            elapsed_ms,
+        )
+        return evidence
 
     async def _collect_attractions(
         self,
         request: CityTripRequest,
-    ) -> tuple[list[_Candidate], list[str]]:
-        assert self._client is not None
+        planning_run_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> tuple[list[AttractionCandidate], list[str], dict[str, int]]:
         assert request.destination_city is not None
-        assert request.duration_days is not None
-        queries = ["景点", *request.interests[:2]]
-        limit = min(
-            _MAX_ATTRACTION_CANDIDATES,
-            max(request.duration_days * 3, 6),
+        deadline = monotonic() + timeout_seconds
+        tasks = build_poi_search_tasks(request.interests)
+        running = {
+            asyncio.create_task(
+                self._safe_search(task, request.destination_city, planning_run_id)
+            ): task
+            for task in tasks
+        }
+        try:
+            done, pending = await asyncio.wait(running, timeout=timeout_seconds)
+        except asyncio.CancelledError:
+            for future in running:
+                future.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+            raise
+        for future in pending:
+            future.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        responses = {running[future]: future.result() for future in done}
+        warnings = [warning for _, warning in responses.values() if warning]
+        warnings.extend(
+            f"景点关键词“{running[future].keyword}”查询超时。" for future in pending
         )
-        results = await asyncio.gather(
-            *(
-                self._safe_search(
-                    SearchPlacesInput(
-                        city=request.destination_city,
-                        keywords=query,
-                        limit=limit,
-                    ),
-                    label=f"景点关键词“{query}”",
-                )
-                for query in queries
-            )
-        )
-        warnings = [warning for _, warning in results if warning]
-        candidates: list[_Candidate] = []
-        seen: set[str] = set()
-        source_order = 0
-        for query_index, (query, (places, _)) in enumerate(zip(queries, results, strict=True)):
-            for rank, place in enumerate(places, start=1):
-                if place.poi_id in seen or not _is_valid_attraction(
-                    place,
-                    request.destination_city,
-                ):
-                    continue
-                seen.add(place.poi_id)
-                source_order += 1
-                candidates.append(
-                    _Candidate(
-                        place=place,
-                        search_query=query,
-                        search_rank=rank,
-                        source_order=source_order,
-                        interest_match=query_index > 0,
-                    )
-                )
-                if len(candidates) == _MAX_ATTRACTION_CANDIDATES:
-                    return candidates, warnings
-        return candidates, warnings
-
-    async def _collect_meals(
-        self,
-        request: CityTripRequest,
-        attractions: _DayAttractions,
-    ) -> _MealCandidates:
-        morning = attractions.morning.place.location
-        afternoon = (attractions.afternoon or attractions.morning).place.location
-        midpoint = AmapCoordinateInput(
-            longitude=(morning.longitude + afternoon.longitude) / 2,
-            latitude=(morning.latitude + afternoon.latitude) / 2,
-        )
-        preference = request.food_preferences[0] if request.food_preferences else None
-        tasks = (
-            self._meal_search(
-                city=request.destination_city or "",
-                keyword="早餐",
-                center=morning,
-                radius_meters=1_500,
-                role_label="早餐",
-            ),
-            self._meal_search(
-                city=request.destination_city or "",
-                keyword=f"{preference} 餐厅" if preference else "餐厅",
-                center=midpoint,
-                radius_meters=2_500,
-                role_label="午餐",
-            ),
-            self._meal_search(
-                city=request.destination_city or "",
-                keyword=f"{preference} 晚餐" if preference else "晚餐",
-                center=afternoon,
-                radius_meters=1_500,
-                role_label="晚餐",
-            ),
-        )
-        breakfast, lunch, dinner = await asyncio.gather(*tasks)
-        return _MealCandidates(
-            breakfast=breakfast[0],
-            lunch=lunch[0],
-            dinner=dinner[0],
-            warnings=[warning for _, warning in (breakfast, lunch, dinner) if warning],
-        )
-
-    async def _meal_search(
-        self,
-        *,
-        city: str,
-        keyword: str,
-        center: AmapCoordinate | AmapCoordinateInput,
-        radius_meters: int,
-        role_label: str,
-    ) -> tuple[list[_Candidate], str | None]:
-        query = SearchPlacesInput(
-            city=city,
-            keywords=keyword,
-            location=AmapCoordinateInput(
-                longitude=center.longitude,
-                latitude=center.latitude,
-            ),
-            radius_meters=radius_meters,
-            limit=_MEAL_CANDIDATE_LIMIT,
-        )
-        places, warning = await self._safe_search(query, label=role_label)
-        search_query = keyword
-        if not places:
-            retry = query.model_copy(update={"keywords": "餐饮"})
-            places, retry_warning = await self._safe_search(retry, label=f"{role_label}宽泛重试")
-            warning = warning or retry_warning
-            search_query = "餐饮"
-        candidates = [
-            _Candidate(
-                place=place,
-                search_query=search_query,
-                search_rank=rank,
-                source_order=rank,
-            )
-            for rank, place in enumerate(_unique_valid_places(places, city), start=1)
+        successful_results = [
+            (task, places)
+            for task in tasks
+            if task in responses
+            for places, _ in [responses[task]]
+            if places
         ]
-        if candidates:
-            return candidates, warning
-        return [], f"{role_label}未找到有效高德 POI，保留现场选择提示。"
+        if warnings and sum(len(places) for _, places in successful_results) < (
+            request.duration_days or 1
+        ) * 3:
+            compensation = PoiSearchTask(keyword="旅游景点", is_base=True)
+            remaining_seconds = deadline - monotonic()
+            if remaining_seconds <= 0.05:
+                places, warning = [], "旅游景点补偿查询因数据阶段超时未执行。"
+            else:
+                try:
+                    places, warning = await asyncio.wait_for(
+                        self._safe_search(
+                            compensation,
+                            request.destination_city,
+                            planning_run_id,
+                        ),
+                        timeout=remaining_seconds,
+                    )
+                except TimeoutError:
+                    places, warning = [], "旅游景点补偿查询超时。"
+            if places:
+                successful_results.append((compensation, places))
+            if warning:
+                warnings.append(warning)
 
-    async def _build_day(
-        self,
-        *,
-        request: CityTripRequest,
-        day_index: int,
-        attractions: _DayAttractions,
-        meals: _MealCandidates,
-        used_restaurants: set[str],
-    ) -> tuple[MapDayEvidence, list[str]]:
-        attraction_ids = {
-            attractions.morning.place.poi_id,
-            *([attractions.afternoon.place.poi_id] if attractions.afternoon is not None else []),
-        }
-        breakfast = _exclude_used(meals.breakfast, used_restaurants | attraction_ids)
-        lunch = _exclude_used(meals.lunch, used_restaurants | attraction_ids)
-        dinner = _exclude_used(meals.dinner, used_restaurants | attraction_ids)
-        all_candidates = _unique_candidates(
-            [
-                *breakfast,
-                attractions.morning,
-                *lunch,
-                *([attractions.afternoon] if attractions.afternoon else []),
-                *dinner,
-            ]
-        )
-        matrix = await self._matrix(all_candidates)
-        selected = self._select_meals(
-            breakfast=breakfast,
-            morning=attractions.morning,
-            lunch=lunch,
-            afternoon=attractions.afternoon,
-            dinner=dinner,
-            matrix=matrix,
-        )
-        warnings = list(meals.warnings)
-        if selected is None:
-            selected_breakfast = selected_lunch = selected_dinner = None
-            warnings.append(f"第 {day_index} 天餐饮候选缺少完整步行矩阵，未按猜测距离推荐餐厅。")
-        else:
-            selected_breakfast, selected_lunch, selected_dinner = selected
-            used_restaurants.update(item.place.poi_id for item in selected if item is not None)
-
-        places = {
-            "breakfast": _evidence(selected_breakfast, day_index, "breakfast"),
-            "morning_attraction": _evidence(
-                attractions.morning,
-                day_index,
-                "morning_attraction",
-            ),
-            "lunch": _evidence(selected_lunch, day_index, "lunch"),
-            "afternoon_attraction": _evidence(
-                attractions.afternoon,
-                day_index,
-                "afternoon_attraction",
-            ),
-            "dinner": _evidence(selected_dinner, day_index, "dinner"),
-        }
-        ordered = [item for item in places.values() if item is not None]
-        route_legs = await asyncio.gather(
-            *(
-                self._route_leg(
-                    origin,
-                    destination,
-                    matrix,
-                    request.destination_city or "",
-                )
-                for origin, destination in itertools.pairwise(ordered)
-            )
-        )
-        if any(leg.mode == "unverified" for leg in route_legs):
-            warnings.append(f"第 {day_index} 天存在未验证路段，出发前请使用地图导航复查。")
-        assert request.start_date is not None
-        return (
-            MapDayEvidence(
-                day_index=day_index,
-                date=request.start_date + timedelta(days=day_index - 1),
-                breakfast=places["breakfast"],
-                morning_attraction=places["morning_attraction"],
-                lunch=places["lunch"],
-                afternoon_attraction=places["afternoon_attraction"],
-                dinner=places["dinner"],
-                route_legs=list(route_legs),
-                warnings=list(dict.fromkeys(warnings)),
-            ),
-            warnings,
-        )
-
-    def _select_meals(
-        self,
-        *,
-        breakfast: list[_Candidate],
-        morning: _Candidate,
-        lunch: list[_Candidate],
-        afternoon: _Candidate | None,
-        dinner: list[_Candidate],
-        matrix: TravelTimeMatrixResult | None,
-    ) -> tuple[_Candidate | None, _Candidate | None, _Candidate | None] | None:
-        if matrix is None:
-            return None
-        lookup = _matrix_lookup(matrix)
-        choices = (
-            breakfast or [None],
-            lunch or [None],
-            dinner or [None],
-        )
-        best: tuple[float, tuple[str, str, str], tuple[_Candidate | None, ...]] | None = None
-        for meal_combo in itertools.product(*choices):
-            sequence = [meal_combo[0], morning, meal_combo[1], afternoon, meal_combo[2]]
-            actual = [item for item in sequence if item is not None]
-            ids = [item.place.poi_id for item in actual]
-            if len(ids) != len(set(ids)):
-                continue
-            entries = [
-                lookup.get((origin.place.poi_id, destination.place.poi_id))
-                for origin, destination in itertools.pairwise(actual)
-            ]
-            if any(entry is None or not entry.success for entry in entries):
-                continue
-            cost = 0.0
-            for entry in entries:
-                assert entry is not None
-                assert entry.distance_meters is not None and entry.duration_seconds is not None
-                cost += entry.duration_seconds + entry.distance_meters / 1.4
-                if (
-                    entry.distance_meters > _WALKING_DISTANCE_LIMIT_METERS
-                    or entry.duration_seconds > _WALKING_DURATION_LIMIT_SECONDS
-                ):
-                    cost += 100_000
-            cost += sum(item.search_rank * 10 for item in meal_combo if item is not None)
-            stable = tuple(item.place.poi_id if item is not None else "" for item in meal_combo)
-            candidate = (cost, stable, meal_combo)
-            if best is None or candidate[:2] < best[:2]:
-                best = candidate
-        if best is None:
-            return None
-        selected = best[2]
-        return selected[0], selected[1], selected[2]
-
-    async def _route_leg(
-        self,
-        origin: MapPlaceEvidence,
-        destination: MapPlaceEvidence,
-        matrix: TravelTimeMatrixResult | None,
-        city: str,
-    ) -> RouteLegEvidence:
-        entry = (
-            _matrix_lookup(matrix).get((origin.poi_id, destination.poi_id))
-            if matrix is not None
-            else None
-        )
-        if entry is None or not entry.success:
-            return RouteLegEvidence(
-                origin_ref=origin.reference_id,
-                destination_ref=destination.reference_id,
-                mode="unverified",
-                route_summary="高德未返回该路段的有效距离，请在出发前使用地图导航确认。",
-            )
-        assert entry.distance_meters is not None and entry.duration_seconds is not None
-        if (
-            entry.distance_meters <= _WALKING_DISTANCE_LIMIT_METERS
-            and entry.duration_seconds <= _WALKING_DURATION_LIMIT_SECONDS
-        ):
-            return RouteLegEvidence(
-                origin_ref=origin.reference_id,
-                destination_ref=destination.reference_id,
-                mode="walking",
-                distance_meters=entry.distance_meters,
-                duration_seconds=entry.duration_seconds,
-                route_summary="高德步行时间矩阵",
-            )
-        assert self._client is not None
-        try:
-            route = await self._client.plan_route(
-                RoutePlanInput(
-                    origin=_coordinate_input(origin.location),
-                    destination=_coordinate_input(destination.location),
-                    mode=RouteMode.TRANSIT,
-                    city=city,
-                )
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Amap transit route query failed exception_type=%s",
-                type(exc).__name__,
-            )
-            return RouteLegEvidence(
-                origin_ref=origin.reference_id,
-                destination_ref=destination.reference_id,
-                mode="unverified",
-                distance_meters=entry.distance_meters,
-                duration_seconds=entry.duration_seconds,
-                route_summary="公交路线查询失败；距离和耗时为已知步行矩阵结果。",
-            )
-        return RouteLegEvidence(
-            origin_ref=origin.reference_id,
-            destination_ref=destination.reference_id,
-            mode="transit",
-            distance_meters=route.distance_meters,
-            duration_seconds=route.duration_seconds,
-            route_summary=route.route_summary,
-        )
-
-    async def _matrix(
-        self,
-        candidates: list[_Candidate],
-    ) -> TravelTimeMatrixResult | None:
-        assert self._client is not None
-        unique = _unique_candidates(candidates)[:_MAX_MATRIX_LOCATIONS]
-        if len(unique) < 2:
-            return None
-        try:
-            return await self._client.travel_time_matrix(
-                TravelTimeMatrixInput(
-                    locations=[
-                        MatrixLocation(
-                            id=item.place.poi_id,
-                            name=item.place.name,
-                            longitude=item.place.location.longitude,
-                            latitude=item.place.location.latitude,
-                        )
-                        for item in unique
-                    ],
-                    mode=MatrixMode.WALKING,
-                )
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Amap walking matrix query failed exception_type=%s",
-                type(exc).__name__,
-            )
-            return None
-
-    def _group_attractions(
-        self,
-        candidates: list[_Candidate],
-        matrix: TravelTimeMatrixResult | None,
-        duration_days: int,
-    ) -> list[_DayAttractions]:
-        used: set[str] = set()
-        days: list[_DayAttractions] = []
-        lookup = _matrix_lookup(matrix) if matrix is not None else {}
-        scored_pairs: list[tuple[float, int, int, _Candidate, _Candidate]] = []
-        for left, right in itertools.combinations(candidates, 2):
-            entries = [
-                lookup.get((left.place.poi_id, right.place.poi_id)),
-                lookup.get((right.place.poi_id, left.place.poi_id)),
-            ]
-            valid = [entry for entry in entries if entry is not None and entry.success]
-            if not valid:
-                continue
-            distance = sum(entry.distance_meters or 0 for entry in valid) / len(valid)
-            duration = sum(entry.duration_seconds or 0 for entry in valid) / len(valid)
-            score = duration + distance / 1.4
-            score += (left.source_order + right.source_order) * 120
-            score -= (left.interest_match + right.interest_match) * 300
-            scored_pairs.append((score, left.source_order, right.source_order, left, right))
-        for _, _, _, left, right in sorted(scored_pairs, key=lambda item: item[:3]):
-            if len(days) == duration_days:
+        limited: list[tuple[PoiSearchTask, list[AmapPlace]]] = []
+        remaining = self._max_raw_candidates
+        for task, places in successful_results:
+            if remaining <= 0:
                 break
-            if left.place.poi_id in used or right.place.poi_id in used:
-                continue
-            morning, afternoon = sorted((left, right), key=lambda item: item.source_order)
-            used.update((morning.place.poi_id, afternoon.place.poi_id))
-            days.append(_DayAttractions(morning=morning, afternoon=afternoon))
-        for candidate in sorted(candidates, key=lambda item: item.source_order):
-            if len(days) == duration_days:
-                break
-            if candidate.place.poi_id in used:
-                continue
-            used.add(candidate.place.poi_id)
-            days.append(_DayAttractions(morning=candidate, afternoon=None))
-        return days
+            current = list(places[:remaining])
+            limited.append((task, current))
+            remaining -= len(current)
+        candidates, stats = merge_and_deduplicate_candidates(
+            request.destination_city,
+            limited,
+        )
+        return candidates, warnings, stats
 
     async def _safe_search(
         self,
-        query: SearchPlacesInput,
-        *,
-        label: str,
+        task: PoiSearchTask,
+        city: str,
+        planning_run_id: str,
     ) -> tuple[list[AmapPlace], str | None]:
         assert self._client is not None
+        started_at = monotonic()
         try:
-            result = await self._client.search_places(query)
-            return result.pois, None
+            async with self._poi_semaphore:
+                result = await self._client.search_places(
+                    SearchPlacesInput(
+                        city=city,
+                        keywords=task.keyword,
+                        limit=self._poi_page_size,
+                    )
+                )
+            places = list(result.pois[: self._poi_page_size])
+            logger.info(
+                "Amap POI search completed planning_run_id=%s keyword=%s "
+                "result_count=%s poi_search_latency_ms=%s",
+                planning_run_id,
+                task.keyword,
+                len(places),
+                round((monotonic() - started_at) * 1_000),
+            )
+            return places, None
         except asyncio.CancelledError:
             raise
         except AmapError as exc:
             logger.warning(
-                "Amap place search failed label=%s error_code=%s",
-                label,
+                "Amap place search failed planning_run_id=%s keyword=%s error_code=%s "
+                "poi_search_latency_ms=%s",
+                planning_run_id,
+                task.keyword,
                 exc.error_code,
+                round((monotonic() - started_at) * 1_000),
             )
         except Exception as exc:
             logger.warning(
-                "Amap place search failed label=%s exception_type=%s",
-                label,
+                "Amap place search failed planning_run_id=%s keyword=%s exception_type=%s "
+                "poi_search_latency_ms=%s",
+                planning_run_id,
+                task.keyword,
+                type(exc).__name__,
+                round((monotonic() - started_at) * 1_000),
+            )
+        return [], f"景点关键词“{task.keyword}”查询暂时不可用。"
+
+    async def _collect_routes(
+        self,
+        groups: list[list[AttractionCandidate]],
+        city: str,
+        planning_run_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> tuple[
+        list[tuple[list[AttractionCandidate], list[RouteLegEvidence]]],
+        list[str],
+        dict[str, int],
+    ]:
+        pairs = [
+            (day_index, origin, destination)
+            for day_index, group in enumerate(groups)
+            for origin, destination in itertools.pairwise(group)
+        ]
+        if not pairs:
+            return (
+                [(group, []) for group in groups],
+                [],
+                {"api_calls": 0, "fallbacks": 0},
+            )
+        deadline = monotonic() + timeout_seconds
+        tasks = {
+            asyncio.create_task(
+                self._route_leg(origin, destination, city, planning_run_id)
+            ): (
+                day_index,
+                origin,
+                destination,
+            )
+            for day_index, origin, destination in pairs
+        }
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        cache: dict[tuple[str, str], RouteLegEvidence] = {}
+        api_calls = 0
+        fallback_count = 0
+        for task, (_, origin, destination) in tasks.items():
+            key = (origin.place.poi_id, destination.place.poi_id)
+            if task in done:
+                try:
+                    leg, calls = task.result()
+                except Exception:
+                    leg, calls = _estimated_leg(origin, destination), 0
+                api_calls += calls
+            else:
+                leg = _estimated_leg(origin, destination, timed_out=True)
+                calls = 0
+            cache[key] = leg
+            fallback_count += int(leg.is_fallback)
+
+        correction_budget = _LOCAL_ROUTE_CORRECTION_MAX_NEW_EDGES
+        corrected_groups: list[tuple[list[AttractionCandidate], list[RouteLegEvidence]]] = []
+        for group in groups:
+            legs = [
+                cache[(origin.place.poi_id, destination.place.poi_id)]
+                for origin, destination in itertools.pairwise(group)
+            ]
+            remaining_seconds = deadline - monotonic()
+            if pending or remaining_seconds <= 0.05:
+                corrected_group, corrected_legs, new_calls = group, legs, 0
+            else:
+                try:
+                    corrected_group, corrected_legs, new_calls = await asyncio.wait_for(
+                        self._correct_abnormal_route(
+                            group,
+                            legs,
+                city,
+                cache,
+                planning_run_id,
+                max_new_edges=correction_budget,
+                        ),
+                        timeout=remaining_seconds,
+                    )
+                except TimeoutError:
+                    corrected_group, corrected_legs, new_calls = group, legs, 0
+            api_calls += new_calls
+            correction_budget -= new_calls
+            corrected_groups.append((corrected_group, corrected_legs))
+
+        warnings: list[str] = []
+        if pending:
+            warnings.append("部分相邻路线查询达到数据阶段超时，已使用直线距离估算并保留景点顺序。")
+        if any(leg.is_fallback for _, legs in corrected_groups for leg in legs):
+            warnings.append("部分路段使用了打车或直线距离降级方案，出发前请打开高德查看实时路线。")
+        return corrected_groups, warnings, {"api_calls": api_calls, "fallbacks": fallback_count}
+
+    async def _route_leg(
+        self,
+        origin: AttractionCandidate,
+        destination: AttractionCandidate,
+        city: str,
+        planning_run_id: str,
+    ) -> tuple[RouteLegEvidence, int]:
+        straight_distance = haversine_km(origin.place, destination.place)
+        primary_mode = (
+            RouteMode.WALKING if straight_distance <= _WALKING_THRESHOLD_KM else RouteMode.TRANSIT
+        )
+        try:
+            primary = await self._plan_route(
+                origin,
+                destination,
+                primary_mode,
+                city,
+                planning_run_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Amap primary route failed mode=%s exception_type=%s",
+                primary_mode,
                 type(exc).__name__,
             )
-        return [], f"{label}查询暂时不可用。"
+            return await self._driving_fallback(
+                origin,
+                destination,
+                city,
+                planning_run_id,
+                calls=1,
+            )
+
+        if primary_mode == RouteMode.TRANSIT and self._transit_is_abnormal(primary):
+            return await self._driving_fallback(
+                origin,
+                destination,
+                city,
+                planning_run_id,
+                calls=1,
+            )
+        return _route_evidence(origin, destination, primary, is_fallback=False), 1
+
+    async def _driving_fallback(
+        self,
+        origin: AttractionCandidate,
+        destination: AttractionCandidate,
+        city: str,
+        planning_run_id: str,
+        *,
+        calls: int,
+    ) -> tuple[RouteLegEvidence, int]:
+        try:
+            route = await self._plan_route(
+                origin,
+                destination,
+                RouteMode.DRIVING,
+                city,
+                planning_run_id,
+            )
+            return _route_evidence(origin, destination, route, is_fallback=True), calls + 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Amap driving fallback failed exception_type=%s",
+                type(exc).__name__,
+            )
+            return _estimated_leg(origin, destination), calls + 1
+
+    async def _plan_route(
+        self,
+        origin: AttractionCandidate,
+        destination: AttractionCandidate,
+        mode: RouteMode,
+        city: str,
+        planning_run_id: str,
+    ) -> RouteResult:
+        assert self._client is not None
+        started_at = monotonic()
+        try:
+            async with self._route_semaphore:
+                result = await self._client.plan_route(
+                    RoutePlanInput(
+                        origin=_coordinate_input(origin),
+                        destination=_coordinate_input(destination),
+                        mode=mode,
+                        city=city if mode == RouteMode.TRANSIT else None,
+                    )
+                )
+        except BaseException:
+            logger.info(
+                "Amap route search failed planning_run_id=%s origin_poi_id=%s "
+                "destination_poi_id=%s mode=%s route_search_latency_ms=%s",
+                planning_run_id,
+                origin.place.poi_id,
+                destination.place.poi_id,
+                mode,
+                round((monotonic() - started_at) * 1_000),
+            )
+            raise
+        logger.info(
+            "Amap route search completed planning_run_id=%s origin_poi_id=%s "
+            "destination_poi_id=%s mode=%s route_search_latency_ms=%s",
+            planning_run_id,
+            origin.place.poi_id,
+            destination.place.poi_id,
+            mode,
+            round((monotonic() - started_at) * 1_000),
+        )
+        return result
+
+    def _transit_is_abnormal(self, route: RouteResult) -> bool:
+        return (
+            (route.transfers or 0) > self._max_transit_transfers
+            or route.duration_seconds > self._max_transit_duration_minutes * 60
+            or (route.walking_distance_meters or 0) > self._max_walk_distance_meters
+        )
+
+    async def _correct_abnormal_route(
+        self,
+        group: list[AttractionCandidate],
+        legs: list[RouteLegEvidence],
+        city: str,
+        cache: dict[tuple[str, str], RouteLegEvidence],
+        planning_run_id: str,
+        *,
+        max_new_edges: int,
+    ) -> tuple[list[AttractionCandidate], list[RouteLegEvidence], int]:
+        if len(group) < 3 or not legs or max_new_edges <= 0:
+            return group, legs, 0
+        durations = [leg.duration_seconds or _LOCAL_ROUTE_ABNORMAL_SECONDS for leg in legs]
+        median = statistics.median(durations)
+        worst_index = max(range(len(legs)), key=lambda index: durations[index])
+        worst = durations[worst_index]
+        if worst < _LOCAL_ROUTE_ABNORMAL_SECONDS and worst < median * 2.5:
+            return group, legs, 0
+
+        candidate_group = list(group)
+        candidate_group[worst_index], candidate_group[worst_index + 1] = (
+            candidate_group[worst_index + 1],
+            candidate_group[worst_index],
+        )
+        candidate_pairs = list(itertools.pairwise(candidate_group))
+        missing = [
+            pair
+            for pair in candidate_pairs
+            if (pair[0].place.poi_id, pair[1].place.poi_id) not in cache
+        ]
+        if len(missing) > max_new_edges:
+            return group, legs, 0
+        results = await asyncio.gather(
+            *(
+                self._route_leg(origin, destination, city, planning_run_id)
+                for origin, destination in missing
+            ),
+            return_exceptions=True,
+        )
+        calls = 0
+        for pair, result in zip(missing, results, strict=True):
+            if isinstance(result, BaseException):
+                cache[(pair[0].place.poi_id, pair[1].place.poi_id)] = _estimated_leg(*pair)
+                continue
+            leg, result_calls = result
+            calls += result_calls
+            cache[(pair[0].place.poi_id, pair[1].place.poi_id)] = leg
+        candidate_legs = [
+            cache[(origin.place.poi_id, destination.place.poi_id)]
+            for origin, destination in candidate_pairs
+        ]
+        original_seconds = sum(leg.duration_seconds or 0 for leg in legs)
+        candidate_seconds = sum(leg.duration_seconds or 0 for leg in candidate_legs)
+        if candidate_seconds and candidate_seconds < original_seconds * 0.9:
+            return candidate_group, candidate_legs, calls
+        return group, legs, calls
+
+    @staticmethod
+    def _build_day(
+        *,
+        request: CityTripRequest,
+        day_index: int,
+        attractions: list[AttractionCandidate],
+        legs: list[RouteLegEvidence],
+    ) -> MapDayEvidence:
+        assert request.start_date is not None
+        estimated_transport_minutes = sum(
+            max(1, round((leg.duration_seconds or 0) / 60)) for leg in legs
+        )
+        warnings = (
+            ["当天存在降级路段，请在出发前使用地图导航复查。"]
+            if any(leg.is_fallback for leg in legs)
+            else []
+        )
+        return MapDayEvidence(
+            day_index=day_index,
+            date=request.start_date + timedelta(days=day_index - 1),
+            attractions=[_place_evidence(item) for item in attractions],
+            estimated_visit_minutes=sum(item.estimated_visit_minutes for item in attractions),
+            estimated_transport_minutes=estimated_transport_minutes,
+            route_legs=legs,
+            warnings=warnings,
+        )
 
 
-def _is_valid_attraction(place: AmapPlace, destination_city: str) -> bool:
-    if not place.poi_id or not place.name:
-        return False
-    if place.city and not _same_city(place.city, destination_city):
-        return False
-    normalized_type = place.poi_type.casefold()
-    return not any(keyword.casefold() in normalized_type for keyword in _EXCLUDED_ATTRACTION_TYPES)
-
-
-def _same_city(left: str, right: str) -> bool:
-    def normalize(value: str) -> str:
-        return value.strip().removesuffix("市").casefold()
-
-    normalized_left = normalize(left)
-    normalized_right = normalize(right)
-    return (
-        normalized_left == normalized_right
-        or normalized_left in normalized_right
-        or normalized_right in normalized_left
-    )
-
-
-def _unique_valid_places(places: list[AmapPlace], city: str) -> list[AmapPlace]:
-    unique: list[AmapPlace] = []
-    seen: set[str] = set()
-    for place in places:
-        if (
-            not place.poi_id
-            or not place.name
-            or place.poi_id in seen
-            or (place.city and not _same_city(place.city, city))
-        ):
-            continue
-        seen.add(place.poi_id)
-        unique.append(place)
-    return unique
-
-
-def _unique_candidates(candidates: list[_Candidate]) -> list[_Candidate]:
-    unique: list[_Candidate] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate.place.poi_id in seen:
-            continue
-        seen.add(candidate.place.poi_id)
-        unique.append(candidate)
-    return unique
-
-
-def _exclude_used(candidates: list[_Candidate], used: set[str]) -> list[_Candidate]:
-    return [candidate for candidate in candidates if candidate.place.poi_id not in used]
-
-
-def _matrix_lookup(
-    matrix: TravelTimeMatrixResult,
-) -> dict[tuple[str, str], MatrixEntry]:
-    return {(entry.origin_id, entry.destination_id): entry for entry in matrix.matrix}
-
-
-def _coordinate_input(coordinate: AmapCoordinate) -> AmapCoordinateInput:
-    return AmapCoordinateInput(
-        longitude=coordinate.longitude,
-        latitude=coordinate.latitude,
-    )
-
-
-def _evidence(
-    candidate: _Candidate | None,
-    day_index: int,
-    role: MapPlaceRole,
-) -> MapPlaceEvidence | None:
-    if candidate is None:
-        return None
+def _place_evidence(candidate: AttractionCandidate) -> MapPlaceEvidence:
+    keyword, rank = candidate.best_search
     place = candidate.place
     return MapPlaceEvidence(
-        reference_id=f"day_{day_index}_{role}",
-        role=role,
+        reference_id=f"poi_{place.poi_id}"[:100],
         poi_id=place.poi_id,
         name=place.name,
         address=place.address,
@@ -678,9 +643,76 @@ def _evidence(
         location=place.location,
         adcode=place.adcode or None,
         city=place.city or None,
-        search_query=candidate.search_query,
-        search_rank=candidate.search_rank,
+        search_query=keyword,
+        search_rank=rank,
+        estimated_visit_minutes=candidate.estimated_visit_minutes,
+        matched_preferences=[str(item) for item in sorted(candidate.matched_preferences)],
+        selection_reasons=candidate.selection_reasons,
+        candidate_score=candidate.score,
     )
+
+
+def _route_evidence(
+    origin: AttractionCandidate,
+    destination: AttractionCandidate,
+    route: RouteResult,
+    *,
+    is_fallback: bool,
+) -> RouteLegEvidence:
+    return RouteLegEvidence(
+        origin_ref=f"poi_{origin.place.poi_id}"[:100],
+        destination_ref=f"poi_{destination.place.poi_id}"[:100],
+        mode=route.mode,
+        distance_meters=route.distance_meters,
+        duration_seconds=route.duration_seconds,
+        transfer_count=route.transfers,
+        route_summary=route.route_summary,
+        is_fallback=is_fallback,
+    )
+
+
+def _estimated_leg(
+    origin: AttractionCandidate,
+    destination: AttractionCandidate,
+    *,
+    timed_out: bool = False,
+) -> RouteLegEvidence:
+    distance_km = haversine_km(origin.place, destination.place)
+    summary = (
+        "路线查询超时，当前为直线距离预算估算；请在出发前打开高德确认。"
+        if timed_out
+        else "步行、公交和驾车路线均未获得可靠结果；当前为直线距离预算估算。"
+    )
+    return RouteLegEvidence(
+        origin_ref=f"poi_{origin.place.poi_id}"[:100],
+        destination_ref=f"poi_{destination.place.poi_id}"[:100],
+        mode="estimated",
+        distance_meters=round(distance_km * 1_000),
+        duration_seconds=straight_line_transport_minutes(distance_km) * 60,
+        route_summary=summary,
+        is_fallback=True,
+    )
+
+
+def _coordinate_input(candidate: AttractionCandidate) -> AmapCoordinateInput:
+    return AmapCoordinateInput(
+        longitude=candidate.place.location.longitude,
+        latitude=candidate.place.location.latitude,
+    )
+
+
+def _exclusion_reason(
+    candidate: AttractionCandidate,
+    selected: list[AttractionCandidate],
+) -> str:
+    if selected:
+        nearest = min(haversine_km(candidate.place, item.place) for item in selected)
+        if nearest > 25:
+            return "距离主要景点区域较远且综合评分未进入容量上限"
+    same_type = sum(item.attraction_type == candidate.attraction_type for item in selected)
+    if same_type >= 2:
+        return "为保持景点类型多样性未进入最终行程"
+    return "综合评分未进入本次行程的景点数量与时长上限"
 
 
 __all__ = [

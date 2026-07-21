@@ -103,7 +103,26 @@ class ChatService:
         weather_service = WeatherEvidenceService(amap_client)
         if trip_planner_settings and trip_planner_settings.trip_planner_enabled:
             self._map_trip_planner = MapTripPlanner(
-                collection_service=MapTripCollectionService(amap_client),
+                collection_service=MapTripCollectionService(
+                    amap_client,
+                    poi_max_concurrency=trip_planner_settings.amap_poi_max_concurrency,
+                    route_max_concurrency=trip_planner_settings.amap_route_max_concurrency,
+                    poi_page_size=trip_planner_settings.amap_poi_page_size,
+                    max_raw_candidates=trip_planner_settings.max_raw_poi_candidates,
+                    max_transit_transfers=trip_planner_settings.max_transit_transfers,
+                    max_transit_duration_minutes=(
+                        trip_planner_settings.max_transit_duration_minutes
+                    ),
+                    max_walk_distance_meters=(
+                        trip_planner_settings.max_walk_distance_meters
+                    ),
+                    cluster_max_iterations=(
+                        trip_planner_settings.trip_planning_cluster_max_iterations
+                    ),
+                    data_timeout_seconds=(
+                        trip_planner_settings.trip_planning_data_timeout_seconds
+                    ),
+                ),
                 weather_service=weather_service,
                 settings=trip_planner_settings,
             )

@@ -105,42 +105,41 @@ def settings() -> Settings:
     )
 
 
-def map_place(reference_id: str, role: str, poi_id: str) -> MapPlaceEvidence:
+def map_place(reference_id: str, poi_id: str) -> MapPlaceEvidence:
     return MapPlaceEvidence(
         reference_id=reference_id,
-        role=role,
         poi_id=poi_id,
         name=f"地点 {poi_id}",
         address=f"地址 {poi_id}",
-        poi_type="风景名胜" if "attraction" in role else "餐饮服务",
+        poi_type="风景名胜",
         location=AmapCoordinate(longitude=104.0, latitude=30.0),
         adcode="510100",
         city="成都市",
-        search_query="景点" if "attraction" in role else role,
+        search_query="景点",
         search_rank=1,
+        estimated_visit_minutes=90,
+        selection_reasons=["高德关键词检索排名靠前"],
+        candidate_score=42,
     )
 
 
 def map_evidence() -> MapTripEvidence:
     places = [
-        map_place("day_1_breakfast", "breakfast", "b1"),
-        map_place("day_1_morning_attraction", "morning_attraction", "a1"),
-        map_place("day_1_lunch", "lunch", "l1"),
-        map_place("day_1_afternoon_attraction", "afternoon_attraction", "a2"),
-        map_place("day_1_dinner", "dinner", "d1"),
+        map_place("poi_a1", "a1"),
+        map_place("poi_a2", "a2"),
+        map_place("poi_a3", "a3"),
     ]
     return MapTripEvidence(
         city="成都",
+        planning_run_id="test-run",
         queried_at=datetime(2026, 7, 20, tzinfo=UTC),
         days=[
             MapDayEvidence(
                 day_index=1,
                 date=date(2026, 7, 25),
-                breakfast=places[0],
-                morning_attraction=places[1],
-                lunch=places[2],
-                afternoon_attraction=places[3],
-                dinner=places[4],
+                attractions=places,
+                estimated_visit_minutes=270,
+                estimated_transport_minutes=16,
                 route_legs=[
                     RouteLegEvidence(
                         origin_ref=origin.reference_id,
@@ -148,7 +147,7 @@ def map_evidence() -> MapTripEvidence:
                         mode="walking",
                         distance_meters=500,
                         duration_seconds=480,
-                        route_summary="高德步行时间矩阵",
+                        route_summary="高德步行路线",
                     )
                     for origin, destination in zip(places, places[1:], strict=False)
                 ],
@@ -176,10 +175,14 @@ def weather_evidence() -> TripWeatherEvidence:
     )
 
 
-def narrative(*, invalid_reference: bool = False) -> MapNarrativePlan:
+def narrative(
+    *,
+    invalid_reference: bool = False,
+    weather_advice: list[str] | None = None,
+) -> MapNarrativePlan:
     references = [place.reference_id for place in map_evidence().days[0].ordered_places()]
     if invalid_reference:
-        references[-1] = "invented_restaurant"
+        references[-1] = "invented_attraction"
     return MapNarrativePlan(
         title="成都地图一日攻略",
         summary="按高德地点与路线证据整理。",
@@ -187,6 +190,7 @@ def narrative(*, invalid_reference: bool = False) -> MapNarrativePlan:
             MapDayNarrative(
                 day_index=1,
                 date=date(2026, 7, 25),
+                theme="城市人文漫游",
                 places=[
                     MapPlaceNarrative(
                         reference_id=reference,
@@ -194,7 +198,7 @@ def narrative(*, invalid_reference: bool = False) -> MapNarrativePlan:
                     )
                     for reference in references
                 ],
-                weather_advice=["天气较热，注意防晒和补水。"],
+                weather_advice=weather_advice or ["天气较热，注意防晒和补水。"],
             )
         ],
     )
@@ -254,11 +258,11 @@ async def test_map_and_weather_collection_overlap_and_render_verified_output() -
     events = await asyncio.wait_for(task, timeout=1)
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert "早餐" in answer
-    assert "上午景点" in answer
-    assert "下午景点" in answer
+    assert "第 1 站" in answer
+    assert "用餐与休息预留" in answer
+    assert "未搜索或推荐具体餐厅" in answer
     assert "`a2`" in answer
-    assert "高德步行时间矩阵" in answer
+    assert "高德步行路线" in answer
     assert "2026-07-25" in answer
     assert "白天 晴 32℃" in answer
     assert collection.calls == weather.calls == 1
@@ -276,7 +280,26 @@ async def test_invalid_place_reference_gets_one_controlled_revision() -> None:
     events = await collect_events(planner, fake_model)
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert "invented_restaurant" not in answer
+    assert "invented_attraction" not in answer
+    assert fake_model.calls.count("MapNarrativePlan") == 2
+
+
+@pytest.mark.asyncio
+async def test_invented_numeric_weather_fact_gets_one_controlled_revision() -> None:
+    planner = MapTripPlanner(
+        collection_service=FakeCollectionService(map_evidence()),  # type: ignore[arg-type]
+        weather_service=FakeWeatherService(weather_evidence()),  # type: ignore[arg-type]
+        settings=settings(),
+    )
+    fake_model = model(
+        narrative(weather_advice=["降雨概率 50%，请携带雨具。"]),
+        narrative(),
+    )
+
+    events = await collect_events(planner, fake_model)
+
+    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+    assert "50%" not in answer
     assert fake_model.calls.count("MapNarrativePlan") == 2
 
 

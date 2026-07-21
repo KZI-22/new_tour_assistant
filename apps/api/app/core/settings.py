@@ -60,6 +60,15 @@ class Settings:
     amap_timeout_seconds: float = 15
     amap_max_retries: int = 1
     amap_min_request_interval_seconds: float = 0.2
+    amap_poi_max_concurrency: int = 5
+    amap_route_max_concurrency: int = 5
+    amap_poi_page_size: int = 10
+    max_raw_poi_candidates: int = 60
+    max_walk_distance_meters: int = 1_800
+    max_transit_transfers: int = 1
+    max_transit_duration_minutes: int = 90
+    trip_planning_cluster_max_iterations: int = 20
+    trip_planning_data_timeout_seconds: float = 10
     app_timezone: str = "Asia/Shanghai"
     trusted_proxy_cidrs: tuple[str, ...] = ()
     trip_planner_enabled: bool = True
@@ -91,6 +100,13 @@ class Settings:
             "trip_planner_request_extraction_timeout_seconds": (
                 self.trip_planner_request_extraction_timeout_seconds
             ),
+            "amap_poi_max_concurrency": self.amap_poi_max_concurrency,
+            "amap_route_max_concurrency": self.amap_route_max_concurrency,
+            "amap_poi_page_size": self.amap_poi_page_size,
+            "max_raw_poi_candidates": self.max_raw_poi_candidates,
+            "max_walk_distance_meters": self.max_walk_distance_meters,
+            "max_transit_duration_minutes": self.max_transit_duration_minutes,
+            "trip_planning_data_timeout_seconds": self.trip_planning_data_timeout_seconds,
             "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
             "xhs_min_post_content_chars": self.xhs_min_post_content_chars,
             "xhs_detail_candidate_limit": self.xhs_detail_candidate_limit,
@@ -101,6 +117,10 @@ class Settings:
             raise ValueError("Trip planner limits and timeouts must be positive.")
         if self.amap_min_request_interval_seconds < 0:
             raise ValueError("amap_min_request_interval_seconds cannot be negative.")
+        if self.max_transit_transfers < 0 or self.trip_planning_cluster_max_iterations < 0:
+            raise ValueError("Trip planning route and clustering limits cannot be negative.")
+        if not 1 <= self.amap_poi_page_size <= 25:
+            raise ValueError("amap_poi_page_size must be between 1 and 25.")
         if self.xhs_mcp_transport not in {"streamable-http", "stdio"}:
             raise ValueError("xhs_mcp_transport must be 'streamable-http' or 'stdio'.")
         if self.trip_planner_enabled:
@@ -142,6 +162,21 @@ def get_settings() -> Settings:
         amap_max_retries=int(os.getenv("AMAP_MAX_RETRIES", "1")),
         amap_min_request_interval_seconds=float(
             os.getenv("AMAP_MIN_REQUEST_INTERVAL_SECONDS", "0.2")
+        ),
+        amap_poi_max_concurrency=int(os.getenv("AMAP_POI_MAX_CONCURRENCY", "5")),
+        amap_route_max_concurrency=int(os.getenv("AMAP_ROUTE_MAX_CONCURRENCY", "5")),
+        amap_poi_page_size=int(os.getenv("AMAP_POI_PAGE_SIZE", "10")),
+        max_raw_poi_candidates=int(os.getenv("MAX_RAW_POI_CANDIDATES", "60")),
+        max_walk_distance_meters=int(os.getenv("MAX_WALK_DISTANCE_METERS", "1800")),
+        max_transit_transfers=int(os.getenv("MAX_TRANSIT_TRANSFERS", "1")),
+        max_transit_duration_minutes=int(
+            os.getenv("MAX_TRANSIT_DURATION_MINUTES", "90")
+        ),
+        trip_planning_cluster_max_iterations=int(
+            os.getenv("TRIP_PLANNING_CLUSTER_MAX_ITERATIONS", "20")
+        ),
+        trip_planning_data_timeout_seconds=float(
+            os.getenv("TRIP_PLANNING_DATA_TIMEOUT_SECONDS", "10")
         ),
         app_timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai"),
         trusted_proxy_cidrs=trusted_proxy_cidrs,

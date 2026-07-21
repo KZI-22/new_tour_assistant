@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Mapping
+from datetime import date, timedelta
 from typing import Any, Literal, TypeVar, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -26,6 +27,7 @@ from app.schemas.trip_planning import (
     TripWeatherEvidence,
 )
 from app.services.agent_executor import AgentExecutionError
+from app.services.attraction_planning_service import match_weather_to_days
 from app.services.city_trip_request import (
     apply_explicit_request_overrides,
     clarification_question,
@@ -44,15 +46,16 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 _MAP_GENERATION_SYSTEM_PROMPT = """你是地图证据旅行攻略的文案整理器。
 
-你只能为输入中已经确定的高德 POI 引用编写简短推荐理由，并依据给定天气证据编写天气建议。
+你只能为输入中已经确定的高德景点引用编写简短推荐理由、每日主题，并依据给定天气证据编写天气建议。
 
 严格规则：
-1. 每日 place 引用必须与 evidence 中的固定五点顺序完全相同，不能增删、交换或跨天移动。
-2. 不得输出新的地点、餐厅或路线引用，也不得把模型常识写成高德、官方或小红书事实。
+1. 每日 place 引用必须与 evidence 中的 attractions 顺序完全相同，不能增删、交换或跨天移动。
+2. 不得输出新的地点、具体餐厅或路线引用，也不得把模型常识写成高德、官方或小红书事实。
 3. 不得声称评分、榜单、营业状态、票价、开放时间、展品、招牌菜、排队或预约信息。
-4. 天气事实只能来自 weather_evidence；coverage=unavailable 时只提示临近出发复查。
+4. 天气事实只能来自 weather_evidence；coverage=unavailable 时 weather_advice 必须为空。
 5. recommendation_reason 是模型整理建议，只描述大致体验方向，不得伪造供应商评价。
-6. 只输出符合指定 JSON Schema 的结构化结果。"""
+6. 午餐和晚餐只可作为时间预留提示，不能推荐具体餐厅。
+7. 只输出符合指定 JSON Schema 的结构化结果。"""
 
 
 class MapTripPlanningError(AgentExecutionError):
@@ -160,11 +163,11 @@ class _MapTripPlanningRun:
         assert request.destination_city is not None
         assert request.duration_days is not None
         assert request.start_date is not None
-        yield _stage("collecting_pois", "正在收集并优化高德景点与餐饮", "running")
+        yield _stage("collecting_pois", "正在召回、筛选并编排高德景点", "running")
         yield _stage("collecting_weather", "正在查询行程日期对应的天气", "running")
         map_task = asyncio.create_task(self._collection_service.collect(request))
         weather_task = asyncio.create_task(
-            self._weather_service.collect(
+            self._collect_weather_with_timeout(
                 city=request.destination_city,
                 start_date=request.start_date,
                 duration_days=request.duration_days,
@@ -179,15 +182,16 @@ class _MapTripPlanningRun:
             await _cancel_tasks(map_task, weather_task)
             yield _stage(
                 "collecting_pois",
-                "正在收集并优化高德景点与餐饮",
+                "正在召回、筛选并编排高德景点",
                 "failed",
                 detail=exc.user_message,
             )
             raise MapTripPlanningError(exc.code, exc.user_message) from exc
 
+        evidence = match_weather_to_days(evidence, weather)
         yield _stage(
             "collecting_pois",
-            "正在收集并优化高德景点与餐饮",
+            "正在召回、筛选并编排高德景点",
             "success" if not evidence.warnings else "partial",
             detail=f"已形成 {len(evidence.days)} 个分日地图证据包。",
         )
@@ -207,6 +211,7 @@ class _MapTripPlanningRun:
                 "place_count": sum(len(day.ordered_places()) for day in evidence.days),
                 "route_leg_count": sum(len(day.route_legs) for day in evidence.days),
                 "weather_coverage_count": coverage,
+                "planning_run_id": evidence.planning_run_id,
             },
         )
 
@@ -243,7 +248,8 @@ class _MapTripPlanningRun:
                 CityTripRequestExtraction,
                 (
                     "你只负责提取城市多日攻略所需的 destination_city、duration_days、"
-                    "start_date、interests 和 food_preferences；不得猜测。"
+                    "start_date 和 interests；不得猜测。interests 只能映射为 Schema 中"
+                    "列出的标准偏好标签，未明确提供时返回空数组；food_preferences 返回空数组。"
                 ),
                 request_extraction_prompt(self._messages),
                 timeout_seconds=self._settings.trip_planner_request_extraction_timeout_seconds,
@@ -259,6 +265,37 @@ class _MapTripPlanningRun:
             method = "fallback"
         request, overrides = apply_explicit_request_overrides(request, self._messages)
         return request, method, overrides
+
+    async def _collect_weather_with_timeout(
+        self,
+        *,
+        city: str,
+        start_date: date,
+        duration_days: int,
+    ) -> TripWeatherEvidence:
+        try:
+            return await asyncio.wait_for(
+                self._weather_service.collect(
+                    city=city,
+                    start_date=start_date,
+                    duration_days=duration_days,
+                ),
+                timeout=self._settings.trip_planning_data_timeout_seconds,
+            )
+        except TimeoutError:
+            reason = "天气查询达到数据阶段超时，请在临近出发时重新确认。"
+            return TripWeatherEvidence(
+                city=city,
+                days=[
+                    {
+                        "date": start_date + timedelta(days=offset),
+                        "coverage": "unavailable",
+                        "unavailable_reason": reason,
+                    }
+                    for offset in range(duration_days)
+                ],
+                warnings=[reason],
+            )
 
     async def _generate_validated_narrative(
         self,
@@ -399,13 +436,26 @@ def _validate_narrative(
 ) -> list[str]:
     errors: list[str] = []
     expected_indexes = list(range(1, (request.duration_days or 0) + 1))
+    expected_dates = [
+        request.start_date + timedelta(days=offset)
+        for offset in range(request.duration_days or 0)
+        if request.start_date is not None
+    ]
     if [day.day_index for day in evidence.days] != expected_indexes:
         errors.append("map evidence day indexes do not match the request")
+    if [day.date for day in evidence.days] != expected_dates:
+        errors.append("map evidence dates are not consecutive from the requested start date")
     if [day.day_index for day in plan.days] != expected_indexes:
         errors.append("narrative day indexes do not match the request")
         return errors
+    if [day.date for day in weather.days] != expected_dates:
+        errors.append("weather dates do not match the requested itinerary dates")
     weather_dates = {day.date for day in weather.days}
+    weather_by_date = {day.date: day for day in weather.days}
     narrative_days = {day.day_index: day for day in plan.days}
+    all_poi_ids = [place.poi_id for day in evidence.days for place in day.ordered_places()]
+    if len(all_poi_ids) != len(set(all_poi_ids)):
+        errors.append("map evidence contains duplicate POIs")
     for evidence_day in evidence.days:
         narrative_day = narrative_days[evidence_day.day_index]
         if narrative_day.date != evidence_day.date:
@@ -420,6 +470,47 @@ def _validate_narrative(
             errors.append(f"day {evidence_day.day_index} route endpoints mismatch")
         if evidence_day.date not in weather_dates:
             errors.append(f"day {evidence_day.day_index} weather date missing")
+        weather_day = weather_by_date.get(evidence_day.date)
+        if (
+            weather_day is not None
+            and weather_day.coverage == "unavailable"
+            and narrative_day.weather_advice
+        ):
+            errors.append(f"day {evidence_day.day_index} has advice without weather evidence")
+        elif weather_day is not None and weather_day.coverage == "available":
+            errors.extend(
+                _validate_weather_advice(
+                    evidence_day.day_index,
+                    weather_day,
+                    narrative_day.weather_advice,
+                )
+            )
+    return errors
+
+
+def _validate_weather_advice(
+    day_index: int,
+    weather: object,
+    advice: list[str],
+) -> list[str]:
+    errors: list[str] = []
+    weather_text = "".join(
+        str(getattr(weather, field, "") or "")
+        for field in ("day_weather", "night_weather")
+    )
+    allowed_numbers = {
+        str(getattr(weather, field, "") or "")
+        for field in ("day_temperature", "night_temperature")
+    }
+    weather_markers = ("晴", "阴", "雨", "雪", "雷", "雾", "霾")
+    for item in advice:
+        for marker in weather_markers:
+            if marker in item and marker not in weather_text:
+                errors.append(f"day {day_index} weather advice contradicts provider weather")
+                break
+        numbers = set(re.findall(r"-?\d+(?:\.\d+)?", item))
+        if numbers - allowed_numbers:
+            errors.append(f"day {day_index} weather advice invents numeric weather data")
     return errors
 
 

@@ -66,6 +66,15 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("TRIP_PLANNER_MAX_DAYS", "4")
     monkeypatch.setenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "35")
     monkeypatch.setenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "25")
+    monkeypatch.setenv("AMAP_POI_MAX_CONCURRENCY", "4")
+    monkeypatch.setenv("AMAP_ROUTE_MAX_CONCURRENCY", "3")
+    monkeypatch.setenv("AMAP_POI_PAGE_SIZE", "9")
+    monkeypatch.setenv("MAX_RAW_POI_CANDIDATES", "55")
+    monkeypatch.setenv("MAX_WALK_DISTANCE_METERS", "1700")
+    monkeypatch.setenv("MAX_TRANSIT_TRANSFERS", "2")
+    monkeypatch.setenv("MAX_TRANSIT_DURATION_MINUTES", "80")
+    monkeypatch.setenv("TRIP_PLANNING_CLUSTER_MAX_ITERATIONS", "12")
+    monkeypatch.setenv("TRIP_PLANNING_DATA_TIMEOUT_SECONDS", "8")
     monkeypatch.setenv("XHS_MCP_URL", "http://xhs.internal:8765/mcp/")
     monkeypatch.setenv("XHS_MCP_AUTH_TOKEN", "private-token")
     monkeypatch.setenv("XHS_MCP_TIMEOUT_SECONDS", "70")
@@ -80,6 +89,15 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     assert settings.trip_planner_max_days == 4
     assert settings.trip_planner_model_timeout_seconds == 35
     assert settings.trip_planner_request_extraction_timeout_seconds == 25
+    assert settings.amap_poi_max_concurrency == 4
+    assert settings.amap_route_max_concurrency == 3
+    assert settings.amap_poi_page_size == 9
+    assert settings.max_raw_poi_candidates == 55
+    assert settings.max_walk_distance_meters == 1700
+    assert settings.max_transit_transfers == 2
+    assert settings.max_transit_duration_minutes == 80
+    assert settings.trip_planning_cluster_max_iterations == 12
+    assert settings.trip_planning_data_timeout_seconds == 8
     assert settings.xhs_mcp_url == "http://xhs.internal:8765/mcp"
     assert settings.xhs_mcp_auth_token == "private-token"
     assert settings.xhs_mcp_timeout_seconds == 70

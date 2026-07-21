@@ -1,21 +1,12 @@
 from __future__ import annotations
 
 from app.schemas.map_planning import (
-    MapDayEvidence,
     MapNarrativePlan,
     MapPlaceEvidence,
     MapTripEvidence,
     RouteLegEvidence,
 )
 from app.schemas.trip_planning import DailyWeatherEvidence, TripWeatherEvidence
-
-_ROLE_LABELS = {
-    "breakfast": "早餐",
-    "morning_attraction": "上午景点",
-    "lunch": "午餐",
-    "afternoon_attraction": "下午景点",
-    "dinner": "晚餐",
-}
 
 
 def render_map_itinerary(
@@ -30,7 +21,8 @@ def render_map_itinerary(
         "",
         narrative.summary,
         "",
-        "> 本方案的地点、坐标、距离和路线只来自本次高德地图查询；推荐理由和天气建议由模型整理。"
+        "> 本方案的地点、坐标、距离和路线只来自本次高德地图查询；景点筛选、分天与顺序由"
+        "确定性规则完成，推荐理由和天气建议由模型整理。"
         "本次未查询机票、火车、酒店、价格、库存、营业状态或预订信息。",
     ]
 
@@ -38,21 +30,17 @@ def render_map_itinerary(
         day_narrative = narratives[day.day_index]
         day_weather = weather_days[day.date]
         reasons = {item.reference_id: item.recommendation_reason for item in day_narrative.places}
-        lines.extend(["", f"## 第 {day.day_index} 天｜{day.date.isoformat()}"])
+        theme = f"｜{day_narrative.theme}" if day_narrative.theme else ""
+        lines.extend(["", f"## 第 {day.day_index} 天｜{day.date.isoformat()}{theme}"])
         lines.extend(["", _render_weather(day_weather)])
         if day_narrative.weather_advice:
             lines.extend(["", "**天气建议**", ""])
             lines.extend(f"- {item}" for item in day_narrative.weather_advice)
 
-        for role, place in _role_places(day):
-            lines.extend(["", f"### {_ROLE_LABELS[role]}"])
-            if place is None:
-                lines.extend(["", "暂无有效高德 POI，请在附近现场选择，不使用模型猜测地点。"])
-                continue
+        for stop_index, place in enumerate(day.attractions, start=1):
+            lines.extend(["", f"### 第 {stop_index} 站｜{place.name}"])
             lines.extend(
                 [
-                    "",
-                    f"**{place.name}**",
                     "",
                     reasons[place.reference_id],
                     "",
@@ -60,10 +48,28 @@ def render_map_itinerary(
                         f"- 地址：{place.address or '高德未提供'}\n"
                         f"- 高德 POI ID：`{place.poi_id}`\n"
                         f"- POI 类型：{place.poi_type or '高德未提供'}\n"
-                        f"- 召回依据：关键词“{place.search_query}”第 {place.search_rank} 条"
+                        f"- 召回依据：关键词“{place.search_query}”第 {place.search_rank} 条\n"
+                        f"- 入选依据：{'；'.join(place.selection_reasons)}\n"
+                        f"- 规划时长预算：约 {place.estimated_visit_minutes} 分钟"
+                        "（按 POI 类型估算，不是景点官方建议）"
                     ),
                 ]
             )
+
+        if not day.attractions:
+            lines.extend(["", "暂无有效高德景点，未使用模型猜测地点补足。"])
+        lines.extend(
+            [
+                "",
+                "**用餐与休息预留**",
+                "",
+                "- 当天已在总时长预算中预留午餐、晚餐与机动休息时间；未搜索或推荐具体餐厅。",
+                (
+                    f"- 景点预算约 {day.estimated_visit_minutes} 分钟；"
+                    f"相邻交通约 {day.estimated_transport_minutes} 分钟。"
+                ),
+            ]
+        )
 
         if day.route_legs:
             by_ref = {place.reference_id: place for place in day.ordered_places()}
@@ -99,18 +105,6 @@ def render_map_itinerary(
     return "\n".join(lines)
 
 
-def _role_places(
-    day: MapDayEvidence,
-) -> list[tuple[str, MapPlaceEvidence | None]]:
-    return [
-        ("breakfast", day.breakfast),
-        ("morning_attraction", day.morning_attraction),
-        ("lunch", day.lunch),
-        ("afternoon_attraction", day.afternoon_attraction),
-        ("dinner", day.dinner),
-    ]
-
-
 def _render_weather(weather: DailyWeatherEvidence) -> str:
     if weather.coverage == "unavailable":
         return f"**天气**：暂无对应日期预报。{weather.unavailable_reason or ''}".rstrip()
@@ -127,12 +121,20 @@ def _render_leg(
 ) -> str:
     origin = places[leg.origin_ref].name
     destination = places[leg.destination_ref].name
-    modes = {"walking": "步行", "transit": "公交", "unverified": "未验证"}
+    modes = {
+        "walking": "步行",
+        "transit": "公交",
+        "driving": "打车",
+        "estimated": "直线距离估算",
+        "unverified": "未验证",
+    }
     facts: list[str] = [modes[leg.mode]]
     if leg.distance_meters is not None:
         facts.append(_format_distance(leg.distance_meters))
     if leg.duration_seconds is not None:
         facts.append(_format_duration(leg.duration_seconds))
+    if leg.transfer_count is not None:
+        facts.append(f"换乘 {leg.transfer_count} 次")
     summary = f"；{leg.route_summary}" if leg.route_summary else ""
     return f"- {origin} → {destination}：{'，'.join(facts)}{summary}"
 
