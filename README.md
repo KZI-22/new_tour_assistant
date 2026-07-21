@@ -12,7 +12,7 @@
 - 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
 - 独立的小红书规划链路，要求目标城市、游玩天数和开始日期，最多结合两篇笔记正文与逐日天气生成攻略。
 - 小红书未登录时可显式切换到高德地图与天气方案，按真实 POI、距离矩阵和路线证据编排逐日五点行程。
-- 通过 Streamable HTTP 接入 `xhs-read-mcp`，浏览器、登录状态和正文读取与主 API 进程隔离。
+- 通过 stdio 或 Streamable HTTP 接入 `xhs-read-mcp`，支持由主 API 托管本机子进程或连接独立服务。
 - SSE `planning_stage` 规划阶段事件与独立的前端进度展示。
 - Next.js + TypeScript + Tailwind CSS 的响应式聊天界面。
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
@@ -118,6 +118,11 @@ TRIP_PLANNER_ENABLED=true
 TRIP_PLANNER_MAX_DAYS=5
 TRIP_PLANNER_MODEL_TIMEOUT_SECONDS=45
 TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS=30
+XHS_MCP_TRANSPORT=stdio
+XHS_MCP_STDIO_COMMAND=
+XHS_MCP_STDIO_ARGS=["-m","xhs_read_mcp","--transport","stdio","--headed"]
+XHS_MCP_STDIO_CWD=D:/A_Project/xhs_mcp/xhs-read-mcp
+# 以下 URL 和 Token 只供 streamable-http 模式使用
 XHS_MCP_URL=http://127.0.0.1:8765/mcp
 XHS_MCP_AUTH_TOKEN=copy-the-token-from-xhs-read-mcp
 XHS_MCP_TIMEOUT_SECONDS=75
@@ -149,17 +154,37 @@ LangGraph 状态、模型提示、日志或数据库。
 [`docs/architecture/xhs_map_weather_fallback.md`](docs/architecture/xhs_map_weather_fallback.md)；原小红书
 研究链路的详情见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
 
-在启动后端前，需要在同一台 Windows 本机以有界面模式运行 `xhs-read-mcp`：
+项目支持 `stdio` 和 `streamable-http` 两种 MCP 传输。需要在本机有界面 Chrome 中完成短信验证码时，
+推荐使用 `stdio`：先把约定的小红书 MCP 源码安装到后端所在的 `py312` 环境中：
 
 ```powershell
-Set-Location <xhs-read-mcp-directory>
-xhs-read-mcp --transport streamable-http
+conda activate py312
+python -m pip install -e D:\A_Project\xhs_mcp\xhs-read-mcp
 ```
 
-默认服务地址为 `http://127.0.0.1:8765/mcp`。把服务输出的 Bearer Token 配置到本项目后，首次
-规划会自动打开 Google Chrome；在窗口中完成短信验证码或其他安全验证即可。登录状态独立保存在
-`%LOCALAPPDATA%\xhs-read-mcp\chrome-storage_state.json`。MCP 必须在使用期间持续运行，且不应将
-当前单用户服务直接暴露到公网。
+`XHS_MCP_TRANSPORT=stdio` 时，主 API 会在首次调用小红书工具时启动 MCP 子进程，并在 API 关闭时
+回收它；`XHS_MCP_STDIO_COMMAND` 留空表示使用启动 API 的同一个 Python 解释器。参数必须写成 JSON
+字符串数组。首次规划会自动打开 Google Chrome，在窗口中完成短信验证码或其他安全验证即可。
+登录状态独立保存在 `%LOCALAPPDATA%\xhs-read-mcp\chrome-storage_state.json`。API 重启会关闭仍在运行的
+MCP 子进程和 Chrome 窗口，但已保存的登录状态仍可在下次启动时复用。
+
+如需让 MCP 作为独立本机服务运行，可切换回 Streamable HTTP：
+
+```dotenv
+XHS_MCP_TRANSPORT=streamable-http
+XHS_MCP_URL=http://127.0.0.1:8765/mcp
+XHS_MCP_AUTH_TOKEN=copy-the-token-from-xhs-read-mcp
+```
+
+然后在另一终端启动：
+
+```powershell
+Set-Location D:\A_Project\xhs_mcp\xhs-read-mcp
+xhs-read-mcp --transport streamable-http --headed
+```
+
+HTTP 模式下 MCP 必须在使用期间持续运行，且不应将当前单用户服务直接暴露到公网。Docker Compose
+部署仍可继续使用 HTTP，但容器内的无头浏览器不适合需要本机可见验证码窗口的场景。
 
 `.env` 已被 Git 忽略，不要把真实密钥写入 `config/models.yaml` 或提交到仓库。
 

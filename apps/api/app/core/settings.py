@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -63,9 +66,19 @@ class Settings:
     trip_planner_max_days: int = 5
     trip_planner_model_timeout_seconds: float = 45
     trip_planner_request_extraction_timeout_seconds: float = 30
+    xhs_mcp_transport: Literal["streamable-http", "stdio"] = "streamable-http"
     xhs_mcp_url: str = "http://127.0.0.1:8765/mcp"
     xhs_mcp_auth_token: str | None = field(default=None, repr=False)
     xhs_mcp_timeout_seconds: float = 75
+    xhs_mcp_stdio_command: str = field(default_factory=lambda: sys.executable)
+    xhs_mcp_stdio_args: tuple[str, ...] = (
+        "-m",
+        "xhs_read_mcp",
+        "--transport",
+        "stdio",
+        "--headed",
+    )
+    xhs_mcp_stdio_cwd: Path | None = None
     xhs_evidence_max_chars: int = 12_000
     xhs_min_post_content_chars: int = 200
     xhs_detail_candidate_limit: int = 5
@@ -90,8 +103,15 @@ class Settings:
             raise ValueError("Trip planner limits and timeouts must be positive.")
         if self.amap_min_request_interval_seconds < 0:
             raise ValueError("amap_min_request_interval_seconds cannot be negative.")
-        if self.trip_planner_enabled and not self.xhs_mcp_url.startswith(("http://", "https://")):
-            raise ValueError("xhs_mcp_url must use HTTP or HTTPS.")
+        if self.xhs_mcp_transport not in {"streamable-http", "stdio"}:
+            raise ValueError("xhs_mcp_transport must be 'streamable-http' or 'stdio'.")
+        if self.trip_planner_enabled:
+            if self.xhs_mcp_transport == "streamable-http" and not self.xhs_mcp_url.startswith(
+                ("http://", "https://")
+            ):
+                raise ValueError("xhs_mcp_url must use HTTP or HTTPS.")
+            if self.xhs_mcp_transport == "stdio" and not self.xhs_mcp_stdio_command.strip():
+                raise ValueError("xhs_mcp_stdio_command cannot be empty in stdio mode.")
 
 
 def get_settings() -> Settings:
@@ -135,9 +155,16 @@ def get_settings() -> Settings:
         trip_planner_request_extraction_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")
         ),
+        xhs_mcp_transport=(os.getenv("XHS_MCP_TRANSPORT", "streamable-http").strip().casefold()),
         xhs_mcp_url=(os.getenv("XHS_MCP_URL") or "http://127.0.0.1:8765/mcp").rstrip("/"),
         xhs_mcp_auth_token=os.getenv("XHS_MCP_AUTH_TOKEN") or None,
         xhs_mcp_timeout_seconds=float(os.getenv("XHS_MCP_TIMEOUT_SECONDS", "75")),
+        xhs_mcp_stdio_command=(os.getenv("XHS_MCP_STDIO_COMMAND") or sys.executable).strip(),
+        xhs_mcp_stdio_args=_environment_json_string_tuple(
+            "XHS_MCP_STDIO_ARGS",
+            ("-m", "xhs_read_mcp", "--transport", "stdio", "--headed"),
+        ),
+        xhs_mcp_stdio_cwd=_environment_optional_path("XHS_MCP_STDIO_CWD"),
         xhs_evidence_max_chars=int(os.getenv("XHS_EVIDENCE_MAX_CHARS", "12000")),
         xhs_min_post_content_chars=int(os.getenv("XHS_MIN_POST_CONTENT_CHARS", "200")),
         xhs_detail_candidate_limit=int(os.getenv("XHS_DETAIL_CANDIDATE_LIMIT", "5")),
@@ -156,3 +183,25 @@ def _environment_bool(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value.")
+
+
+def _environment_json_string_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a JSON string array.") from exc
+    if not isinstance(parsed, list) or any(
+        not isinstance(item, str) or not item for item in parsed
+    ):
+        raise ValueError(f"{name} must be a JSON array of non-empty strings.")
+    return tuple(parsed)
+
+
+def _environment_optional_path(name: str) -> Path | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return _resolve_project_path(raw.strip())

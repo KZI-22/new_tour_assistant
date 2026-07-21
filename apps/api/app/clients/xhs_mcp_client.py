@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+import os
+from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast
 
 import httpx
-from mcp import ClientSession
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
+
+XhsMcpTransport = Literal["streamable-http", "stdio"]
 
 
 class XhsMcpClientError(RuntimeError):
@@ -92,23 +97,51 @@ class XhsNoteDetailResult(_BoundaryModel):
 
 
 class XhsMcpClient:
-    """Small typed boundary around the remote Streamable HTTP MCP server."""
+    """Small typed boundary around an HTTP or stdio XHS MCP server."""
 
     def __init__(
         self,
-        url: str,
+        url: str | None = None,
         *,
+        transport: XhsMcpTransport = "streamable-http",
         auth_token: str | None = None,
         timeout_seconds: float = 75,
+        stdio_command: str | None = None,
+        stdio_args: Sequence[str] = (),
+        stdio_cwd: str | Path | None = None,
     ) -> None:
-        normalized_url = url.strip()
-        if not normalized_url:
-            raise ValueError("XHS MCP URL cannot be empty")
         if timeout_seconds <= 0:
             raise ValueError("XHS MCP timeout must be positive")
+
+        normalized_transport_value = transport.strip().casefold()
+        if normalized_transport_value not in {"streamable-http", "stdio"}:
+            raise ValueError("XHS MCP transport must be 'streamable-http' or 'stdio'")
+        normalized_transport = cast(XhsMcpTransport, normalized_transport_value)
+
+        normalized_url = (url or "").strip()
+        normalized_command = (stdio_command or "").strip()
+        normalized_args = tuple(stdio_args)
+        if normalized_transport == "streamable-http" and not normalized_url:
+            raise ValueError("XHS MCP URL cannot be empty for Streamable HTTP")
+        if normalized_transport == "stdio" and not normalized_command:
+            raise ValueError("XHS MCP stdio command cannot be empty")
+        if any(not isinstance(argument, str) or not argument for argument in normalized_args):
+            raise ValueError("XHS MCP stdio arguments must be non-empty strings")
+
+        self._transport = normalized_transport
         self._url = normalized_url
         self._auth_token = auth_token.strip() if auth_token and auth_token.strip() else None
         self._timeout_seconds = timeout_seconds
+        self._stdio_parameters = (
+            StdioServerParameters(
+                command=normalized_command,
+                args=list(normalized_args),
+                env=_stdio_environment(),
+                cwd=Path(stdio_cwd) if stdio_cwd is not None else None,
+            )
+            if normalized_transport == "stdio"
+            else None
+        )
         self._session: ClientSession | None = None
         self._session_stack: AsyncExitStack | None = None
         self._session_lock = asyncio.Lock()
@@ -266,21 +299,27 @@ class XhsMcpClient:
 
             stack = AsyncExitStack()
             try:
-                http_client = await stack.enter_async_context(
-                    httpx.AsyncClient(
-                        headers=self._headers(),
-                        timeout=httpx.Timeout(self._timeout_seconds),
-                        follow_redirects=False,
-                        trust_env=False,
+                if self._transport == "streamable-http":
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(
+                            headers=self._headers(),
+                            timeout=httpx.Timeout(self._timeout_seconds),
+                            follow_redirects=False,
+                            trust_env=False,
+                        )
                     )
-                )
-                read_stream, write_stream, _ = await stack.enter_async_context(
-                    streamable_http_client(
-                        self._url,
-                        http_client=http_client,
-                        terminate_on_close=True,
+                    read_stream, write_stream, _ = await stack.enter_async_context(
+                        streamable_http_client(
+                            self._url,
+                            http_client=http_client,
+                            terminate_on_close=True,
+                        )
                     )
-                )
+                else:
+                    assert self._stdio_parameters is not None
+                    read_stream, write_stream = await stack.enter_async_context(
+                        stdio_client(self._stdio_parameters)
+                    )
                 session = await stack.enter_async_context(
                     ClientSession(
                         read_stream,
@@ -314,6 +353,15 @@ class XhsMcpClient:
         return headers
 
 
+def _stdio_environment() -> dict[str, str]:
+    """Pass only XHS-specific settings in addition to the MCP SDK safe defaults."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("XHS_") and key != "XHS_MCP_AUTH_TOKEN"
+    }
+
+
 def _safe_error_code(value: Any) -> str:
     if isinstance(value, str) and value.isascii() and 1 <= len(value) <= 80:
         return value
@@ -337,6 +385,7 @@ def _safe_error_message(code: str) -> str:
 __all__ = [
     "XhsMcpClient",
     "XhsMcpClientError",
+    "XhsMcpTransport",
     "XhsLoginSessionResult",
     "XhsLoginStatusResult",
     "XhsMcpToolResponse",

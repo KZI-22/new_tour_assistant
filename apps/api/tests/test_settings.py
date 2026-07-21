@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 from app.core.settings import configure_no_proxy, get_settings
@@ -100,3 +101,38 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
         "trip_planner_result_max_length",
     }
     assert legacy_names.isdisjoint(settings.__dataclass_fields__)
+
+
+def test_get_settings_parses_stdio_mcp_process_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XHS_MCP_TRANSPORT", "STDIO")
+    monkeypatch.setenv("XHS_MCP_STDIO_COMMAND", "python")
+    monkeypatch.setenv(
+        "XHS_MCP_STDIO_ARGS",
+        '["-m", "xhs_read_mcp", "--transport", "stdio", "--headed"]',
+    )
+    monkeypatch.setenv("XHS_MCP_STDIO_CWD", str(tmp_path))
+
+    settings = get_settings()
+
+    assert settings.xhs_mcp_transport == "stdio"
+    assert settings.xhs_mcp_stdio_command == "python"
+    assert settings.xhs_mcp_stdio_args == (
+        "-m",
+        "xhs_read_mcp",
+        "--transport",
+        "stdio",
+        "--headed",
+    )
+    assert settings.xhs_mcp_stdio_cwd == tmp_path
+
+
+def test_get_settings_rejects_non_array_stdio_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XHS_MCP_STDIO_ARGS", '"--transport stdio"')
+
+    with pytest.raises(ValueError, match="JSON array"):
+        get_settings()

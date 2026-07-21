@@ -93,8 +93,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if current_settings.trip_planner_enabled:
         xhs_mcp_client = XhsMcpClient(
             current_settings.xhs_mcp_url,
+            transport=current_settings.xhs_mcp_transport,
             auth_token=current_settings.xhs_mcp_auth_token,
             timeout_seconds=current_settings.xhs_mcp_timeout_seconds,
+            stdio_command=current_settings.xhs_mcp_stdio_command,
+            stdio_args=current_settings.xhs_mcp_stdio_args,
+            stdio_cwd=current_settings.xhs_mcp_stdio_cwd,
         )
         xhs_research_service = XhsResearchService(
             xhs_mcp_client,

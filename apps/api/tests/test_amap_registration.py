@@ -52,6 +52,33 @@ def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: 
     }
 
 
+def test_stdio_xhs_settings_are_wired_into_the_app(tmp_path: Path) -> None:
+    configured = settings(tmp_path, api_key=None)
+    configured = Settings(
+        app_name=configured.app_name,
+        model_config_path=configured.model_config_path,
+        cors_origins=configured.cors_origins,
+        log_level=configured.log_level,
+        xhs_mcp_transport="stdio",
+        xhs_mcp_stdio_command="python",
+        xhs_mcp_stdio_args=("-m", "xhs_read_mcp", "--transport", "stdio"),
+        xhs_mcp_stdio_cwd=tmp_path,
+    )
+
+    application = create_app(configured)
+    client = application.state.xhs_mcp_client
+
+    assert client._transport == "stdio"
+    assert client._stdio_parameters.command == "python"
+    assert client._stdio_parameters.args == [
+        "-m",
+        "xhs_read_mcp",
+        "--transport",
+        "stdio",
+    ]
+    assert client._stdio_parameters.cwd == tmp_path
+
+
 def test_fastapi_middleware_injects_trusted_ip_and_time_context(tmp_path: Path) -> None:
     configured = settings(tmp_path, api_key=None)
     configured = Settings(

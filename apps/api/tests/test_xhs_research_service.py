@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -152,6 +153,88 @@ async def test_streamable_http_client_reuses_stateful_session_across_login_calls
     assert captured["session_exit_count"] == 1
     assert captured["stream_exit_count"] == 1
     assert captured["http_exit_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stdio_client_spawns_and_reuses_stateful_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {
+        "stream_exit_count": 0,
+        "session_count": 0,
+        "session_exit_count": 0,
+        "initialize_count": 0,
+        "calls": [],
+    }
+
+    @asynccontextmanager
+    async def fake_stdio_client(parameters: Any):
+        captured["parameters"] = parameters
+        try:
+            yield object(), object()
+        finally:
+            captured["stream_exit_count"] += 1
+
+    class FakeSession:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            captured["session_count"] += 1
+
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            captured["session_exit_count"] += 1
+            return None
+
+        async def initialize(self) -> None:
+            captured["initialize_count"] += 1
+
+        async def call_tool(self, name: str, **kwargs: Any) -> CallToolResult:
+            captured["calls"].append((name, kwargs))
+            return CallToolResult(
+                content=[],
+                structuredContent={
+                    "is_logged_in": False,
+                    "checked_at": "2026-07-21T20:00:00+08:00",
+                },
+                isError=False,
+            )
+
+    monkeypatch.setenv("XHS_BROWSER_HEADLESS", "false")
+    monkeypatch.setenv("XHS_MCP_AUTH_TOKEN", "must-not-be-inherited")
+    monkeypatch.setenv("DATABASE_URL", "must-not-be-inherited")
+    monkeypatch.setattr(xhs_client_module, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(xhs_client_module, "ClientSession", FakeSession)
+
+    client = XhsMcpClient(
+        transport="stdio",
+        stdio_command="python",
+        stdio_args=("-m", "xhs_read_mcp", "--transport", "stdio"),
+        stdio_cwd=tmp_path,
+    )
+    first = await client.check_login()
+    second = await client.check_login()
+
+    assert first.is_logged_in is second.is_logged_in is False
+    parameters = captured["parameters"]
+    assert parameters.command == "python"
+    assert parameters.args == ["-m", "xhs_read_mcp", "--transport", "stdio"]
+    assert parameters.cwd == tmp_path
+    assert parameters.env["XHS_BROWSER_HEADLESS"] == "false"
+    assert "XHS_MCP_AUTH_TOKEN" not in parameters.env
+    assert "DATABASE_URL" not in parameters.env
+    assert captured["session_count"] == 1
+    assert captured["initialize_count"] == 1
+    assert [name for name, _ in captured["calls"]] == [
+        "xhs_check_login",
+        "xhs_check_login",
+    ]
+
+    await client.aclose()
+
+    assert captured["session_exit_count"] == 1
+    assert captured["stream_exit_count"] == 1
 
 
 def _search_item(index: int, *, detail_available: bool = True) -> XhsSearchItem:
