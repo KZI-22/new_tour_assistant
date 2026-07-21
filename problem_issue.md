@@ -105,3 +105,13 @@
 这项改动并不是增加一组界面标签，而是重新定义系统对“成功”的判断：成功不再意味着流程运行结束，而意味着关键旅行事实充分、方案经过校验并且具备可执行性。
 
 通过 `ready / partial / blocked` 和结构化诊断，系统能够在外部服务不稳定时诚实降级，避免把空数据、经验估算或局部结果包装成确定事实，同时为故障统计、重试策略和后续人工介入提供统一基础。
+
+## 小红书 MCP 的 HTTP / stdio 双传输
+
+主项目通过统一的 `XhsMcpClient` 兼容 `streamable-http` 和 `stdio`，上层规划、登录、搜索与详情读取逻辑不感知传输差异。
+
+- `stdio`：FastAPI 首次调用 MCP 时按需启动本机子进程，复用同一会话，并在 API 关闭时回收；无需端口和 Bearer Token，适合本机 Chrome 登录及验证码场景。
+- `streamable-http`：主项目通过 URL 和 Token 连接独立 MCP 服务，适合 Docker、多容器或需要独立管理 MCP 生命周期的部署方式。
+- 使用 `XHS_MCP_TRANSPORT=stdio|streamable-http` 切换；HTTP 的 URL/Token 和 stdio 的命令/参数分别配置。
+
+保留双传输的原因是登录验证通常需要本机可见浏览器，而未来容器化或独立服务部署仍更适合 HTTP；两种模式共用数据契约和错误处理，避免维护两套业务链路。
