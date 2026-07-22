@@ -33,3 +33,6 @@ Thumbs.db
 # CodeGraph local index
 .codegraph/
 
+# Local project notes
+plan_process.md
+problem_issue.md
