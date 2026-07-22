@@ -12,6 +12,30 @@ export type ModelList = {
   models: ModelInfo[];
 };
 
+export type AuthUser = {
+  id: string;
+  phone: string;
+  display_name: string | null;
+};
+
+export type SmsCodeChallenge = {
+  challenge_id: string;
+  expires_in: number;
+  resend_after: number;
+  debug_code?: string;
+};
+
+export type LoginResult = {
+  user: AuthUser;
+  is_new_user: boolean;
+  access_expires_in: number;
+};
+
+export type AuthState = {
+  user: AuthUser;
+  access_expires_in: number;
+};
+
 export type ApiChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -140,6 +164,40 @@ const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
 ).replace(/\/$/, "");
 
+export const AUTH_EXPIRED_EVENT = "tour-assistant:auth-expired";
+
+let refreshPromise: Promise<AuthState | null> | null = null;
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const prefix = `${encodeURIComponent(name)}=`;
+  const item = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  return item ? decodeURIComponent(item.slice(prefix.length)) : null;
+}
+
+function requestInit(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  const method = (init.method ?? "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const csrfToken = readCookie("ta_csrf");
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+  }
+  return {
+    ...init,
+    headers,
+    credentials: "include",
+  };
+}
+
+function notifyAuthExpired(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
+
 async function responseError(response: Response): Promise<Error> {
   try {
     const body = (await response.json()) as { detail?: string };
@@ -149,10 +207,89 @@ async function responseError(response: Response): Promise<Error> {
   }
 }
 
+async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  let response = await fetch(url, requestInit(init));
+  if (response.status !== 401) return response;
+
+  const refreshed = await refreshAuthentication();
+  if (!refreshed) {
+    notifyAuthExpired();
+    return response;
+  }
+  response = await fetch(url, requestInit(init));
+  if (response.status === 401) notifyAuthExpired();
+  return response;
+}
+
+export async function requestSmsCode(phone: string): Promise<SmsCodeChallenge> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/auth/sms-codes`,
+    requestInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone }),
+    }),
+  );
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as SmsCodeChallenge;
+}
+
+export async function loginWithPhone(
+  phone: string,
+  challengeId: string,
+  code: string,
+): Promise<LoginResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/auth/phone-login`,
+    requestInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, challenge_id: challengeId, code }),
+    }),
+  );
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as LoginResult;
+}
+
+export async function fetchCurrentUser(signal?: AbortSignal): Promise<AuthUser | null> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/auth/me`,
+    requestInit({ signal, cache: "no-store" }),
+  );
+  if (response.status === 401) return null;
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as AuthUser;
+}
+
+export function refreshAuthentication(): Promise<AuthState | null> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    const response = await fetch(
+      `${API_BASE_URL}/api/v1/auth/refresh`,
+      requestInit({ method: "POST", cache: "no-store" }),
+    );
+    if (response.status === 401 || response.status === 403) return null;
+    if (!response.ok) throw await responseError(response);
+    return (await response.json()) as AuthState;
+  })().finally(() => {
+    refreshPromise = null;
+  });
+  return refreshPromise;
+}
+
+export async function logoutAuthentication(): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/auth/logout`,
+    requestInit({ method: "POST", cache: "no-store" }),
+  );
+  if (!response.ok) throw await responseError(response);
+}
+
 export async function fetchModels(signal?: AbortSignal): Promise<ModelList> {
   const response = await fetch(`${API_BASE_URL}/api/v1/models`, {
     signal,
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok) {
     throw await responseError(response);
@@ -161,7 +298,7 @@ export async function fetchModels(signal?: AbortSignal): Promise<ModelList> {
 }
 
 export async function fetchConversations(signal?: AbortSignal): Promise<ConversationSummary[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/conversations`, {
+  const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/conversations`, {
     signal,
     cache: "no-store",
   });
@@ -175,10 +312,13 @@ export async function fetchConversation(
   conversationId: string,
   signal?: AbortSignal,
 ): Promise<ConversationDetail> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/conversations/${conversationId}`, {
-    signal,
-    cache: "no-store",
-  });
+  const response = await authenticatedFetch(
+    `${API_BASE_URL}/api/v1/conversations/${conversationId}`,
+    {
+      signal,
+      cache: "no-store",
+    },
+  );
   if (!response.ok) {
     throw await responseError(response);
   }
@@ -186,9 +326,10 @@ export async function fetchConversation(
 }
 
 export async function deleteConversation(conversationId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/conversations/${conversationId}`, {
-    method: "DELETE",
-  });
+  const response = await authenticatedFetch(
+    `${API_BASE_URL}/api/v1/conversations/${conversationId}`,
+    { method: "DELETE" },
+  );
   if (!response.ok) {
     throw await responseError(response);
   }
@@ -220,7 +361,7 @@ export async function streamChat(
   signal: AbortSignal,
   planningSource: PlanningSource = "standard",
 ): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
+  const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

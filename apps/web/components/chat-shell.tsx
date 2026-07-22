@@ -9,6 +9,7 @@ import {
   CircleStop,
   Compass,
   LoaderCircle,
+  LogOut,
   Menu,
   MessageSquareText,
   Plus,
@@ -21,6 +22,7 @@ import {
 import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
+import { useAuth } from "@/components/auth-gate";
 import { PlanningTracePanel } from "@/components/planning-trace-panel";
 import {
   ApiChatMessage,
@@ -72,7 +74,15 @@ function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 }
 
+function maskedPhone(phone: string): string {
+  const localNumber = phone.startsWith("+86") ? phone.slice(3) : phone;
+  if (localNumber.length < 7) return phone;
+  const prefix = phone.startsWith("+86") ? "+86 " : "";
+  return `${prefix}${localNumber.slice(0, 3)}****${localNumber.slice(-4)}`;
+}
+
 export function ChatShell() {
+  const { user, signOut } = useAuth();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -86,6 +96,7 @@ export function ChatShell() {
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const fallbackStartingRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -143,6 +154,8 @@ export function ChatShell() {
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
   }, [input]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const currentModel = useMemo(
     () => models.find((item) => item.id === selectedModel),
@@ -227,6 +240,18 @@ export function ChatShell() {
 
   const stopGeneration = () => {
     abortRef.current?.abort();
+  };
+
+  const logOut = async () => {
+    abortRef.current?.abort();
+    setIsSigningOut(true);
+    setError(null);
+    try {
+      await signOut();
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "退出登录失败，请稍后重试。");
+      setIsSigningOut(false);
+    }
   };
 
   const sendMessage = async (content = input, options: SendMessageOptions = {}) => {
@@ -510,7 +535,28 @@ export function ChatShell() {
           )}
         </div>
 
-        <div className="mt-auto rounded-2xl border border-black/[0.06] bg-white/60 p-3.5">
+        <div className="mt-auto flex items-center gap-3 rounded-2xl border border-black/[0.06] bg-white/70 p-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--brand-soft)] text-[var(--brand)]">
+            <UserRound size={17} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium">{user.display_name || "旅行者"}</p>
+            <p className="mt-0.5 truncate text-[11px] text-[var(--muted)]">
+              {maskedPhone(user.phone)}
+            </p>
+          </div>
+          <button
+            aria-label="退出登录"
+            className="grid size-8 shrink-0 place-items-center rounded-lg text-[var(--muted)] transition-colors hover:bg-black/[0.05] hover:text-[var(--ink)] disabled:opacity-40"
+            disabled={isSigningOut}
+            onClick={() => void logOut()}
+            title="退出登录"
+          >
+            {isSigningOut ? <LoaderCircle className="animate-spin" size={15} /> : <LogOut size={15} />}
+          </button>
+        </div>
+
+        <div className="mt-2 rounded-2xl border border-black/[0.06] bg-white/60 p-3.5">
           <div className="flex items-center gap-2 text-xs font-medium">
             <Sparkles size={14} className="text-[var(--brand)]" />
             当前阶段
