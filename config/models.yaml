@@ -1,6 +1,6 @@
 # Edit this file to add, disable, or remove models. Secrets must stay in .env.
 # The API automatically reloads this file when it changes.
-default_model: kimi-k2.6
+default_model: deepseek-v4-flash
 router_model: deepseek-v4-flash
 
 models:
@@ -58,11 +58,11 @@ models:
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
 
-  - id: kimi-k2.6
-    display_name: kimi-k2.6
-    description: Kimi model for reasoning and coding tasks
+  - id: qwen3.7-max-2026-05-20
+    display_name: qwen3.7-max-2026-05-20
+    description: Latest Qwen3.7 Max snapshot for reasoning and coding tasks
     provider: openai
-    model: kimi-k2.6
+    model: qwen3.7-max-2026-05-20
     api_key_env: DASHSCOPE_API_KEY
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
