@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from time import perf_counter
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import ValidationError
 
@@ -255,9 +256,11 @@ class XhsResearchService:
         queried_at = datetime.now(UTC)
         posts: list[XhsPostEvidence] = []
         rejected_image_count = 0
+        upgraded_image_count = 0
         for index, (item, result) in enumerate(selected_posts, start=1):
-            images, rejected_count = _post_images(result.detail.images)
+            images, rejected_count, upgraded_count = _post_images(result.detail.images)
             rejected_image_count += rejected_count
+            upgraded_image_count += upgraded_count
             posts.append(
                 XhsPostEvidence(
                     reference_id=f"source_{index}",
@@ -310,6 +313,7 @@ class XhsResearchService:
                     ],
                     "warnings": warnings,
                     "rejected_image_count": rejected_image_count,
+                    "upgraded_image_count": upgraded_image_count,
                 },
             ),
         )
@@ -340,26 +344,47 @@ class XhsResearchService:
         )
 
 
-def _post_images(images: list[XhsDetailImage]) -> tuple[list[XhsPostImage], int]:
+def _post_images(images: list[XhsDetailImage]) -> tuple[list[XhsPostImage], int, int]:
     normalized: list[XhsPostImage] = []
     rejected_count = 0
+    upgraded_count = 0
     for index, image in enumerate(images, start=1):
         preview_url = image.preview_url or image.default_url
         original_url = image.default_url or image.preview_url
+        normalized_preview_url = _normalize_xhs_image_url(preview_url)
+        normalized_original_url = _normalize_xhs_image_url(original_url)
+        was_upgraded = (
+            normalized_preview_url != preview_url or normalized_original_url != original_url
+        )
         try:
             normalized.append(
                 XhsPostImage(
                     index=index,
                     width=max(1, image.width),
                     height=max(1, image.height),
-                    preview_url=preview_url,
-                    original_url=original_url,
+                    preview_url=normalized_preview_url,
+                    original_url=normalized_original_url,
                     live_photo=image.live_photo,
                 )
             )
+            if was_upgraded:
+                upgraded_count += 1
         except ValidationError:
             rejected_count += 1
-    return normalized, rejected_count
+    return normalized, rejected_count, upgraded_count
+
+
+def _normalize_xhs_image_url(value: str) -> str:
+    parsed = urlsplit(value)
+    hostname = (parsed.hostname or "").casefold()
+    if (
+        parsed.scheme.casefold() == "http"
+        and hostname.endswith(".xhscdn.com")
+        and parsed.username is None
+        and parsed.password is None
+    ):
+        return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+    return value
 
 
 def _research_error(exc: XhsMcpClientError) -> XhsResearchError:

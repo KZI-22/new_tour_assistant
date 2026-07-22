@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from app.clients import xhs_mcp_client as xhs_client_module
 from app.clients.xhs_mcp_client import (
+    XhsDetailImage,
     XhsMcpClient,
     XhsMcpClientError,
     XhsNoteDetail,
@@ -15,6 +16,7 @@ from app.clients.xhs_mcp_client import (
     XhsSearchItem,
     XhsSearchResult,
 )
+from app.services import xhs_research_service as xhs_research_module
 from app.services.xhs_research_service import (
     XhsResearchError,
     XhsResearchService,
@@ -263,20 +265,37 @@ def _detail(index: int, description: str | None = None) -> XhsNoteDetailResult:
                 {
                     "width": 1080,
                     "height": 1440,
-                    "default_url": f"https://sns-img-qc.xhscdn.com/note-{index}-1",
-                    "preview_url": f"https://sns-webpic-qc.xhscdn.com/note-{index}-1",
+                    "default_url": f"http://sns-img-qc.xhscdn.com/note-{index}-1",
+                    "preview_url": f"http://sns-webpic-qc.xhscdn.com/note-{index}-1",
                     "live_photo": False,
                 },
                 {
                     "width": 1440,
                     "height": 1080,
-                    "default_url": f"https://sns-img-qc.xhscdn.com/note-{index}-2",
-                    "preview_url": f"https://sns-webpic-qc.xhscdn.com/note-{index}-2",
+                    "default_url": f"http://sns-img-qc.xhscdn.com/note-{index}-2",
+                    "preview_url": f"http://sns-webpic-qc.xhscdn.com/note-{index}-2",
                     "live_photo": True,
                 },
             ],
         ),
     )
+
+
+def test_image_normalization_does_not_upgrade_untrusted_http_hosts() -> None:
+    images, rejected_count, upgraded_count = xhs_research_module._post_images(
+        [
+            XhsDetailImage(
+                width=1080,
+                height=1440,
+                default_url="http://example.com/original-1",
+                preview_url="http://example.com/preview-1",
+            )
+        ]
+    )
+
+    assert images == []
+    assert rejected_count == 1
+    assert upgraded_count == 0
 
 
 @pytest.mark.asyncio
@@ -469,6 +488,8 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
         _detail(2).detail.description,
     ]
     assert [image.index for image in result.posts[0].images] == [1, 2]
+    assert result.posts[0].images[0].preview_url.startswith("https://")
+    assert result.posts[0].images[0].original_url.startswith("https://")
     assert result.posts[0].images[0].preview_url.endswith("/note-1-1")
     assert result.posts[0].images[1].live_photo is True
     assert client.detail_calls == [
@@ -494,6 +515,8 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
     assert all(post["selection_status"] == "candidate" for post in search_posts)
     assert "secret-" not in repr(traces)
     assert "xsec_token" not in repr(traces)
+    assert traces[-1].data["upgraded_image_count"] == 4
+    assert traces[-1].data["rejected_image_count"] == 0
 
 
 @pytest.mark.asyncio

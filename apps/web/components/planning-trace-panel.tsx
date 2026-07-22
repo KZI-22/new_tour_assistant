@@ -80,6 +80,7 @@ function labelForKey(key: string): string {
     content_chars: "正文字数",
     image_count: "图片数量",
     rejected_image_count: "跳过图片",
+    upgraded_image_count: "HTTPS 升级图片",
     source_image_count: "来源图片",
     minimum_content_chars: "最低正文要求",
     reference_id: "来源编号",
