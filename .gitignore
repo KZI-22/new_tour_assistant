@@ -34,5 +34,6 @@ Thumbs.db
 .codegraph/
 
 # Local project notes
+AGENTS.md
 plan_process.md
 problem_issue.md
