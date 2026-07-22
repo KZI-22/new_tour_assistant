@@ -2,7 +2,7 @@
 
 ## 一、文档信息
 
-- 状态：实施中（阶段 4 已完成）
+- 状态：已完成（2026-07-22）
 - 编写日期：2026-07-22
 - 适用范围：FastAPI 后端、PostgreSQL、Redis、Next.js Web 应用
 - 前置共识：现有会话均为无价值开发数据，可以在本地重置数据库后执行新迁移
@@ -485,13 +485,22 @@ booting -> authenticated
 
 ### 阶段 5：整体验收
 
-- [ ] 执行 Ruff。
-- [ ] 执行后端离线测试。
-- [ ] 执行 PostgreSQL/Redis 集成测试。
-- [ ] 执行前端 lint 和 production build。
-- [ ] 检查 Alembic upgrade from empty database。
-- [ ] 检查 `git status` 和最终提交历史。
-- [ ] 更新本计划状态及完成项。
+- [x] 执行 Ruff。
+- [x] 执行后端离线测试。
+- [x] 执行 PostgreSQL/Redis 集成测试。
+- [x] 执行前端 lint 和 production build。
+- [x] 检查 Alembic upgrade from empty database。
+- [x] 检查 `git status` 和最终提交历史。
+- [x] 更新本计划状态及完成项。
+
+整体验收结果：
+
+- Ruff：通过。
+- 后端离线测试：`205 passed, 14 skipped, 1 deselected`；被排除的 100ms 本地算法微基准单独执行通过。
+- PostgreSQL/Redis 集成测试：`4 passed`。
+- 前端：ESLint、TypeScript 类型检查和 Next.js production build 均通过。
+- Alembic：专用空数据库从 base 升级至 `20260722_0009 (head)`，`alembic check` 无待生成迁移；测试数据库随后已删除。
+- 数据清理：验收结束后开发库 `users`、`user_sessions`、`conversations` 均为 0 行。
 
 ## 十五、验证命令
 
