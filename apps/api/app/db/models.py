@@ -45,6 +45,11 @@ class User(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    conversations: Mapped[list[Conversation]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('active', 'disabled')", name="ck_users_status"),
@@ -81,6 +86,9 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     model_id: Mapped[str] = mapped_column(String(100), nullable=False)
     planning_source: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")
@@ -91,6 +99,7 @@ class Conversation(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    user: Mapped[User] = relationship(back_populates="conversations")
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation",
         cascade="all, delete-orphan",
@@ -108,6 +117,7 @@ class Conversation(Base):
             "planning_source IN ('standard', 'xhs')",
             name="ck_conversations_planning_source",
         ),
+        Index("ix_conversations_user_updated_at", "user_id", "updated_at"),
         Index("ix_conversations_updated_at", "updated_at"),
     )
 

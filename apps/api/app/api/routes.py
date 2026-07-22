@@ -5,12 +5,14 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from openai import AuthenticationError, RateLimitError
 
+from app.api.dependencies import require_csrf_protection, require_current_user
 from app.core.model_registry import (
     ModelRegistryError,
     UnavailableModelError,
@@ -24,6 +26,7 @@ from app.schemas.tool_execution import (
     PlanningTraceEvent,
 )
 from app.services.agent_executor import AgentExecutionError
+from app.services.auth_service import AuthenticatedUser
 from app.services.conversation_service import ConversationNotFoundError, ConversationService
 from app.services.tool_execution import ToolExecutionContext
 
@@ -117,25 +120,46 @@ async def list_models(request: Request) -> ModelListResponse:
 
 
 @router.get("/conversations", response_model=list[ConversationSummaryResponse])
-async def list_conversations(request: Request) -> list[ConversationSummaryResponse]:
-    return await _conversation_service(request).list_conversations()
+async def list_conversations(
+    request: Request,
+    response: Response,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+) -> list[ConversationSummaryResponse]:
+    conversations = await _conversation_service(request).list_conversations(user.id)
+    response.headers["Cache-Control"] = "no-store"
+    return conversations
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
-async def get_conversation(conversation_id: UUID, request: Request) -> ConversationDetailResponse:
+async def get_conversation(
+    conversation_id: UUID,
+    request: Request,
+    response: Response,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+) -> ConversationDetailResponse:
     try:
-        return await _conversation_service(request).get_conversation(conversation_id)
+        conversation = await _conversation_service(request).get_conversation(
+            user.id,
+            conversation_id,
+        )
     except ConversationNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found.",
         ) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return conversation
 
 
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_conversation(conversation_id: UUID, request: Request) -> Response:
+async def delete_conversation(
+    conversation_id: UUID,
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    _: Annotated[str, Depends(require_csrf_protection)],
+) -> Response:
     try:
-        await _conversation_service(request).delete_conversation(conversation_id)
+        await _conversation_service(request).delete_conversation(user.id, conversation_id)
     except ConversationNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -145,10 +169,16 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
 
 
 @router.post("/chat/stream")
-async def stream_chat(payload: ChatRequest, request: Request) -> StreamingResponse:
+async def stream_chat(
+    payload: ChatRequest,
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    _: Annotated[str, Depends(require_csrf_protection)],
+) -> StreamingResponse:
     conversation_service = _conversation_service(request)
     try:
         turn = await conversation_service.start_turn(
+            user.id,
             payload.conversation_id,
             payload.model_id,
             payload.message,
@@ -331,7 +361,7 @@ async def stream_chat(payload: ChatRequest, request: Request) -> StreamingRespon
         events(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },

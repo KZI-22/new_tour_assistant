@@ -42,10 +42,16 @@ class ConversationService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def list_conversations(self) -> list[ConversationSummaryResponse]:
+    async def list_conversations(
+        self,
+        user_id: uuid.UUID,
+    ) -> list[ConversationSummaryResponse]:
         async with self._session_factory() as session:
             result = await session.scalars(
-                select(Conversation).order_by(Conversation.updated_at.desc()).limit(100)
+                select(Conversation)
+                .where(Conversation.user_id == user_id)
+                .order_by(Conversation.updated_at.desc())
+                .limit(100)
             )
             return [
                 ConversationSummaryResponse(
@@ -59,9 +65,18 @@ class ConversationService:
                 for item in result
             ]
 
-    async def get_conversation(self, conversation_id: uuid.UUID) -> ConversationDetailResponse:
+    async def get_conversation(
+        self,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+    ) -> ConversationDetailResponse:
         async with self._session_factory() as session:
-            conversation = await session.get(Conversation, conversation_id)
+            conversation = await session.scalar(
+                select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
+            )
             if conversation is None:
                 raise ConversationNotFoundError(str(conversation_id))
             result = await session.scalars(
@@ -118,11 +133,18 @@ class ConversationService:
                 tool_calls=tool_calls,
             )
 
-    async def delete_conversation(self, conversation_id: uuid.UUID) -> None:
+    async def delete_conversation(
+        self,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+    ) -> None:
         async with self._session_factory() as session, session.begin():
             deleted_id = await session.scalar(
                 delete(Conversation)
-                .where(Conversation.id == conversation_id)
+                .where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
                 .returning(Conversation.id)
             )
             if deleted_id is None:
@@ -130,6 +152,7 @@ class ConversationService:
 
     async def start_turn(
         self,
+        user_id: uuid.UUID,
         conversation_id: uuid.UUID | None,
         model_id: str,
         user_content: str,
@@ -140,6 +163,7 @@ class ConversationService:
             history: list[Message] = []
             if conversation_id is None:
                 conversation = Conversation(
+                    user_id=user_id,
                     title=_conversation_title(user_content),
                     model_id=model_id,
                     planning_source=planning_source,
@@ -151,7 +175,12 @@ class ConversationService:
                 next_sequence = 1
             else:
                 conversation = await session.scalar(
-                    select(Conversation).where(Conversation.id == conversation_id).with_for_update()
+                    select(Conversation)
+                    .where(
+                        Conversation.id == conversation_id,
+                        Conversation.user_id == user_id,
+                    )
+                    .with_for_update()
                 )
                 if conversation is None:
                     raise ConversationNotFoundError(str(conversation_id))

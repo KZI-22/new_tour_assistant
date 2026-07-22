@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from app.api.dependencies import require_csrf_protection, require_current_user
 from app.core.settings import Settings
 from app.main import create_app
 from app.schemas.chat import ChatMessage
@@ -17,9 +18,17 @@ from app.schemas.tool_execution import (
     XhsLoginRequiredEvent,
 )
 from app.services.agent_executor import ToolLoopLimitError
+from app.services.auth_service import AuthenticatedUser, AuthenticationError
 from app.services.conversation_service import TurnContext
 from app.services.tool_execution import ToolExecutionContext
 from fastapi.testclient import TestClient
+
+_TEST_USER = AuthenticatedUser(
+    id=uuid.UUID("10000000-0000-0000-0000-000000000001"),
+    phone_e164="+8613812345678",
+    display_name="Test User",
+    session_id=uuid.UUID("20000000-0000-0000-0000-000000000001"),
+)
 
 
 def make_client(tmp_path: Path, *, heartbeat_seconds: float = 15) -> TestClient:
@@ -43,7 +52,10 @@ models:
         log_level="WARNING",
         xhs_sse_heartbeat_seconds=heartbeat_seconds,
     )
-    return TestClient(create_app(settings))
+    client = TestClient(create_app(settings))
+    client.app.dependency_overrides[require_current_user] = lambda: _TEST_USER
+    client.app.dependency_overrides[require_csrf_protection] = lambda: "test-csrf"
+    return client
 
 
 def test_health_and_models(tmp_path: Path) -> None:
@@ -123,11 +135,13 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
 
         async def start_turn(
             self,
+            user_id: uuid.UUID,
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
             planning_source: str,
         ) -> TurnContext:
+            assert user_id == _TEST_USER.id
             assert requested_id is None
             assert model_id == "test-model"
             assert content == "你好"
@@ -208,6 +222,7 @@ def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Pa
 
         async def start_turn(
             self,
+            _user_id: uuid.UUID,
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
@@ -270,6 +285,7 @@ def test_stream_chat_forwards_explicit_planning_source(tmp_path: Path) -> None:
     class FakeConversationService:
         async def start_turn(
             self,
+            _user_id: uuid.UUID,
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
@@ -347,6 +363,7 @@ def test_stream_chat_emits_heartbeat_without_persisting_it(tmp_path: Path) -> No
 
         async def start_turn(
             self,
+            _user_id: uuid.UUID,
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
@@ -430,6 +447,7 @@ def test_stream_chat_orders_parallel_tool_events_before_final_text(tmp_path: Pat
     class FakeConversationService:
         async def start_turn(
             self,
+            _user_id: uuid.UUID,
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
@@ -509,6 +527,7 @@ def test_stream_chat_returns_controlled_error_when_tool_loop_limit_is_reached(
 
         async def start_turn(
             self,
+            _user_id: uuid.UUID,
             requested_id: uuid.UUID | None,
             model_id: str,
             content: str,
@@ -557,3 +576,37 @@ def test_chat_requires_non_empty_message(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_private_routes_reject_missing_authentication(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    class RejectingAuthService:
+        async def authenticate_access(self, _: str | None) -> AuthenticatedUser:
+            raise AuthenticationError("missing")
+
+    client.app.dependency_overrides.pop(require_current_user)
+    client.app.state.auth_service = RejectingAuthService()
+
+    assert client.get("/api/v1/conversations").status_code == 401
+    assert (
+        client.post(
+            "/api/v1/chat/stream",
+            json={"model_id": "test-model", "message": "未登录请求"},
+        ).status_code
+        == 401
+    )
+
+
+def test_private_writes_reject_missing_csrf(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    client.app.dependency_overrides.pop(require_csrf_protection)
+
+    chat_response = client.post(
+        "/api/v1/chat/stream",
+        json={"model_id": "test-model", "message": "缺少 CSRF"},
+    )
+    delete_response = client.delete(f"/api/v1/conversations/{uuid.uuid4()}")
+
+    assert chat_response.status_code == 403
+    assert delete_response.status_code == 403

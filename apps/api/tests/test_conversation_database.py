@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import os
+import uuid
+from datetime import UTC, datetime
 
 import pytest
 from app.core.settings import PROJECT_ROOT
-from app.db.models import ToolCallLog
+from app.db.models import ToolCallLog, User
 from app.db.session import create_database
-from app.services.conversation_service import ConversationService
+from app.services.conversation_service import ConversationNotFoundError, ConversationService
 from app.services.tool_call_log_service import (
     ToolCallLogEntry,
     ToolCallLogService,
     ToolCallQualityUpdate,
 )
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 
 @pytest.mark.database
@@ -28,16 +30,51 @@ async def test_conversation_round_trip_in_postgres() -> None:
     engine, session_factory = create_database(database_url)
     service = ConversationService(session_factory)
     tool_log_service = ToolCallLogService(session_factory)
-    conversation_id = None
+    owner_id = None
+    other_user_id = None
 
     try:
+        now = datetime.now(UTC)
+        async with session_factory() as session, session.begin():
+            owner = User(
+                phone_e164=f"+86138{uuid.uuid4().int % 100_000_000:08d}",
+                status="active",
+                phone_verified_at=now,
+                last_login_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            other_user = User(
+                phone_e164=f"+86137{uuid.uuid4().int % 100_000_000:08d}",
+                status="active",
+                phone_verified_at=now,
+                last_login_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add_all([owner, other_user])
+            await session.flush()
+            owner_id = owner.id
+            other_user_id = other_user.id
+
         turn = await service.start_turn(
+            owner_id,
             None,
             "integration-test-model",
             "数据库集成测试",
             "xhs",
         )
-        conversation_id = turn.conversation_id
+        other_turn = await service.start_turn(
+            other_user_id,
+            None,
+            "integration-test-model",
+            "另一个用户的会话",
+        )
+        await service.finish_turn(
+            other_turn.assistant_message_id,
+            "另一个用户的回复",
+            "completed",
+        )
         await service.finish_turn(
             turn.assistant_message_id,
             "数据库回复已保存",
@@ -100,7 +137,7 @@ async def test_conversation_round_trip_in_postgres() -> None:
             )
         )
 
-        detail = await service.get_conversation(turn.conversation_id)
+        detail = await service.get_conversation(owner_id, turn.conversation_id)
         assert detail.title == "数据库集成测试"
         assert detail.model_id == "integration-test-model"
         assert detail.planning_source == "xhs"
@@ -109,13 +146,34 @@ async def test_conversation_round_trip_in_postgres() -> None:
             ("assistant", "数据库回复已保存", "completed"),
         ]
         assert detail.messages[1].debug_trace[0].data == {"keyword": "西安 两日游"}
-        conversations = await service.list_conversations()
+        conversations = await service.list_conversations(owner_id)
         persisted = next(
             conversation
             for conversation in conversations
             if conversation.id == turn.conversation_id
         )
         assert persisted.planning_source == "xhs"
+        assert other_turn.conversation_id not in {item.id for item in conversations}
+        with pytest.raises(ConversationNotFoundError):
+            await service.get_conversation(owner_id, other_turn.conversation_id)
+        with pytest.raises(ConversationNotFoundError):
+            await service.start_turn(
+                owner_id,
+                other_turn.conversation_id,
+                "integration-test-model",
+                "尝试越权继续",
+            )
+        with pytest.raises(ConversationNotFoundError):
+            await service.delete_conversation(owner_id, other_turn.conversation_id)
+        other_detail = await service.get_conversation(
+            other_user_id,
+            other_turn.conversation_id,
+        )
+        assert other_detail.title == "另一个用户的会话"
+        assert [item.content for item in other_detail.messages] == [
+            "另一个用户的会话",
+            "另一个用户的回复",
+        ]
         assert len(detail.tool_calls) == 2
         tool_calls_by_id = {item.tool_call_id: item for item in detail.tool_calls}
         assert tool_calls_by_id["database-tool-call"].data_status == "usable"
@@ -132,6 +190,8 @@ async def test_conversation_round_trip_in_postgres() -> None:
         assert tool_log.provider_error_code is None
 
     finally:
-        if conversation_id is not None:
-            await service.delete_conversation(conversation_id)
+        user_ids = [item for item in (owner_id, other_user_id) if item is not None]
+        if user_ids:
+            async with session_factory() as session, session.begin():
+                await session.execute(delete(User).where(User.id.in_(user_ids)))
         await engine.dispose()

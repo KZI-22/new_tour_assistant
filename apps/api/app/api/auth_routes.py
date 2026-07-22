@@ -4,12 +4,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.api.dependencies import get_auth_service, require_current_user
+from app.api.dependencies import (
+    get_auth_service,
+    require_csrf_token,
+    require_current_user,
+    validate_request_origin,
+)
 from app.core.security import (
     ACCESS_COOKIE_NAME,
     CSRF_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
-    secrets_match,
 )
 from app.schemas.auth import (
     AuthStateResponse,
@@ -57,33 +61,6 @@ def _auth_service(request: Request) -> AuthService:
 def _client_ip(request: Request) -> str | None:
     context = getattr(request.state, "travel_context", None)
     return context.client_ip if context is not None else None
-
-
-def _validate_origin(request: Request) -> None:
-    origin = request.headers.get("origin")
-    if origin is None:
-        if request.app.state.settings.app_environment == "production":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Request origin is not allowed.",
-            )
-        return
-    if origin not in request.app.state.settings.cors_origins:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Request origin is not allowed.",
-        )
-
-
-def _csrf_token(request: Request) -> str:
-    header_token = request.headers.get("x-csrf-token")
-    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
-    if not header_token or not cookie_token or not secrets_match(header_token, cookie_token):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="CSRF validation failed.",
-        )
-    return header_token
 
 
 def _set_session_cookies(
@@ -159,7 +136,7 @@ async def send_sms_code(
     request: Request,
     response: Response,
 ) -> SendSmsCodeResponse:
-    _validate_origin(request)
+    validate_request_origin(request)
     try:
         challenge = await _otp_service(request).send_code(
             payload.phone,
@@ -196,7 +173,7 @@ async def phone_login(
     request: Request,
     response: Response,
 ) -> LoginResponse:
-    _validate_origin(request)
+    validate_request_origin(request)
     try:
         phone_e164 = await _otp_service(request).verify_code(
             payload.challenge_id,
@@ -250,8 +227,8 @@ async def current_user(
 
 @router.post("/refresh", response_model=AuthStateResponse)
 async def refresh_session(request: Request, response: Response) -> AuthStateResponse:
-    _validate_origin(request)
-    csrf_token = _csrf_token(request)
+    validate_request_origin(request)
+    csrf_token = require_csrf_token(request)
     try:
         result = await _auth_service(request).refresh_session(
             request.cookies.get(REFRESH_COOKIE_NAME),
@@ -282,9 +259,9 @@ async def refresh_session(request: Request, response: Response) -> AuthStateResp
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout_session(request: Request, response: Response) -> None:
-    _validate_origin(request)
+    validate_request_origin(request)
     refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
-    csrf_token = _csrf_token(request) if refresh_token else None
+    csrf_token = require_csrf_token(request) if refresh_token else None
     try:
         await _auth_service(request).logout_session(refresh_token, csrf_token)
     except CsrfValidationError as exc:
