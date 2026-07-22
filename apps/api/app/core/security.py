@@ -10,6 +10,10 @@ from datetime import UTC, datetime, timedelta
 import jwt
 from jwt import InvalidTokenError
 
+ACCESS_COOKIE_NAME = "ta_access"
+REFRESH_COOKIE_NAME = "ta_refresh"
+CSRF_COOKIE_NAME = "ta_csrf"
+
 
 class AccessTokenError(ValueError):
     """Raised when an access token is malformed or cannot be trusted."""
@@ -106,9 +110,12 @@ def secrets_match(left: str, right: str) -> bool:
 
 
 __all__ = [
+    "ACCESS_COOKIE_NAME",
     "AccessTokenClaims",
     "AccessTokenError",
+    "CSRF_COOKIE_NAME",
     "JwtCodec",
+    "REFRESH_COOKIE_NAME",
     "generate_opaque_token",
     "hash_token",
     "keyed_digest",

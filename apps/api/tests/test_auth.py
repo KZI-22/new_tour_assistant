@@ -9,7 +9,13 @@ import pytest
 from app.core.security import AccessTokenError, JwtCodec
 from app.core.settings import Settings
 from app.main import create_app
-from app.services.auth_service import LoginUser, PhoneLoginResult
+from app.services.auth_service import (
+    AuthenticatedUser,
+    AuthenticationError,
+    LoginUser,
+    PhoneLoginResult,
+    SessionResult,
+)
 from app.services.otp_service import (
     InvalidOtpError,
     InvalidPhoneError,
@@ -224,3 +230,100 @@ def test_send_sms_code_returns_debug_code_only_when_service_exposes_it(tmp_path:
     assert response.status_code == 202
     assert response.headers["cache-control"] == "no-store"
     assert "debug_code" not in response.json()
+
+
+def test_me_refresh_and_logout_use_cookie_backed_session(tmp_path: Path) -> None:
+    client = TestClient(create_app(_test_settings(tmp_path)))
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+
+    class FakeAuthService:
+        logout_args: tuple[str | None, str | None] | None = None
+
+        async def authenticate_access(self, token: str | None) -> AuthenticatedUser:
+            if token != "old-access":
+                raise AuthenticationError("invalid")
+            return AuthenticatedUser(
+                id=user_id,
+                phone_e164="+8613812345678",
+                display_name="旅行者",
+                session_id=session_id,
+            )
+
+        async def refresh_session(self, *_: object, **__: object) -> SessionResult:
+            return SessionResult(
+                user=LoginUser(
+                    id=user_id,
+                    phone_e164="+8613812345678",
+                    display_name="旅行者",
+                ),
+                access_token="new-access",
+                refresh_token="new-refresh",
+                csrf_token="new-csrf",
+                access_expires_in=900,
+                refresh_expires_in=2_592_000,
+            )
+
+        async def logout_session(
+            self,
+            refresh_token: str | None,
+            csrf_token: str | None,
+        ) -> None:
+            self.logout_args = (refresh_token, csrf_token)
+
+    auth_service = FakeAuthService()
+    client.app.state.auth_service = auth_service
+    client.cookies.set("ta_access", "old-access", domain="testserver.local", path="/")
+    me_response = client.get("/api/v1/auth/me")
+
+    assert me_response.status_code == 200
+    assert me_response.json() == {
+        "id": str(user_id),
+        "phone": "138****5678",
+        "display_name": "旅行者",
+    }
+    client.cookies.delete("ta_access", domain="testserver.local", path="/")
+    assert client.get("/api/v1/auth/me").status_code == 401
+    client.cookies.set("ta_access", "old-access", domain="testserver.local", path="/")
+
+    client.cookies.set("ta_refresh", "old-refresh", domain="testserver.local", path="/")
+    client.cookies.set("ta_csrf", "old-csrf", domain="testserver.local", path="/")
+    refresh_response = client.post(
+        "/api/v1/auth/refresh",
+        headers={"Origin": "http://localhost:3000", "X-CSRF-Token": "old-csrf"},
+    )
+
+    assert refresh_response.status_code == 200
+    assert refresh_response.json()["access_expires_in"] == 900
+    assert client.cookies.get("ta_access") == "new-access"
+    assert client.cookies.get("ta_refresh") == "new-refresh"
+    assert client.cookies.get("ta_csrf") == "new-csrf"
+
+    logout_response = client.post(
+        "/api/v1/auth/logout",
+        headers={"Origin": "http://localhost:3000", "X-CSRF-Token": "new-csrf"},
+    )
+
+    assert logout_response.status_code == 204
+    assert auth_service.logout_args == ("new-refresh", "new-csrf")
+    assert client.cookies.get("ta_access") is None
+    assert client.cookies.get("ta_refresh") is None
+    assert client.cookies.get("ta_csrf") is None
+
+
+def test_refresh_rejects_cross_origin_and_csrf_mismatch(tmp_path: Path) -> None:
+    client = TestClient(create_app(_test_settings(tmp_path)))
+    client.cookies.set("ta_refresh", "refresh", domain="testserver.local", path="/")
+    client.cookies.set("ta_csrf", "csrf", domain="testserver.local", path="/")
+
+    cross_origin = client.post(
+        "/api/v1/auth/refresh",
+        headers={"Origin": "https://evil.example", "X-CSRF-Token": "csrf"},
+    )
+    csrf_mismatch = client.post(
+        "/api/v1/auth/refresh",
+        headers={"Origin": "http://localhost:3000", "X-CSRF-Token": "wrong"},
+    )
+
+    assert cross_origin.status_code == 403
+    assert csrf_mismatch.status_code == 403

@@ -38,7 +38,13 @@ class LoginResponse(AuthModel):
     access_expires_in: int = Field(gt=0)
 
 
+class AuthStateResponse(AuthModel):
+    user: AuthUserResponse
+    access_expires_in: int = Field(gt=0)
+
+
 __all__ = [
+    "AuthStateResponse",
     "AuthUserResponse",
     "LoginResponse",
     "PhoneLoginRequest",

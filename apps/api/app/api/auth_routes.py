@@ -1,15 +1,33 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+
+from app.api.dependencies import get_auth_service, require_current_user
+from app.core.security import (
+    ACCESS_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    REFRESH_COOKIE_NAME,
+    secrets_match,
+)
 from app.schemas.auth import (
+    AuthStateResponse,
     AuthUserResponse,
     LoginResponse,
     PhoneLoginRequest,
     SendSmsCodeRequest,
     SendSmsCodeResponse,
 )
-from app.services.auth_service import AuthService, PhoneLoginResult, UserDisabledError
+from app.services.auth_service import (
+    AuthenticatedUser,
+    AuthenticationError,
+    AuthService,
+    CsrfValidationError,
+    PhoneLoginResult,
+    SessionResult,
+    UserDisabledError,
+)
 from app.services.otp_service import (
     InvalidOtpError,
     InvalidPhoneError,
@@ -33,13 +51,7 @@ def _otp_service(request: Request) -> OtpService:
 
 
 def _auth_service(request: Request) -> AuthService:
-    service = request.app.state.auth_service
-    if service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Authentication is not configured.",
-        )
-    return service
+    return get_auth_service(request)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -47,14 +59,41 @@ def _client_ip(request: Request) -> str | None:
     return context.client_ip if context is not None else None
 
 
-def _set_login_cookies(
+def _validate_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin is None:
+        if request.app.state.settings.app_environment == "production":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request origin is not allowed.",
+            )
+        return
+    if origin not in request.app.state.settings.cors_origins:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Request origin is not allowed.",
+        )
+
+
+def _csrf_token(request: Request) -> str:
+    header_token = request.headers.get("x-csrf-token")
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    if not header_token or not cookie_token or not secrets_match(header_token, cookie_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF validation failed.",
+        )
+    return header_token
+
+
+def _set_session_cookies(
     request: Request,
     response: Response,
-    result: PhoneLoginResult,
+    result: SessionResult | PhoneLoginResult,
 ) -> None:
     settings = request.app.state.settings
     response.set_cookie(
-        "ta_access",
+        ACCESS_COOKIE_NAME,
         result.access_token,
         max_age=result.access_expires_in,
         httponly=True,
@@ -63,7 +102,7 @@ def _set_login_cookies(
         path="/",
     )
     response.set_cookie(
-        "ta_refresh",
+        REFRESH_COOKIE_NAME,
         result.refresh_token,
         max_age=result.refresh_expires_in,
         httponly=True,
@@ -72,13 +111,39 @@ def _set_login_cookies(
         path="/",
     )
     response.set_cookie(
-        "ta_csrf",
+        CSRF_COOKIE_NAME,
         result.csrf_token,
         max_age=result.refresh_expires_in,
         httponly=False,
         secure=settings.auth_cookie_secure,
         samesite="lax",
         path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+
+
+def _clear_session_cookies(request: Request, response: Response) -> None:
+    secure = request.app.state.settings.auth_cookie_secure
+    response.delete_cookie(
+        ACCESS_COOKIE_NAME,
+        path="/",
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        REFRESH_COOKIE_NAME,
+        path="/",
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        CSRF_COOKIE_NAME,
+        path="/",
+        secure=secure,
+        httponly=False,
+        samesite="lax",
     )
     response.headers["Cache-Control"] = "no-store"
 
@@ -94,6 +159,7 @@ async def send_sms_code(
     request: Request,
     response: Response,
 ) -> SendSmsCodeResponse:
+    _validate_origin(request)
     try:
         challenge = await _otp_service(request).send_code(
             payload.phone,
@@ -130,6 +196,7 @@ async def phone_login(
     request: Request,
     response: Response,
 ) -> LoginResponse:
+    _validate_origin(request)
     try:
         phone_e164 = await _otp_service(request).verify_code(
             payload.challenge_id,
@@ -156,7 +223,7 @@ async def phone_login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="该账号当前不可用。",
         ) from exc
-    _set_login_cookies(request, response, result)
+    _set_session_cookies(request, response, result)
     return LoginResponse(
         user=AuthUserResponse(
             id=result.user.id,
@@ -166,6 +233,66 @@ async def phone_login(
         is_new_user=result.is_new_user,
         access_expires_in=result.access_expires_in,
     )
+
+
+@router.get("/me", response_model=AuthUserResponse)
+async def current_user(
+    response: Response,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+) -> AuthUserResponse:
+    response.headers["Cache-Control"] = "no-store"
+    return AuthUserResponse(
+        id=user.id,
+        phone=mask_phone(user.phone_e164),
+        display_name=user.display_name,
+    )
+
+
+@router.post("/refresh", response_model=AuthStateResponse)
+async def refresh_session(request: Request, response: Response) -> AuthStateResponse:
+    _validate_origin(request)
+    csrf_token = _csrf_token(request)
+    try:
+        result = await _auth_service(request).refresh_session(
+            request.cookies.get(REFRESH_COOKIE_NAME),
+            csrf_token,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=_client_ip(request),
+        )
+    except CsrfValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF validation failed.",
+        ) from exc
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Login session is invalid or expired.",
+        ) from exc
+    _set_session_cookies(request, response, result)
+    return AuthStateResponse(
+        user=AuthUserResponse(
+            id=result.user.id,
+            phone=mask_phone(result.user.phone_e164),
+            display_name=result.user.display_name,
+        ),
+        access_expires_in=result.access_expires_in,
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_session(request: Request, response: Response) -> None:
+    _validate_origin(request)
+    refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    csrf_token = _csrf_token(request) if refresh_token else None
+    try:
+        await _auth_service(request).logout_session(refresh_token, csrf_token)
+    except CsrfValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF validation failed.",
+        ) from exc
+    _clear_session_cookies(request, response)
 
 
 __all__ = ["router"]

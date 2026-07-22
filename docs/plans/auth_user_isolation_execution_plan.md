@@ -2,7 +2,7 @@
 
 ## 一、文档信息
 
-- 状态：实施中（阶段 1 已完成）
+- 状态：实施中（阶段 2 已完成）
 - 编写日期：2026-07-22
 - 适用范围：FastAPI 后端、PostgreSQL、Redis、Next.js Web 应用
 - 前置共识：现有会话均为无价值开发数据，可以在本地重置数据库后执行新迁移
@@ -458,11 +458,11 @@ booting -> authenticated
 
 ### 阶段 2：登录保持、刷新与退出
 
-- [ ] 实现 Access JWT 认证依赖。
-- [ ] 实现 Refresh Token 原子轮换。
-- [ ] 实现 `/me`、`/refresh`、`/logout`。
-- [ ] 完成 Cookie、CSRF、撤销与禁用测试。
-- [ ] 独立提交。
+- [x] 实现 Access JWT 认证依赖。
+- [x] 实现 Refresh Token 原子轮换。
+- [x] 实现 `/me`、`/refresh`、`/logout`。
+- [x] 完成 Cookie、CSRF、撤销与禁用测试。
+- [x] 独立提交。
 
 ### 阶段 3：多用户会话隔离
 

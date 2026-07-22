@@ -8,9 +8,13 @@ from app.core.security import JwtCodec, hash_token
 from app.core.settings import PROJECT_ROOT
 from app.db.models import User, UserSession
 from app.db.session import create_database
-from app.services.auth_service import AuthService
+from app.services.auth_service import (
+    AuthenticationError,
+    AuthService,
+    CsrfValidationError,
+)
 from dotenv import load_dotenv
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 _JWT_SECRET = "database-jwt-test-secret-with-at-least-thirty-two-characters"
 
@@ -53,6 +57,51 @@ async def test_phone_login_creates_one_user_and_multiple_revocable_sessions() ->
         second_claims = codec.decode_access_token(second.access_token)
         assert first_claims.user_id == second_claims.user_id == first.user.id
         assert first_claims.session_id != second_claims.session_id
+        authenticated = await service.authenticate_access(first.access_token)
+        assert authenticated.id == first.user.id
+        assert authenticated.session_id == first_claims.session_id
+
+        refreshed = await service.refresh_session(
+            first.refresh_token,
+            first.csrf_token,
+            user_agent="pytest-refreshed",
+            ip_address="127.0.0.3",
+        )
+        assert codec.decode_access_token(refreshed.access_token).session_id == (
+            first_claims.session_id
+        )
+        with pytest.raises(AuthenticationError):
+            await service.refresh_session(
+                first.refresh_token,
+                first.csrf_token,
+                user_agent=None,
+                ip_address=None,
+            )
+        with pytest.raises(CsrfValidationError):
+            await service.refresh_session(
+                second.refresh_token,
+                "wrong-csrf-token",
+                user_agent=None,
+                ip_address=None,
+            )
+
+        await service.logout_session(refreshed.refresh_token, refreshed.csrf_token)
+        with pytest.raises(AuthenticationError):
+            await service.authenticate_access(refreshed.access_token)
+
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                update(User).where(User.id == first.user.id).values(status="disabled")
+            )
+        with pytest.raises(AuthenticationError):
+            await service.authenticate_access(second.access_token)
+        with pytest.raises(AuthenticationError):
+            await service.refresh_session(
+                second.refresh_token,
+                second.csrf_token,
+                user_agent=None,
+                ip_address=None,
+            )
 
         async with session_factory() as session:
             user_count = await session.scalar(
@@ -66,7 +115,7 @@ async def test_phone_login_creates_one_user_and_multiple_revocable_sessions() ->
         assert user_count == 1
         assert len(sessions) == 2
         assert {item.refresh_token_hash for item in sessions} == {
-            hash_token(first.refresh_token),
+            hash_token(refreshed.refresh_token),
             hash_token(second.refresh_token),
         }
         raw_tokens = {first.refresh_token, second.refresh_token}

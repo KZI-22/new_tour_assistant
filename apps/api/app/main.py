@@ -149,6 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.model_registry = registry
     application.state.settings = current_settings
     application.state.auth_service = auth_service
+    application.state.jwt_codec = jwt_codec if current_settings.auth_enabled else None
     application.state.otp_service = otp_service
     application.state.redis_client = redis_client
     application.state.chat_service = ChatService(
