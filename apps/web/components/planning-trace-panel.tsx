@@ -27,6 +27,7 @@ type TracePost = {
   selection_status?: string;
   reason?: string;
   content_chars?: number;
+  image_count?: number;
 };
 
 const hiddenKeys = new Set(["posts", "content_preview", "latest_user_message"]);
@@ -77,6 +78,9 @@ function labelForKey(key: string): string {
     error_code: "错误代码",
     search_rank: "搜索排名",
     content_chars: "正文字数",
+    image_count: "图片数量",
+    rejected_image_count: "跳过图片",
+    source_image_count: "来源图片",
     minimum_content_chars: "最低正文要求",
     reference_id: "来源编号",
     allowed_source_refs: "允许的来源",
@@ -154,6 +158,7 @@ function TraceData({ trace }: { trace: PlanningTraceUpdate }) {
                       {post.author_name || "未知作者"}
                       {post.liked_count_raw ? ` · 点赞 ${post.liked_count_raw}` : ""}
                       {post.content_chars !== undefined ? ` · ${post.content_chars} 字` : ""}
+                      {post.image_count !== undefined ? ` · ${post.image_count} 图` : ""}
                     </p>
                   </div>
                   <span className={`shrink-0 text-[10px] ${state.className}`}>{state.label}</span>

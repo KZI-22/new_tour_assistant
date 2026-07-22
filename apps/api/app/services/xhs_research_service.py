@@ -9,7 +9,10 @@ from decimal import Decimal, InvalidOperation
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
+from pydantic import ValidationError
+
 from app.clients.xhs_mcp_client import (
+    XhsDetailImage,
     XhsLoginSessionResult,
     XhsLoginStatusResult,
     XhsMcpClientError,
@@ -17,7 +20,7 @@ from app.clients.xhs_mcp_client import (
     XhsSearchItem,
     XhsSearchResult,
 )
-from app.schemas.xhs_planning import XhsPostEvidence, XhsResearchResult
+from app.schemas.xhs_planning import XhsPostEvidence, XhsPostImage, XhsResearchResult
 
 _MAX_POSTS = 2
 _DETAIL_BATCH_SIZE = 2
@@ -235,6 +238,7 @@ class XhsResearchService:
                             "result": "usable",
                             "usable_pool_position": len(usable_posts),
                             "content_chars": len(content),
+                            "image_count": len(result.detail.images),
                             "content_preview": content[:240],
                         },
                     ),
@@ -249,27 +253,36 @@ class XhsResearchService:
 
         selected_posts = sorted(usable_posts, key=_usable_post_sort_key)[:_MAX_POSTS]
         queried_at = datetime.now(UTC)
-        posts = [
-            XhsPostEvidence(
-                reference_id=f"source_{index}",
-                role="primary" if index == 1 else "supplementary",
-                note_id=result.detail.note_id or item.note_id,
-                search_rank=item.index + 1,
-                title=result.detail.title or item.title or "未命名笔记",
-                author_name=result.detail.author.nickname or item.author.nickname or "未知作者",
-                published_at=result.detail.published_at,
-                content=result.detail.description.strip(),
-                liked_count_raw=_liked_count_raw(item, result),
-                liked_count=normalize_xhs_count(_liked_count_raw(item, result)),
-                queried_at=queried_at,
+        posts: list[XhsPostEvidence] = []
+        rejected_image_count = 0
+        for index, (item, result) in enumerate(selected_posts, start=1):
+            images, rejected_count = _post_images(result.detail.images)
+            rejected_image_count += rejected_count
+            posts.append(
+                XhsPostEvidence(
+                    reference_id=f"source_{index}",
+                    role="primary" if index == 1 else "supplementary",
+                    note_id=result.detail.note_id or item.note_id,
+                    search_rank=item.index + 1,
+                    title=result.detail.title or item.title or "未命名笔记",
+                    author_name=(
+                        result.detail.author.nickname or item.author.nickname or "未知作者"
+                    ),
+                    published_at=result.detail.published_at,
+                    content=result.detail.description.strip(),
+                    liked_count_raw=_liked_count_raw(item, result),
+                    liked_count=normalize_xhs_count(_liked_count_raw(item, result)),
+                    queried_at=queried_at,
+                    images=images,
+                )
             )
-            for index, (item, result) in enumerate(selected_posts, start=1)
-        ]
         warnings: list[str] = []
         if len(posts) == 1:
             warnings.append("本次只有一篇小红书笔记正文可用，方案依据相对有限。")
         if failed_details:
             warnings.append(f"有 {failed_details} 篇候选笔记未能读取，已跳过。")
+        if rejected_image_count:
+            warnings.append(f"有 {rejected_image_count} 张原帖图片地址无法安全展示，已跳过。")
         _emit_trace(
             on_trace,
             XhsResearchTraceUpdate(
@@ -291,10 +304,12 @@ class XhsResearchService:
                             "liked_count_raw": post.liked_count_raw,
                             "liked_count": post.liked_count,
                             "content_chars": len(post.content),
+                            "image_count": len(post.images),
                         }
                         for post in posts
                     ],
                     "warnings": warnings,
+                    "rejected_image_count": rejected_image_count,
                 },
             ),
         )
@@ -323,6 +338,28 @@ class XhsResearchService:
             error=None,
             duration_ms=_duration_ms(started),
         )
+
+
+def _post_images(images: list[XhsDetailImage]) -> tuple[list[XhsPostImage], int]:
+    normalized: list[XhsPostImage] = []
+    rejected_count = 0
+    for index, image in enumerate(images, start=1):
+        preview_url = image.preview_url or image.default_url
+        original_url = image.default_url or image.preview_url
+        try:
+            normalized.append(
+                XhsPostImage(
+                    index=index,
+                    width=max(1, image.width),
+                    height=max(1, image.height),
+                    preview_url=preview_url,
+                    original_url=original_url,
+                    live_photo=image.live_photo,
+                )
+            )
+        except ValidationError:
+            rejected_count += 1
+    return normalized, rejected_count
 
 
 def _research_error(exc: XhsMcpClientError) -> XhsResearchError:

@@ -19,9 +19,8 @@ import {
   X,
 } from "lucide-react";
 import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
+import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { PlanningTracePanel } from "@/components/planning-trace-panel";
 import {
   ApiChatMessage,
@@ -767,7 +766,7 @@ export function ChatShell() {
                           )}
                           {message.content ? (
                             <div className="markdown-body">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                              <AssistantMarkdown content={message.content} />
                             </div>
                           ) : (
                             <div className="flex h-7 items-center gap-1" aria-label="正在思考">

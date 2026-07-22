@@ -442,9 +442,12 @@ class _XhsPostSearchRun:
         _stage(
             writer,
             "reading_xhs_posts",
-            "正在读取小红书原帖正文",
+            "正在读取小红书原帖内容",
             "success",
-            detail=f"已读取 {len(research.posts)} 篇原帖正文。",
+            detail=(
+                f"已读取 {len(research.posts)} 篇原帖和 "
+                f"{sum(len(post.images) for post in research.posts)} 张图片。"
+            ),
         )
         return {
             "research": research,
@@ -471,6 +474,7 @@ class _XhsPostSearchRun:
                 "output_chars": len(answer),
                 "source_count": len(research.posts),
                 "source_content_chars": sum(len(post.content) for post in research.posts),
+                "source_image_count": sum(len(post.images) for post in research.posts),
                 "llm_used": False,
             },
         )

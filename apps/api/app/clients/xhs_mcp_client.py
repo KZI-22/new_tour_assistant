@@ -82,6 +82,14 @@ class XhsSearchResult(_BoundaryModel):
     items: list[XhsSearchItem] = Field(default_factory=list)
 
 
+class XhsDetailImage(_BoundaryModel):
+    width: int = Field(default=0, ge=0)
+    height: int = Field(default=0, ge=0)
+    default_url: str = ""
+    preview_url: str = ""
+    live_photo: bool = False
+
+
 class XhsNoteDetail(_BoundaryModel):
     note_id: str
     title: str = ""
@@ -89,6 +97,7 @@ class XhsNoteDetail(_BoundaryModel):
     published_at: str | None = None
     author: _Author = Field(default_factory=_Author)
     interactions: _Interactions = Field(default_factory=_Interactions)
+    images: list[XhsDetailImage] = Field(default_factory=list)
 
 
 class XhsNoteDetailResult(_BoundaryModel):
@@ -383,6 +392,7 @@ def _safe_error_message(code: str) -> str:
 
 
 __all__ = [
+    "XhsDetailImage",
     "XhsMcpClient",
     "XhsMcpClientError",
     "XhsMcpTransport",

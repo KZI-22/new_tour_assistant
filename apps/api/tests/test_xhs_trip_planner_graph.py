@@ -22,7 +22,7 @@ from app.schemas.tool_execution import (
     PlanningStageEvent,
     PlanningTraceEvent,
 )
-from app.schemas.xhs_planning import XhsPostEvidence, XhsResearchResult
+from app.schemas.xhs_planning import XhsPostEvidence, XhsPostImage, XhsResearchResult
 from app.services.xhs_posts_renderer import render_xhs_posts
 from app.services.xhs_research_service import XhsResearchError, XhsResearchTraceUpdate
 
@@ -53,7 +53,24 @@ def _research(keyword: str = "成都三日游") -> XhsResearchResult:
                 content="原帖第一段。\n原帖第二段，保留 #话题 和 emoji 🐼。",
                 liked_count_raw="3万+",
                 liked_count=30_000,
-                queried_at=datetime.now(UTC),
+                queried_at=datetime(2026, 7, 20, 1, 2, 3, tzinfo=UTC),
+                images=[
+                    XhsPostImage(
+                        index=1,
+                        width=1080,
+                        height=1440,
+                        preview_url="https://sns-webpic-qc.xhscdn.com/preview-1",
+                        original_url="https://sns-img-qc.xhscdn.com/original-1",
+                    ),
+                    XhsPostImage(
+                        index=2,
+                        width=1080,
+                        height=1440,
+                        preview_url="https://sns-webpic-qc.xhscdn.com/preview-2",
+                        original_url="https://sns-img-qc.xhscdn.com/original-2",
+                        live_photo=True,
+                    ),
+                ],
             ),
             XhsPostEvidence(
                 reference_id="source_2",
@@ -65,7 +82,7 @@ def _research(keyword: str = "成都三日游") -> XhsResearchResult:
                 content="第二篇原帖正文。",
                 liked_count_raw="1.2万",
                 liked_count=12_000,
-                queried_at=datetime.now(UTC),
+                queried_at=datetime(2026, 7, 20, 1, 2, 3, tzinfo=UTC),
             ),
         ],
     )
@@ -348,3 +365,24 @@ def test_renderer_keeps_post_body_unchanged() -> None:
     assert "《脱敏笔记一》" in rendered
     assert "点赞：3万+" in rendered
     assert "笔记 ID：fixture-note-1" in rendered
+    assert "发布时间：2026-07-01 12:00:00（北京时间）" in rendered
+    assert "查询时间：2026-07-20 09:02:03（北京时间）" in rendered
+    assert "### 原帖图片" in rendered
+    assert "共 2 张，按原帖顺序排列" in rendered
+    assert (
+        "[![小红书原帖图片 P1](<https://sns-webpic-qc.xhscdn.com/preview-1>)]"
+        '(<https://sns-img-qc.xhscdn.com/original-1> "P1")'
+    ) in rendered
+    assert "小红书原帖图片 P2 · 实况" in rendered
+    assert "2026-07-20T01:02:03+00:00" not in rendered
+
+
+def test_xhs_post_image_rejects_untrusted_cdn_url() -> None:
+    with pytest.raises(ValueError, match="xhscdn.com"):
+        XhsPostImage(
+            index=1,
+            width=1080,
+            height=1440,
+            preview_url="https://example.com/preview-1",
+            original_url="https://sns-img-qc.xhscdn.com/original-1",
+        )

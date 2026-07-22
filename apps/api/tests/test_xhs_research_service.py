@@ -259,6 +259,22 @@ def _detail(index: int, description: str | None = None) -> XhsNoteDetailResult:
             published_at="2026-07-01T12:00:00+08:00",
             author={"nickname": f"详情作者 {index}"},
             interactions={"liked_count": "100", "collected_count": "50"},
+            images=[
+                {
+                    "width": 1080,
+                    "height": 1440,
+                    "default_url": f"https://sns-img-qc.xhscdn.com/note-{index}-1",
+                    "preview_url": f"https://sns-webpic-qc.xhscdn.com/note-{index}-1",
+                    "live_photo": False,
+                },
+                {
+                    "width": 1440,
+                    "height": 1080,
+                    "default_url": f"https://sns-img-qc.xhscdn.com/note-{index}-2",
+                    "preview_url": f"https://sns-webpic-qc.xhscdn.com/note-{index}-2",
+                    "live_photo": True,
+                },
+            ],
         ),
     )
 
@@ -284,13 +300,22 @@ async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None
                     "note_id": "note-1",
                     "title": "成都攻略",
                     "description": "正文",
+                    "images": [
+                        {
+                            "width": 1080,
+                            "height": 1440,
+                            "default_url": "https://sns-img-qc.xhscdn.com/original-1",
+                            "preview_url": "https://sns-webpic-qc.xhscdn.com/preview-1",
+                            "live_photo": False,
+                        }
+                    ],
                 },
             },
         }
     )
 
     search = await client.search_notes("成都 3天 旅游攻略")
-    await client.get_note_detail(search.items[0].note_id, search.items[0].xsec_token)
+    detail = await client.get_note_detail(search.items[0].note_id, search.items[0].xsec_token)
 
     assert client.calls == [
         (
@@ -309,6 +334,8 @@ async def test_mcp_client_uses_search_pair_for_detail_without_comments() -> None
             },
         ),
     ]
+    assert len(detail.detail.images) == 1
+    assert detail.detail.images[0].preview_url.endswith("/preview-1")
 
 
 def test_mcp_client_distinguishes_structure_and_note_errors() -> None:
@@ -441,6 +468,9 @@ async def test_research_uses_first_two_readable_posts_and_keeps_tokens_private()
         _detail(1).detail.description,
         _detail(2).detail.description,
     ]
+    assert [image.index for image in result.posts[0].images] == [1, 2]
+    assert result.posts[0].images[0].preview_url.endswith("/note-1-1")
+    assert result.posts[0].images[1].live_photo is True
     assert client.detail_calls == [
         ("note-0", "secret-0"),
         ("note-1", "secret-1"),
