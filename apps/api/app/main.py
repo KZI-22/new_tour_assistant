@@ -6,17 +6,23 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
 
+from app.api.auth_routes import router as auth_router
 from app.api.routes import router
 from app.clients.amap_client import AmapClient
 from app.clients.flyai_client import FlyAIClient
 from app.clients.xhs_mcp_client import XhsMcpClient
 from app.core.model_registry import ModelRegistry
 from app.core.request_context import RequestContextMiddleware
+from app.core.security import JwtCodec
 from app.core.settings import Settings, get_settings
 from app.db.session import create_database
+from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
+from app.services.otp_service import OtpService
+from app.services.otp_store import RedisOtpChallengeStore
 from app.services.tool_call_log_service import ToolCallLogService
 from app.services.xhs_research_service import XhsResearchService
 from app.tools import build_travel_tools
@@ -30,12 +36,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     database_engine = None
+    session_factory = None
     conversation_service = None
     tool_call_log_service = None
     if current_settings.database_url:
         database_engine, session_factory = create_database(current_settings.database_url)
         conversation_service = ConversationService(session_factory)
         tool_call_log_service = ToolCallLogService(session_factory)
+
+    redis_client = None
+    auth_service = None
+    otp_service = None
+    if current_settings.auth_enabled:
+        assert session_factory is not None
+        assert current_settings.redis_url is not None
+        assert current_settings.auth_jwt_secret is not None
+        assert current_settings.auth_hmac_secret is not None
+        redis_client = Redis.from_url(current_settings.redis_url, decode_responses=True)
+        jwt_codec = JwtCodec(
+            current_settings.auth_jwt_secret,
+            issuer=current_settings.auth_jwt_issuer,
+            audience=current_settings.auth_jwt_audience,
+            access_token_minutes=current_settings.auth_access_token_minutes,
+        )
+        auth_service = AuthService(
+            session_factory,
+            jwt_codec,
+            refresh_token_days=current_settings.auth_refresh_token_days,
+        )
+        otp_service = OtpService(
+            RedisOtpChallengeStore(redis_client),
+            hmac_secret=current_settings.auth_hmac_secret,
+            ttl_seconds=current_settings.auth_otp_ttl_seconds,
+            resend_seconds=current_settings.auth_otp_resend_seconds,
+            max_attempts=current_settings.auth_otp_max_attempts,
+            phone_limit=current_settings.auth_otp_phone_limit,
+            ip_limit=current_settings.auth_otp_ip_limit,
+            rate_window_seconds=current_settings.auth_otp_rate_window_seconds,
+            expose_debug_code=current_settings.app_environment in {"local", "test"},
+        )
 
     amap_client = None
     if current_settings.amap_api_key:
@@ -58,6 +97,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await xhs_mcp_client.aclose()
         if amap_client is not None:
             await amap_client.aclose()
+        if redis_client is not None:
+            await redis_client.aclose()
         if database_engine is not None:
             await database_engine.dispose()
 
@@ -107,6 +148,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     application.state.model_registry = registry
     application.state.settings = current_settings
+    application.state.auth_service = auth_service
+    application.state.otp_service = otp_service
+    application.state.redis_client = redis_client
     application.state.chat_service = ChatService(
         registry,
         travel_tools,
@@ -124,6 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.flyai_client = flyai_client
     application.state.amap_client = amap_client
     application.state.travel_tools = travel_tools
+    application.include_router(auth_router)
     application.include_router(router)
     return application
 

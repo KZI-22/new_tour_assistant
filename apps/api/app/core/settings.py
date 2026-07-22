@@ -50,6 +50,22 @@ class Settings:
     cors_origins: tuple[str, ...]
     log_level: str
     database_url: str | None = None
+    app_environment: Literal["local", "test", "production"] = "local"
+    auth_enabled: bool = False
+    redis_url: str | None = None
+    auth_jwt_secret: str | None = field(default=None, repr=False)
+    auth_hmac_secret: str | None = field(default=None, repr=False)
+    auth_cookie_secure: bool = False
+    auth_access_token_minutes: int = 15
+    auth_refresh_token_days: int = 30
+    auth_otp_ttl_seconds: int = 300
+    auth_otp_resend_seconds: int = 60
+    auth_otp_max_attempts: int = 5
+    auth_otp_phone_limit: int = 5
+    auth_otp_ip_limit: int = 20
+    auth_otp_rate_window_seconds: int = 600
+    auth_jwt_issuer: str = "tour-assistant-api"
+    auth_jwt_audience: str = "tour-assistant-web"
     flyai_cli_path: str | None = None
     flyai_timeout_seconds: float = 60
     flyai_max_concurrency: int = 3
@@ -123,6 +139,48 @@ class Settings:
             raise ValueError("amap_poi_page_size must be between 1 and 25.")
         if self.xhs_mcp_transport not in {"streamable-http", "stdio"}:
             raise ValueError("xhs_mcp_transport must be 'streamable-http' or 'stdio'.")
+        auth_positive_values = {
+            "auth_access_token_minutes": self.auth_access_token_minutes,
+            "auth_refresh_token_days": self.auth_refresh_token_days,
+            "auth_otp_ttl_seconds": self.auth_otp_ttl_seconds,
+            "auth_otp_resend_seconds": self.auth_otp_resend_seconds,
+            "auth_otp_max_attempts": self.auth_otp_max_attempts,
+            "auth_otp_phone_limit": self.auth_otp_phone_limit,
+            "auth_otp_ip_limit": self.auth_otp_ip_limit,
+            "auth_otp_rate_window_seconds": self.auth_otp_rate_window_seconds,
+        }
+        if any(value <= 0 for value in auth_positive_values.values()):
+            raise ValueError("Authentication limits and timeouts must be positive.")
+        if self.auth_enabled:
+            missing = [
+                name
+                for name, value in {
+                    "DATABASE_URL": self.database_url,
+                    "REDIS_URL": self.redis_url,
+                    "AUTH_JWT_SECRET": self.auth_jwt_secret,
+                    "AUTH_HMAC_SECRET": self.auth_hmac_secret,
+                }.items()
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "Authentication is enabled but these settings are missing: "
+                    f"{', '.join(missing)}"
+                )
+            if len(self.auth_jwt_secret or "") < 32 or len(self.auth_hmac_secret or "") < 32:
+                raise ValueError("Authentication secrets must each contain at least 32 characters.")
+            if any(
+                (secret or "").casefold().startswith("replace-with")
+                for secret in (self.auth_jwt_secret, self.auth_hmac_secret)
+            ):
+                raise ValueError("Replace the example authentication secrets before enabling auth.")
+            if self.app_environment == "production":
+                raise ValueError(
+                    "The mock OTP provider cannot be enabled in production. "
+                    "Configure a real SMS provider first."
+                )
+            if self.app_environment == "production" and not self.auth_cookie_secure:
+                raise ValueError("AUTH_COOKIE_SECURE must be true in production.")
         if self.trip_planner_enabled:
             if self.xhs_mcp_transport == "streamable-http" and not self.xhs_mcp_url.startswith(
                 ("http://", "https://")
@@ -143,6 +201,9 @@ def get_settings() -> Settings:
     trusted_proxy_cidrs = tuple(
         item.strip() for item in os.getenv("TRUSTED_PROXY_CIDRS", "").split(",") if item.strip()
     )
+    app_environment = os.getenv("APP_ENVIRONMENT", "local").strip().casefold()
+    if app_environment not in {"local", "test", "production"}:
+        raise ValueError("APP_ENVIRONMENT must be 'local', 'test', or 'production'.")
     return Settings(
         app_name="Tour Assistant API",
         model_config_path=_resolve_project_path(
@@ -151,6 +212,27 @@ def get_settings() -> Settings:
         cors_origins=origins,
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         database_url=os.getenv("DATABASE_URL") or None,
+        app_environment=app_environment,  # type: ignore[arg-type]
+        auth_enabled=_environment_bool("AUTH_ENABLED", False),
+        redis_url=os.getenv("REDIS_URL") or None,
+        auth_jwt_secret=os.getenv("AUTH_JWT_SECRET") or None,
+        auth_hmac_secret=os.getenv("AUTH_HMAC_SECRET") or None,
+        auth_cookie_secure=_environment_bool(
+            "AUTH_COOKIE_SECURE",
+            app_environment == "production",
+        ),
+        auth_access_token_minutes=int(os.getenv("AUTH_ACCESS_TOKEN_MINUTES", "15")),
+        auth_refresh_token_days=int(os.getenv("AUTH_REFRESH_TOKEN_DAYS", "30")),
+        auth_otp_ttl_seconds=int(os.getenv("AUTH_OTP_TTL_SECONDS", "300")),
+        auth_otp_resend_seconds=int(os.getenv("AUTH_OTP_RESEND_SECONDS", "60")),
+        auth_otp_max_attempts=int(os.getenv("AUTH_OTP_MAX_ATTEMPTS", "5")),
+        auth_otp_phone_limit=int(os.getenv("AUTH_OTP_PHONE_LIMIT", "5")),
+        auth_otp_ip_limit=int(os.getenv("AUTH_OTP_IP_LIMIT", "20")),
+        auth_otp_rate_window_seconds=int(
+            os.getenv("AUTH_OTP_RATE_WINDOW_SECONDS", "600")
+        ),
+        auth_jwt_issuer=os.getenv("AUTH_JWT_ISSUER", "tour-assistant-api"),
+        auth_jwt_audience=os.getenv("AUTH_JWT_AUDIENCE", "tour-assistant-web"),
         flyai_cli_path=os.getenv("FLYAI_CLI_PATH") or None,
         flyai_timeout_seconds=float(os.getenv("FLYAI_TIMEOUT_SECONDS", "60")),
         flyai_max_concurrency=int(os.getenv("FLYAI_MAX_CONCURRENCY", "3")),
