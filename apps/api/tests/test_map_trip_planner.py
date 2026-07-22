@@ -265,6 +265,8 @@ async def test_map_and_weather_collection_overlap_and_render_verified_output() -
     assert "高德步行路线" in answer
     assert "2026-07-25" in answer
     assert "白天 晴 32℃" in answer
+    assert answer.count("查询时间：2026-07-20 08:00:00（北京时间）") == 2
+    assert "2026-07-20T00:00:00+00:00" not in answer
     assert collection.calls == weather.calls == 1
 
 

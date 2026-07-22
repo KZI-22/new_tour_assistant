@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 from app.schemas.map_planning import (
     MapNarrativePlan,
     MapPlaceEvidence,
@@ -7,6 +9,8 @@ from app.schemas.map_planning import (
     RouteLegEvidence,
 )
 from app.schemas.trip_planning import DailyWeatherEvidence, TripWeatherEvidence
+
+_BEIJING_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
 
 
 def render_map_itinerary(
@@ -94,11 +98,11 @@ def render_map_itinerary(
             "",
             "## 数据来源",
             "",
-            f"- 地点与路线：高德地图；查询时间：{evidence.queried_at.isoformat()}",
+            f"- 地点与路线：高德地图；查询时间：{_format_query_time(evidence.queried_at)}",
             (
                 f"- 天气：高德地图；adcode：{weather.adcode or '未返回'}；"
                 f"报告时间：{weather.report_time or '供应商未提供'}；"
-                f"查询时间：{weather.queried_at.isoformat()}"
+                f"查询时间：{_format_query_time(weather.queried_at)}"
             ),
         ]
     )
@@ -150,6 +154,11 @@ def _format_duration(value: int) -> str:
     if minutes >= 60:
         return f"约 {minutes // 60} 小时 {minutes % 60} 分钟"
     return f"约 {minutes} 分钟"
+
+
+def _format_query_time(value: dt.datetime) -> str:
+    local_time = value.astimezone(_BEIJING_TIMEZONE)
+    return f"{local_time:%Y-%m-%d %H:%M:%S}（北京时间）"
 
 
 __all__ = ["render_map_itinerary"]
