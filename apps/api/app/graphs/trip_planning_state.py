@@ -15,6 +15,9 @@ from app.schemas.trip_validation import ValidationIssue
 class TripPlanningState(TypedDict, total=False):
     messages: list[ChatMessage]
     planning_run_id: str
+    conversation_id: str
+    assistant_message_id: str
+    extraction_method: str
 
     request: TripPlanningRequest
     capability_plan: CapabilityPlan

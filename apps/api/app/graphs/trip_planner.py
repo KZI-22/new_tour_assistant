@@ -8,6 +8,7 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.trip_planning_state import TripPlanningState
+from app.services.trip_planner_logging import logged_trip_planner_node
 
 TripPlannerNode = Callable[[TripPlanningState], Awaitable[dict[str, Any]]]
 
@@ -34,20 +35,104 @@ class TripPlannerGraph:
 
     def _build_graph(self) -> Any:
         workflow = StateGraph(TripPlanningState)
-        workflow.add_node("extract_requirements", self._nodes.extract_requirements)
-        workflow.add_node("resolve_capabilities", self._nodes.resolve_capabilities)
-        workflow.add_node("validate_requirements", self._nodes.validate_requirements)
-        workflow.add_node("clarify_requirements", self._nodes.clarify_requirements)
-        workflow.add_node("dispatch_collection", _dispatch_collection)
-        workflow.add_node("collect_map_weather", self._nodes.collect_map_weather)
-        workflow.add_node("collect_transport", self._nodes.collect_transport)
-        workflow.add_node("collect_hotels", self._nodes.collect_hotels)
-        workflow.add_node("join_evidence", self._nodes.join_evidence)
-        workflow.add_node("generate_itinerary", self._nodes.generate_itinerary)
-        workflow.add_node("validate_itinerary", self._nodes.validate_itinerary)
-        workflow.add_node("prepare_revision", _prepare_revision)
-        workflow.add_node("render_response", self._nodes.render_response)
-        workflow.add_node("controlled_failure", _controlled_failure)
+        workflow.add_node(
+            "extract_requirements",
+            logged_trip_planner_node(
+                "extract_requirements",
+                self._nodes.extract_requirements,
+            ),
+        )
+        workflow.add_node(
+            "resolve_capabilities",
+            logged_trip_planner_node(
+                "resolve_capabilities",
+                self._nodes.resolve_capabilities,
+            ),
+        )
+        workflow.add_node(
+            "validate_requirements",
+            logged_trip_planner_node(
+                "validate_requirements",
+                self._nodes.validate_requirements,
+            ),
+        )
+        workflow.add_node(
+            "clarify_requirements",
+            logged_trip_planner_node(
+                "clarify_requirements",
+                self._nodes.clarify_requirements,
+            ),
+        )
+        workflow.add_node(
+            "dispatch_collection",
+            logged_trip_planner_node(
+                "dispatch_collection",
+                _dispatch_collection,
+            ),
+        )
+        workflow.add_node(
+            "collect_map_weather",
+            logged_trip_planner_node(
+                "collect_map_weather",
+                self._nodes.collect_map_weather,
+            ),
+        )
+        workflow.add_node(
+            "collect_transport",
+            logged_trip_planner_node(
+                "collect_transport",
+                self._nodes.collect_transport,
+            ),
+        )
+        workflow.add_node(
+            "collect_hotels",
+            logged_trip_planner_node(
+                "collect_hotels",
+                self._nodes.collect_hotels,
+            ),
+        )
+        workflow.add_node(
+            "join_evidence",
+            logged_trip_planner_node(
+                "join_evidence",
+                self._nodes.join_evidence,
+            ),
+        )
+        workflow.add_node(
+            "generate_itinerary",
+            logged_trip_planner_node(
+                "generate_itinerary",
+                self._nodes.generate_itinerary,
+            ),
+        )
+        workflow.add_node(
+            "validate_itinerary",
+            logged_trip_planner_node(
+                "validate_itinerary",
+                self._nodes.validate_itinerary,
+            ),
+        )
+        workflow.add_node(
+            "prepare_revision",
+            logged_trip_planner_node(
+                "prepare_revision",
+                _prepare_revision,
+            ),
+        )
+        workflow.add_node(
+            "render_response",
+            logged_trip_planner_node(
+                "render_response",
+                self._nodes.render_response,
+            ),
+        )
+        workflow.add_node(
+            "controlled_failure",
+            logged_trip_planner_node(
+                "controlled_failure",
+                _controlled_failure,
+            ),
+        )
 
         workflow.add_edge(START, "extract_requirements")
         workflow.add_edge("extract_requirements", "resolve_capabilities")

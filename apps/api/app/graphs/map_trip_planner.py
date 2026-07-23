@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import AsyncIterator
-from datetime import timedelta
 from typing import Any, Literal, TypeVar
 
 from langchain_core.language_models import BaseChatModel
@@ -40,6 +38,7 @@ from app.services.structured_output_service import (
     StructuredOutputError,
     StructuredOutputService,
 )
+from app.services.trip_plan_validator import validate_map_narrative
 from app.services.weather_evidence_service import WeatherEvidenceService
 
 logger = logging.getLogger(__name__)
@@ -276,12 +275,12 @@ class _MapTripPlanningRun:
             prompt,
             timeout_seconds=self._settings.trip_planner_model_timeout_seconds,
         )
-        errors = _validate_narrative(request, evidence, weather, plan)
-        if not errors:
+        issues = validate_map_narrative(request, evidence, weather, plan)
+        if not issues:
             return plan
         revision_prompt = (
             f"{prompt}\n\n上一次输出未通过以下校验："
-            f"{json.dumps(errors, ensure_ascii=False)}。"
+            f"{json.dumps([issue.message for issue in issues], ensure_ascii=False)}。"
             "请仅修正结构、日期和引用顺序，不得添加新地点。"
         )
         revised = await self._structured(
@@ -290,7 +289,7 @@ class _MapTripPlanningRun:
             revision_prompt,
             timeout_seconds=self._settings.trip_planner_model_timeout_seconds,
         )
-        remaining = _validate_narrative(request, evidence, weather, revised)
+        remaining = validate_map_narrative(request, evidence, weather, revised)
         if remaining:
             raise MapTripPlanningError(
                 "MAP_PLAN_VALIDATION_FAILED",
@@ -359,90 +358,6 @@ def _generation_prompt(
         },
         ensure_ascii=False,
     )
-
-
-def _validate_narrative(
-    request: CityTripRequest,
-    evidence: MapTripEvidence,
-    weather: TripWeatherEvidence,
-    plan: MapNarrativePlan,
-) -> list[str]:
-    errors: list[str] = []
-    expected_indexes = list(range(1, (request.duration_days or 0) + 1))
-    expected_dates = [
-        request.start_date + timedelta(days=offset)
-        for offset in range(request.duration_days or 0)
-        if request.start_date is not None
-    ]
-    if [day.day_index for day in evidence.days] != expected_indexes:
-        errors.append("map evidence day indexes do not match the request")
-    if [day.date for day in evidence.days] != expected_dates:
-        errors.append("map evidence dates are not consecutive from the requested start date")
-    if [day.day_index for day in plan.days] != expected_indexes:
-        errors.append("narrative day indexes do not match the request")
-        return errors
-    if [day.date for day in weather.days] != expected_dates:
-        errors.append("weather dates do not match the requested itinerary dates")
-    weather_dates = {day.date for day in weather.days}
-    weather_by_date = {day.date: day for day in weather.days}
-    narrative_days = {day.day_index: day for day in plan.days}
-    all_poi_ids = [place.poi_id for day in evidence.days for place in day.ordered_places()]
-    if len(all_poi_ids) != len(set(all_poi_ids)):
-        errors.append("map evidence contains duplicate POIs")
-    for evidence_day in evidence.days:
-        narrative_day = narrative_days[evidence_day.day_index]
-        if narrative_day.date != evidence_day.date:
-            errors.append(f"day {evidence_day.day_index} date mismatch")
-        expected_refs = [place.reference_id for place in evidence_day.ordered_places()]
-        actual_refs = [place.reference_id for place in narrative_day.places]
-        if actual_refs != expected_refs:
-            errors.append(f"day {evidence_day.day_index} place reference order mismatch")
-        expected_legs = list(zip(expected_refs, expected_refs[1:], strict=False))
-        actual_legs = [(leg.origin_ref, leg.destination_ref) for leg in evidence_day.route_legs]
-        if actual_legs != expected_legs:
-            errors.append(f"day {evidence_day.day_index} route endpoints mismatch")
-        if evidence_day.date not in weather_dates:
-            errors.append(f"day {evidence_day.day_index} weather date missing")
-        weather_day = weather_by_date.get(evidence_day.date)
-        if (
-            weather_day is not None
-            and weather_day.coverage == "unavailable"
-            and narrative_day.weather_advice
-        ):
-            errors.append(f"day {evidence_day.day_index} has advice without weather evidence")
-        elif weather_day is not None and weather_day.coverage == "available":
-            errors.extend(
-                _validate_weather_advice(
-                    evidence_day.day_index,
-                    weather_day,
-                    narrative_day.weather_advice,
-                )
-            )
-    return errors
-
-
-def _validate_weather_advice(
-    day_index: int,
-    weather: object,
-    advice: list[str],
-) -> list[str]:
-    errors: list[str] = []
-    weather_text = "".join(
-        str(getattr(weather, field, "") or "") for field in ("day_weather", "night_weather")
-    )
-    allowed_numbers = {
-        str(getattr(weather, field, "") or "") for field in ("day_temperature", "night_temperature")
-    }
-    weather_markers = ("晴", "阴", "雨", "雪", "雷", "雾", "霾")
-    for item in advice:
-        for marker in weather_markers:
-            if marker in item and marker not in weather_text:
-                errors.append(f"day {day_index} weather advice contradicts provider weather")
-                break
-        numbers = set(re.findall(r"-?\d+(?:\.\d+)?", item))
-        if numbers - allowed_numbers:
-            errors.append(f"day {day_index} weather advice invents numeric weather data")
-    return errors
 
 
 def _stage(
