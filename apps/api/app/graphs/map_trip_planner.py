@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Mapping
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any, Literal, TypeVar, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -27,7 +27,6 @@ from app.schemas.trip_planning import (
     TripWeatherEvidence,
 )
 from app.services.agent_executor import AgentExecutionError
-from app.services.attraction_planning_service import match_weather_to_days
 from app.services.city_trip_request import (
     apply_explicit_request_overrides,
     clarification_question,
@@ -36,9 +35,9 @@ from app.services.city_trip_request import (
 )
 from app.services.map_itinerary_renderer import render_map_itinerary
 from app.services.map_trip_collection_service import (
-    MapTripCollectionError,
     MapTripCollectionService,
 )
+from app.services.map_weather_collection_service import MapWeatherCollectionService
 from app.services.weather_evidence_service import WeatherEvidenceService
 
 logger = logging.getLogger(__name__)
@@ -69,8 +68,11 @@ class MapTripPlanner:
         weather_service: WeatherEvidenceService,
         settings: Settings,
     ) -> None:
-        self._collection_service = collection_service
-        self._weather_service = weather_service
+        self._map_weather_service = MapWeatherCollectionService(
+            collection_service,
+            weather_service,
+            weather_timeout_seconds=settings.trip_planning_data_timeout_seconds,
+        )
         self._settings = settings
 
     async def stream(
@@ -83,8 +85,7 @@ class MapTripPlanner:
         run = _MapTripPlanningRun(
             model=model,
             messages=messages,
-            collection_service=self._collection_service,
-            weather_service=self._weather_service,
+            map_weather_service=self._map_weather_service,
             settings=self._settings,
             route_source=route_source,
         )
@@ -98,15 +99,13 @@ class _MapTripPlanningRun:
         *,
         model: BaseChatModel,
         messages: list[ChatMessage],
-        collection_service: MapTripCollectionService,
-        weather_service: WeatherEvidenceService,
+        map_weather_service: MapWeatherCollectionService,
         settings: Settings,
         route_source: Literal["llm_router", "fallback", "explicit"],
     ) -> None:
         self._model = model
         self._messages = messages
-        self._collection_service = collection_service
-        self._weather_service = weather_service
+        self._map_weather_service = map_weather_service
         self._settings = settings
         self._route_source = route_source
         self._trace_sequence = 0
@@ -165,30 +164,26 @@ class _MapTripPlanningRun:
         assert request.start_date is not None
         yield _stage("collecting_pois", "正在召回、筛选并编排高德景点", "running")
         yield _stage("collecting_weather", "正在查询行程日期对应的天气", "running")
-        map_task = asyncio.create_task(self._collection_service.collect(request))
-        weather_task = asyncio.create_task(
-            self._collect_weather_with_timeout(
-                city=request.destination_city,
-                start_date=request.start_date,
-                duration_days=request.duration_days,
+        bundle = await self._map_weather_service.collect(request)
+        if bundle.status == "failed":
+            user_message = (
+                bundle.warnings[0] if bundle.warnings else "地图规划暂时不可用，请稍后重试。"
             )
-        )
-        try:
-            evidence, weather = await asyncio.gather(map_task, weather_task)
-        except asyncio.CancelledError:
-            await _cancel_tasks(map_task, weather_task)
-            raise
-        except MapTripCollectionError as exc:
-            await _cancel_tasks(map_task, weather_task)
             yield _stage(
                 "collecting_pois",
                 "正在召回、筛选并编排高德景点",
                 "failed",
-                detail=exc.user_message,
+                detail=user_message,
             )
-            raise MapTripPlanningError(exc.code, exc.user_message) from exc
+            raise MapTripPlanningError(
+                bundle.error_code or "MAP_PLANNING_UNAVAILABLE",
+                user_message,
+            )
 
-        evidence = match_weather_to_days(evidence, weather)
+        assert bundle.map is not None
+        assert bundle.weather is not None
+        evidence = bundle.map
+        weather = bundle.weather
         yield _stage(
             "collecting_pois",
             "正在召回、筛选并编排高德景点",
@@ -265,37 +260,6 @@ class _MapTripPlanningRun:
             method = "fallback"
         request, overrides = apply_explicit_request_overrides(request, self._messages)
         return request, method, overrides
-
-    async def _collect_weather_with_timeout(
-        self,
-        *,
-        city: str,
-        start_date: date,
-        duration_days: int,
-    ) -> TripWeatherEvidence:
-        try:
-            return await asyncio.wait_for(
-                self._weather_service.collect(
-                    city=city,
-                    start_date=start_date,
-                    duration_days=duration_days,
-                ),
-                timeout=self._settings.trip_planning_data_timeout_seconds,
-            )
-        except TimeoutError:
-            reason = "天气查询达到数据阶段超时，请在临近出发时重新确认。"
-            return TripWeatherEvidence(
-                city=city,
-                days=[
-                    {
-                        "date": start_date + timedelta(days=offset),
-                        "coverage": "unavailable",
-                        "unavailable_reason": reason,
-                    }
-                    for offset in range(duration_days)
-                ],
-                warnings=[reason],
-            )
 
     async def _generate_validated_narrative(
         self,
@@ -495,12 +459,10 @@ def _validate_weather_advice(
 ) -> list[str]:
     errors: list[str] = []
     weather_text = "".join(
-        str(getattr(weather, field, "") or "")
-        for field in ("day_weather", "night_weather")
+        str(getattr(weather, field, "") or "") for field in ("day_weather", "night_weather")
     )
     allowed_numbers = {
-        str(getattr(weather, field, "") or "")
-        for field in ("day_temperature", "night_temperature")
+        str(getattr(weather, field, "") or "") for field in ("day_temperature", "night_temperature")
     }
     weather_markers = ("晴", "阴", "雨", "雪", "雷", "雾", "霾")
     for item in advice:
@@ -512,13 +474,6 @@ def _validate_weather_advice(
         if numbers - allowed_numbers:
             errors.append(f"day {day_index} weather advice invents numeric weather data")
     return errors
-
-
-async def _cancel_tasks(*tasks: asyncio.Task[Any]) -> None:
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _stage(
