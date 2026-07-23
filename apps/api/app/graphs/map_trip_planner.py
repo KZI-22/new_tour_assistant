@@ -39,6 +39,7 @@ from app.services.structured_output_service import (
     StructuredOutputService,
 )
 from app.services.trip_plan_validator import validate_map_narrative
+from app.services.weather_advice_service import normalize_weather_advice
 from app.services.weather_evidence_service import WeatherEvidenceService
 
 logger = logging.getLogger(__name__)
@@ -46,13 +47,13 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 _MAP_GENERATION_SYSTEM_PROMPT = """你是地图证据旅行攻略的文案整理器。
 
-你只能为输入中已经确定的高德景点引用编写简短推荐理由、每日主题，并依据给定天气证据编写天气建议。
+你只能为输入中已经确定的高德景点引用编写简短推荐理由和每日主题。
 
 严格规则：
 1. 每日 place 引用必须与 evidence 中的 attractions 顺序完全相同，不能增删、交换或跨天移动。
 2. 不得输出新的地点、具体餐厅或路线引用，也不得把模型常识写成高德、官方或小红书事实。
 3. 不得声称评分、榜单、营业状态、票价、开放时间、展品、招牌菜、排队或预约信息。
-4. 天气事实只能来自 weather_evidence；coverage=unavailable 时 weather_advice 必须为空。
+4. weather_advice 由后端根据 weather_evidence 确定性生成；模型必须为每一天返回空数组。
 5. recommendation_reason 是模型整理建议，只描述大致体验方向，不得伪造供应商评价。
 6. 午餐和晚餐只可作为时间预留提示，不能推荐具体餐厅。
 7. 只输出符合指定 JSON Schema 的结构化结果。"""
@@ -275,6 +276,7 @@ class _MapTripPlanningRun:
             prompt,
             timeout_seconds=self._settings.trip_planner_model_timeout_seconds,
         )
+        plan = normalize_weather_advice(plan, weather)
         issues = validate_map_narrative(request, evidence, weather, plan)
         if not issues:
             return plan
@@ -289,6 +291,7 @@ class _MapTripPlanningRun:
             revision_prompt,
             timeout_seconds=self._settings.trip_planner_model_timeout_seconds,
         )
+        revised = normalize_weather_advice(revised, weather)
         remaining = validate_map_narrative(request, evidence, weather, revised)
         if remaining:
             raise MapTripPlanningError(

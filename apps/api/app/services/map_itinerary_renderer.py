@@ -9,11 +9,12 @@ from app.schemas.map_planning import (
     RouteLegEvidence,
 )
 from app.schemas.trip_planning import DailyWeatherEvidence, TripWeatherEvidence
+from app.services.weather_advice_service import build_weather_advice
 
 _BEIJING_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
 _MAP_ONLY_SCOPE_NOTE = (
     "> 本方案的地点、坐标、距离和路线只来自本次高德地图查询；景点筛选、分天与顺序由"
-    "确定性规则完成，推荐理由和天气建议由模型整理。"
+    "确定性规则完成，推荐理由由模型整理，天气事实与建议由后端根据高德证据确定性生成。"
     "本次未查询机票、火车、酒店、价格、库存、营业状态或预订信息。"
 )
 
@@ -43,9 +44,10 @@ def render_map_itinerary(
         theme = f"｜{day_narrative.theme}" if day_narrative.theme else ""
         lines.extend(["", f"## 第 {day.day_index} 天｜{day.date.isoformat()}{theme}"])
         lines.extend(["", _render_weather(day_weather)])
-        if day_narrative.weather_advice:
+        weather_advice = build_weather_advice(day_weather)
+        if weather_advice:
             lines.extend(["", "**天气建议**", ""])
-            lines.extend(f"- {item}" for item in day_narrative.weather_advice)
+            lines.extend(f"- {item}" for item in weather_advice)
 
         for stop_index, place in enumerate(day.attractions, start=1):
             lines.extend(["", f"### 第 {stop_index} 站｜{place.name}"])
@@ -117,7 +119,7 @@ def render_map_itinerary(
 
 def _render_weather(weather: DailyWeatherEvidence) -> str:
     if weather.coverage == "unavailable":
-        return f"**天气**：暂无对应日期预报。{weather.unavailable_reason or ''}".rstrip()
+        return "**天气**：该日期暂无对应天气预报。"
     return (
         f"**天气**：白天 {weather.day_weather or '未提供'} "
         f"{weather.day_temperature or '—'}℃；夜间 {weather.night_weather or '未提供'} "

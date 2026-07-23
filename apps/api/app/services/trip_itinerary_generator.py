@@ -11,6 +11,7 @@ from app.services.structured_output_service import (
     StructuredOutputError,
     StructuredOutputService,
 )
+from app.services.weather_advice_service import normalize_weather_advice
 
 TRIP_GENERATION_SYSTEM_PROMPT = """你是受外部证据约束的旅行方案整理器。
 
@@ -21,8 +22,9 @@ TRIP_GENERATION_SYSTEM_PROMPT = """你是受外部证据约束的旅行方案整
 4. hotel_options 只能逐字复制 hotel_evidence.display_options，不得改写或补充。
 5. display_options 由后端根据 FlyAI 响应确定性生成；不得猜测缺失字段、库存或预订状态。
 6. failed、empty 或 skipped 的可选 Evidence 不得生成具体班次或酒店，状态说明由后端确定性渲染。
-7. 不得声称已完成预订、支付、锁价、占座或库存确认。
-8. 只输出符合指定 JSON Schema 的结构化结果。"""
+7. weather_advice 由后端根据 weather_evidence 确定性生成；模型必须为每一天返回空数组。
+8. 不得声称已完成预订、支付、锁价、占座或库存确认。
+9. 只输出符合指定 JSON Schema 的结构化结果。"""
 
 
 class TripItineraryGenerationError(RuntimeError):
@@ -56,7 +58,7 @@ class TripItineraryGenerator:
                 prompt,
                 timeout_seconds=self._timeout_seconds,
             )
-            return plan.model_copy(
+            plan = plan.model_copy(
                 update={
                     "transport_options": _evidence_options(
                         evidence.capabilities.transport.enabled,
@@ -68,6 +70,10 @@ class TripItineraryGenerator:
                     ),
                 }
             )
+            weather = evidence.map_weather.weather
+            if weather is not None:
+                plan = normalize_weather_advice(plan, weather)
+            return plan
         except StructuredOutputError as exc:
             raise TripItineraryGenerationError("模型没有生成有效的统一旅行方案。") from exc
 

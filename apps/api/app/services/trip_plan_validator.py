@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 
@@ -11,6 +10,7 @@ from app.schemas.trip_planning import (
     TripWeatherEvidence,
 )
 from app.schemas.trip_validation import ValidationIssue
+from app.services.weather_advice_service import build_weather_advice
 
 _BOOKING_CLAIM_PATTERNS = (
     "预订成功",
@@ -221,22 +221,15 @@ def validate_map_narrative(
         weather_day = weather_by_date.get(evidence_day.date)
         if weather_day is None:
             continue
-        if weather_day.coverage == "unavailable" and narrative_day.weather_advice:
+        expected_advice = build_weather_advice(weather_day)
+        if narrative_day.weather_advice != expected_advice:
             issues.append(
                 _issue(
-                    "WEATHER_FACT_WITHOUT_EVIDENCE",
+                    "WEATHER_ADVICE_MISMATCH",
                     f"days.{evidence_day.day_index}.weather_advice",
-                    "天气不可用时方案不得生成具体天气建议。",
-                    expected="empty weather advice without evidence",
-                    actual="weather advice present",
-                )
-            )
-        elif weather_day.coverage == "available":
-            issues.extend(
-                _validate_weather_advice(
-                    evidence_day.day_index,
-                    weather_day,
-                    narrative_day.weather_advice,
+                    "天气建议必须与后端根据供应商证据生成的标准结果完全一致。",
+                    expected="deterministic weather advice derived from provider evidence",
+                    actual="weather advice differs from deterministic output",
                 )
             )
     return issues
@@ -311,45 +304,6 @@ def _validate_optional_output(
             )
         ]
     return []
-
-
-def _validate_weather_advice(
-    day_index: int,
-    weather: object,
-    advice: Sequence[str],
-) -> list[ValidationIssue]:
-    issues: list[ValidationIssue] = []
-    weather_text = "".join(
-        str(getattr(weather, field, "") or "") for field in ("day_weather", "night_weather")
-    )
-    allowed_numbers = {
-        str(getattr(weather, field, "") or "") for field in ("day_temperature", "night_temperature")
-    }
-    weather_markers = ("晴", "阴", "雨", "雪", "雷", "雾", "霾")
-    for advice_index, item in enumerate(advice):
-        path = f"days.{day_index}.weather_advice.{advice_index}"
-        if any(marker in item and marker not in weather_text for marker in weather_markers):
-            issues.append(
-                _issue(
-                    "WEATHER_FACT_WITHOUT_EVIDENCE",
-                    path,
-                    "天气建议包含供应商天气证据未提供的天气现象。",
-                    expected="weather phenomena present in provider evidence",
-                    actual="unsupported weather phenomenon",
-                )
-            )
-        numbers = set(re.findall(r"-?\d+(?:\.\d+)?", item))
-        if numbers - allowed_numbers:
-            issues.append(
-                _issue(
-                    "WEATHER_FACT_WITHOUT_EVIDENCE",
-                    path,
-                    "天气建议包含供应商天气证据未提供的数值。",
-                    expected="numeric weather facts present in provider evidence",
-                    actual="unsupported numeric weather fact",
-                )
-            )
-    return issues
 
 
 def _iter_text(value: object) -> Iterator[str]:

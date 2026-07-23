@@ -245,7 +245,9 @@ def narrative(
                         recommendation_reason="按既定地图顺序游览。",
                     )
                 ],
-                weather_advice=["晴天注意防晒，最高温度 32℃。"],
+                weather_advice=[
+                    "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
+                ],
             )
         ],
         transport_options=[],
@@ -311,6 +313,10 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert ("collecting_transport", "skipped") in stages
     assert ("collecting_hotels", "skipped") in stages
     assert "本次未查询机票、火车、酒店" in answer
+    assert "27-32℃" not in answer
+    assert "SPF50" not in answer
+    assert "预报含晴天，户外活动请注意防晒。" in answer
+    assert model.calls.count("TripNarrativePlan") == 1
     capability_trace = next(trace for trace in traces if trace.title == "已解析本轮能力执行计划")
     assert capability_trace.data["transport_enabled"] is False
     assert capability_trace.data["hotel_enabled"] is False

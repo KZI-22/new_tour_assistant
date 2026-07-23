@@ -35,6 +35,7 @@ from app.schemas.trip_planning import (
 )
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.trip_planner_logging import logged_trip_planner_node
+from app.services.weather_advice_service import build_weather_advice
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 SENSITIVE_PROVIDER_TEXT = "sk-secret-provider-response-123"
@@ -159,7 +160,16 @@ def valid_plan() -> TripNarrativePlan:
                     )
                     for reference_id in ("poi_a1", "poi_a2")
                 ],
-                weather_advice=["晴天注意防晒，最高温度 32℃。"],
+                weather_advice=build_weather_advice(
+                    DailyWeatherEvidence(
+                        date=date(2026, 7, 25),
+                        coverage="available",
+                        day_weather="晴",
+                        night_weather="多云",
+                        day_temperature="32",
+                        night_temperature="23",
+                    )
+                ),
             )
         ],
     )
@@ -186,7 +196,7 @@ def test_valid_trip_plan_has_no_deterministic_issues() -> None:
         ("duplicate_poi", "DUPLICATE_POI"),
         ("route_endpoint", "ROUTE_ENDPOINT_MISMATCH"),
         ("weather_date", "WEATHER_DATE_MISMATCH"),
-        ("weather_without_evidence", "WEATHER_FACT_WITHOUT_EVIDENCE"),
+        ("weather_without_evidence", "WEATHER_ADVICE_MISMATCH"),
     ],
 )
 def test_map_weather_validation_codes(case: str, expected_code: str) -> None:
@@ -215,6 +225,15 @@ def test_map_weather_validation_codes(case: str, expected_code: str) -> None:
         weather.days[0].coverage = "unavailable"
 
     assert expected_code in codes(evidence, plan)
+
+
+def test_model_weather_copy_must_be_replaced_by_deterministic_advice() -> None:
+    plan = valid_plan()
+    plan.days[0].weather_advice = [
+        "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
+    ]
+
+    assert codes(joined_evidence(), plan) == {"WEATHER_ADVICE_MISMATCH"}
 
 
 @pytest.mark.parametrize(

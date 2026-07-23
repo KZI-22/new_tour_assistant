@@ -287,22 +287,27 @@ async def test_invalid_place_reference_gets_one_controlled_revision() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invented_numeric_weather_fact_gets_one_controlled_revision() -> None:
+async def test_model_weather_copy_is_replaced_without_full_revision() -> None:
     planner = MapTripPlanner(
         collection_service=FakeCollectionService(map_evidence()),  # type: ignore[arg-type]
         weather_service=FakeWeatherService(weather_evidence()),  # type: ignore[arg-type]
         settings=settings(),
     )
     fake_model = model(
-        narrative(weather_advice=["降雨概率 50%，请携带雨具。"]),
-        narrative(),
+        narrative(
+            weather_advice=[
+                "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
+            ]
+        )
     )
 
     events = await collect_events(planner, fake_model)
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
-    assert "50%" not in answer
-    assert fake_model.calls.count("MapNarrativePlan") == 2
+    assert "27-32℃" not in answer
+    assert "SPF50" not in answer
+    assert "预报含晴天，户外活动请注意防晒。" in answer
+    assert fake_model.calls.count("MapNarrativePlan") == 1
 
 
 @pytest.mark.asyncio

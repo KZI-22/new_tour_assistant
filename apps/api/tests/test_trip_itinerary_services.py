@@ -40,6 +40,11 @@ from app.services.trip_itinerary_generator import (
     build_trip_generation_prompt,
 )
 from app.services.trip_itinerary_renderer import render_trip_itinerary
+from app.services.trip_plan_validator import TripPlanValidator
+from app.services.weather_advice_service import (
+    UNAVAILABLE_WEATHER_ADVICE,
+    build_weather_advice,
+)
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -315,7 +320,28 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
     assert "去程火车 G123｜成都方向" in answer
     assert "酒店查询暂时失败（UPSTREAM_TIMEOUT）" in answer
     assert "地图与天气行程仍可继续使用" in answer
-    assert model.calls
+    assert len(model.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_replaces_model_weather_copy_before_validation() -> None:
+    evidence = joined()
+    model_plan = narrative()
+    model_plan.days[0].weather_advice = [
+        "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
+    ]
+    model = FakeModel(model_plan)
+
+    generated = await TripItineraryGenerator(
+        model,  # type: ignore[arg-type]
+        timeout_seconds=1,
+    ).generate(evidence)
+
+    weather = evidence.map_weather.weather
+    assert weather is not None
+    assert generated.days[0].weather_advice == build_weather_advice(weather.days[0])
+    assert TripPlanValidator().validate(evidence, generated) == []
+    assert len(model.calls) == 1
 
 
 def test_renderer_is_deterministic_for_optional_statuses_without_reliability_copy() -> None:
@@ -351,3 +377,20 @@ def test_renderer_keeps_existing_map_only_scope_when_optional_capabilities_are_d
     assert "本次未查询机票、火车、酒店、价格、库存、营业状态或预订信息" in answer
     assert "## 城际交通结果" not in answer
     assert "## 酒店结果" not in answer
+
+
+def test_renderer_uses_fixed_fallback_for_uncovered_weather_date() -> None:
+    evidence = joined()
+    weather = evidence.map_weather.weather
+    assert weather is not None
+    weather.days[0].coverage = "unavailable"
+    weather.days[0].unavailable_reason = "供应商返回了一段不稳定说明。"
+    model_plan = narrative()
+    model_plan.days[0].weather_advice = ["模型猜测当天有雨，降雨概率 50%。"]
+
+    answer = render_trip_itinerary(evidence, model_plan)
+
+    assert "**天气**：该日期暂无对应天气预报。" in answer
+    assert UNAVAILABLE_WEATHER_ADVICE in answer
+    assert "供应商返回了一段不稳定说明" not in answer
+    assert "降雨概率 50%" not in answer
