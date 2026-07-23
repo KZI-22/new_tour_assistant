@@ -11,12 +11,19 @@ from app.schemas.map_planning import (
 from app.schemas.trip_planning import DailyWeatherEvidence, TripWeatherEvidence
 
 _BEIJING_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
+_MAP_ONLY_SCOPE_NOTE = (
+    "> 本方案的地点、坐标、距离和路线只来自本次高德地图查询；景点筛选、分天与顺序由"
+    "确定性规则完成，推荐理由和天气建议由模型整理。"
+    "本次未查询机票、火车、酒店、价格、库存、营业状态或预订信息。"
+)
 
 
 def render_map_itinerary(
     evidence: MapTripEvidence,
     weather: TripWeatherEvidence,
     narrative: MapNarrativePlan,
+    *,
+    scope_note: str | None = _MAP_ONLY_SCOPE_NOTE,
 ) -> str:
     narratives = {day.day_index: day for day in narrative.days}
     weather_days = {day.date: day for day in weather.days}
@@ -25,10 +32,9 @@ def render_map_itinerary(
         "",
         narrative.summary,
         "",
-        "> 本方案的地点、坐标、距离和路线只来自本次高德地图查询；景点筛选、分天与顺序由"
-        "确定性规则完成，推荐理由和天气建议由模型整理。"
-        "本次未查询机票、火车、酒店、价格、库存、营业状态或预订信息。",
     ]
+    if scope_note:
+        lines.append(scope_note)
 
     for day in evidence.days:
         day_narrative = narratives[day.day_index]
@@ -98,11 +104,11 @@ def render_map_itinerary(
             "",
             "## 数据来源",
             "",
-            f"- 地点与路线：高德地图；查询时间：{_format_query_time(evidence.queried_at)}",
+            f"- 地点与路线：高德地图；查询时间：{format_query_time(evidence.queried_at)}",
             (
                 f"- 天气：高德地图；adcode：{weather.adcode or '未返回'}；"
                 f"报告时间：{weather.report_time or '供应商未提供'}；"
-                f"查询时间：{_format_query_time(weather.queried_at)}"
+                f"查询时间：{format_query_time(weather.queried_at)}"
             ),
         ]
     )
@@ -156,9 +162,9 @@ def _format_duration(value: int) -> str:
     return f"约 {minutes} 分钟"
 
 
-def _format_query_time(value: dt.datetime) -> str:
+def format_query_time(value: dt.datetime) -> str:
     local_time = value.astimezone(_BEIJING_TIMEZONE)
     return f"{local_time:%Y-%m-%d %H:%M:%S}（北京时间）"
 
 
-__all__ = ["render_map_itinerary"]
+__all__ = ["format_query_time", "render_map_itinerary"]

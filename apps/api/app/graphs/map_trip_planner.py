@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, TypeVar
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from app.core.settings import Settings
@@ -38,6 +36,10 @@ from app.services.map_trip_collection_service import (
     MapTripCollectionService,
 )
 from app.services.map_weather_collection_service import MapWeatherCollectionService
+from app.services.structured_output_service import (
+    StructuredOutputError,
+    StructuredOutputService,
+)
 from app.services.weather_evidence_service import WeatherEvidenceService
 
 logger = logging.getLogger(__name__)
@@ -304,51 +306,18 @@ class _MapTripPlanningRun:
         *,
         timeout_seconds: float,
     ) -> SchemaT:
-        native_error: Exception | None = None
         try:
-            structured_model = self._model.with_structured_output(schema)
-            raw = await asyncio.wait_for(
-                structured_model.ainvoke(
-                    [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=user_prompt),
-                    ]
-                ),
-                timeout=timeout_seconds,
+            return await StructuredOutputService(self._model).invoke(
+                schema,
+                system_prompt,
+                user_prompt,
+                timeout_seconds=timeout_seconds,
             )
-            return raw if isinstance(raw, schema) else schema.model_validate(raw)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            native_error = exc
-            logger.info(
-                "Native map structured output unavailable schema=%s exception_type=%s",
-                schema.__name__,
-                type(exc).__name__,
-            )
-
-        fallback_prompt = (
-            f"{user_prompt}\n\n请只输出符合以下 JSON Schema 的 JSON 对象，不要输出 Markdown：\n"
-            f"{json.dumps(schema.model_json_schema(), ensure_ascii=False)}"
-        )
-        try:
-            response = await asyncio.wait_for(
-                self._model.ainvoke(
-                    [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=fallback_prompt),
-                    ]
-                ),
-                timeout=timeout_seconds,
-            )
-            return schema.model_validate_json(_extract_json(_message_text(response)))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
+        except StructuredOutputError as exc:
             raise MapTripPlanningError(
                 "MAP_STRUCTURED_OUTPUT_FAILED",
                 "模型没有生成有效的地图攻略，请稍后重试。",
-            ) from (native_error or exc)
+            ) from exc
 
     def _trace(
         self,
@@ -489,35 +458,6 @@ def _stage(
         status=status,
         detail=detail,
     )
-
-
-def _message_text(message: BaseMessage) -> str:
-    content = message.content
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                chunks.append(item)
-            elif isinstance(item, Mapping) and isinstance(item.get("text"), str):
-                chunks.append(cast(str, item["text"]))
-        return "".join(chunks)
-    if isinstance(message, AIMessage):
-        return str(content)
-    return ""
-
-
-def _extract_json(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, count=1, flags=re.IGNORECASE)
-        stripped = re.sub(r"\s*```$", "", stripped, count=1)
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("model response does not contain a JSON object")
-    return stripped[start : end + 1]
 
 
 __all__ = [
