@@ -24,6 +24,24 @@
 执行方式。小红书登录卡片仍可选择“跳过登录，使用地图与天气生成”。混合请求只要核心交付物是
 攻略，就进入所选规划链路；附带的实时机票、火车票或酒店查询不会在该轮执行。
 
+
+## 项目展示
+<p align="center">
+  <img src="./1.png" width="900" alt="多 Agent 旅游规划对话界面">
+</p>
+
+<p align="center">
+  <img src="./2.jpg" width="900" alt="general agent工具执行界面">
+</p>
+
+<p align="center">
+  <img src="./3.jpg" width="900" alt="小红书搜索界面">
+</p>
+
+
+
+
+
 ## 项目结构
 
 ```text
