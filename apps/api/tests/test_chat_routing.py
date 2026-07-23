@@ -242,10 +242,78 @@ async def test_standard_general_query_keeps_existing_agent_executor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_standard_source_routes_planning_intent_to_map_planner() -> None:
+@pytest.mark.parametrize(
+    "message",
+    [
+        "帮我查 2026-07-25 南京到成都的航班",
+        "推荐几个 2026-07-25 入住、7 月 26 日退房的成都酒店",
+        "你好，介绍一下成都",
+    ],
+)
+async def test_non_itinerary_requests_stay_on_general_agent(
+    message: str,
+) -> None:
+    model = FakeHybridModel({})
+    registry = FakeRegistry(
+        model,
+        _router_model(TripRouteDecision(route="general_agent")),
+    )
+    service = ChatService(
+        registry,  # type: ignore[arg-type]
+        [],
+        xhs_research_service=FakeResearchService(),  # type: ignore[arg-type]
+        trip_planner_settings=_settings(),
+    )
+
+    events = [
+        event
+        async for event in service.stream(
+            "test",
+            [ChatMessage(role="user", content=message)],
+        )
+    ]
+
+    assert (
+        "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+        == "单项查询"
+    )
+    assert model.bind_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_router_failure_still_falls_back_to_general_agent() -> None:
+    model = FakeHybridModel({})
+    registry = FakeRegistry(
+        model,
+        _router_model(RuntimeError("router unavailable")),
+    )
+    service = ChatService(
+        registry,  # type: ignore[arg-type]
+        [],
+        xhs_research_service=FakeResearchService(),  # type: ignore[arg-type]
+        trip_planner_settings=_settings(),
+    )
+
+    events = [
+        event
+        async for event in service.stream(
+            "test",
+            [ChatMessage(role="user", content="帮我规划成都三日游")],
+        )
+    ]
+
+    assert (
+        "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+        == "单项查询"
+    )
+    assert model.bind_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_standard_source_routes_planning_intent_to_trip_planner_graph() -> None:
     service, registry, _, research = _service()
 
-    class FakeStandardMapPlanner:
+    class FakeStandardTripPlanner:
         calls = 0
 
         async def stream(
@@ -254,14 +322,16 @@ async def test_standard_source_routes_planning_intent_to_map_planner() -> None:
             messages: list[ChatMessage],
             *,
             route_source: str,
+            execution_context: object | None,
         ) -> Any:
             self.calls += 1
             assert messages[-1].content == "帮我规划成都三日游"
             assert route_source == "llm_router"
+            assert execution_context is None
             yield MessageDeltaEvent(delta="地图方案")
 
-    fake_planner = FakeStandardMapPlanner()
-    service._map_trip_planner = fake_planner  # type: ignore[assignment]
+    fake_planner = FakeStandardTripPlanner()
+    service._standard_trip_planner = fake_planner  # type: ignore[assignment]
 
     events = [
         event

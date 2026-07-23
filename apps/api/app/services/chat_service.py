@@ -8,10 +8,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.tools import BaseTool
 
 from app.clients.amap_client import AmapClient
+from app.clients.flyai_client import FlyAIClient
 from app.core.model_registry import ModelRegistry, UnavailableModelError
 from app.core.request_context import get_request_context
 from app.core.settings import Settings
-from app.graphs.map_trip_planner import MapTripPlanner, MapTripPlanningError
+from app.graphs.map_trip_planner import MapTripPlanningError
+from app.graphs.standard_trip_planner import StandardTripPlanner
 from app.graphs.xhs_trip_planner import XhsTripPlanner
 from app.schemas.chat import ChatMessage
 from app.schemas.tool_execution import ChatStreamEvent
@@ -87,6 +89,7 @@ class ChatService:
         tool_call_log_writer: ToolCallLogWriter | None = None,
         xhs_research_service: XhsResearchService | None = None,
         amap_client: AmapClient | None = None,
+        flyai_client: FlyAIClient | None = None,
         trip_planner_settings: Settings | None = None,
     ) -> None:
         self._registry = registry
@@ -99,10 +102,10 @@ class ChatService:
             log_writer=tool_call_log_writer,
         )
         self._trip_planner = None
-        self._map_trip_planner = None
+        self._standard_trip_planner = None
         weather_service = WeatherEvidenceService(amap_client)
         if trip_planner_settings and trip_planner_settings.trip_planner_enabled:
-            self._map_trip_planner = MapTripPlanner(
+            self._standard_trip_planner = StandardTripPlanner(
                 collection_service=MapTripCollectionService(
                     amap_client,
                     poi_max_concurrency=trip_planner_settings.amap_poi_max_concurrency,
@@ -113,17 +116,14 @@ class ChatService:
                     max_transit_duration_minutes=(
                         trip_planner_settings.max_transit_duration_minutes
                     ),
-                    max_walk_distance_meters=(
-                        trip_planner_settings.max_walk_distance_meters
-                    ),
+                    max_walk_distance_meters=(trip_planner_settings.max_walk_distance_meters),
                     cluster_max_iterations=(
                         trip_planner_settings.trip_planning_cluster_max_iterations
                     ),
-                    data_timeout_seconds=(
-                        trip_planner_settings.trip_planning_data_timeout_seconds
-                    ),
+                    data_timeout_seconds=(trip_planner_settings.trip_planning_data_timeout_seconds),
                 ),
                 weather_service=weather_service,
+                flyai_client=flyai_client,
                 settings=trip_planner_settings,
             )
         if (
@@ -162,19 +162,20 @@ class ChatService:
             return
 
         model = self._registry.create_model(model_id)
-        if self._map_trip_planner is not None or self._trip_planner is not None:
+        if self._standard_trip_planner is not None or self._trip_planner is not None:
             route = await self._trip_request_router.route(messages)
             if route.route == "trip_planner":
-                if self._map_trip_planner is None:
+                if self._standard_trip_planner is None:
                     raise MapTripPlanningError(
                         "MAP_PLANNING_DISABLED",
                         "标准地图与天气规划功能当前未启用。",
                     )
-                planner = self._map_trip_planner
+                planner = self._standard_trip_planner
                 async for event in planner.stream(
                     model,
                     messages,
                     route_source=route.source,
+                    execution_context=execution_context,
                 ):
                     yield event
                 return

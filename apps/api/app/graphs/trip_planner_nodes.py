@@ -4,17 +4,110 @@ import hashlib
 import logging
 from typing import Any
 
+from langchain_core.language_models import BaseChatModel
+
+from app.core.settings import Settings
 from app.graphs.trip_planning_state import TripPlanningState
+from app.schemas.trip_capabilities import TripPlanningRequest
+from app.schemas.trip_planning import CityTripRequest
+from app.services.capability_resolver import (
+    check_requirements,
+    render_requirement_clarification,
+    resolve_capabilities,
+)
 from app.services.hotel_search_service import HotelSearchService
 from app.services.intercity_transport_service import IntercityTransportService
 from app.services.map_weather_collection_service import MapWeatherCollectionService
+from app.services.structured_output_service import (
+    StructuredOutputError,
+    StructuredOutputService,
+)
 from app.services.trip_evidence_joiner import join_trip_evidence
 from app.services.trip_itinerary_generator import TripItineraryGenerator
 from app.services.trip_itinerary_renderer import render_trip_itinerary
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.trip_planner_logging import safe_log_value
+from app.services.trip_requirement_extractor import (
+    apply_trip_request_overrides,
+    trip_request_extraction_prompt,
+)
 
 logger = logging.getLogger(__name__)
+
+_TRIP_EXTRACTION_SYSTEM_PROMPT = """你只负责从最近对话提取统一旅行规划请求。
+不得猜测城市、日期、天数、交通、酒店或预算。交通和酒店只有在用户明确要求实时查询、
+查找、推荐或比较时才能启用；仅描述出发地、交通方式、住宿区域或已有预订不能启用。
+只输出符合指定 JSON Schema 的结构化结果。"""
+
+
+class ExtractRequirementsNode:
+    def __init__(
+        self,
+        model: BaseChatModel,
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        self._structured = StructuredOutputService(model)
+        self._timeout_seconds = timeout_seconds
+
+    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
+        try:
+            request = await self._structured.invoke(
+                TripPlanningRequest,
+                _TRIP_EXTRACTION_SYSTEM_PROMPT,
+                trip_request_extraction_prompt(state["messages"]),
+                timeout_seconds=self._timeout_seconds,
+            )
+            method = "model"
+        except StructuredOutputError:
+            request = TripPlanningRequest(core=CityTripRequest())
+            method = "fallback"
+        request, overrides = apply_trip_request_overrides(
+            request,
+            state["messages"],
+        )
+        return {
+            "request": request,
+            "extraction_method": method,
+            "extraction_overrides": overrides,
+            "current_stage": "understanding_request",
+        }
+
+
+class ResolveCapabilitiesNode:
+    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
+        plan = resolve_capabilities(
+            state["request"],
+            state["messages"],
+        )
+        return {
+            "capability_plan": plan,
+            "current_stage": "resolving_capabilities",
+        }
+
+
+class ValidateRequirementsNode:
+    def __init__(self, settings: Settings) -> None:
+        self._maximum_days = settings.trip_planner_max_days
+
+    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
+        check = check_requirements(
+            state["request"],
+            state["capability_plan"],
+            maximum_days=self._maximum_days,
+        )
+        return {
+            "requirement_check": check,
+            "current_stage": "checking_requirements",
+        }
+
+
+class ClarifyRequirementsNode:
+    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
+        return {
+            "final_answer": render_requirement_clarification(state["requirement_check"]),
+            "current_stage": "awaiting_clarification",
+        }
 
 
 class MapWeatherNode:
@@ -152,11 +245,15 @@ def _reference_fingerprint(reference_id: str | None) -> str:
 
 
 __all__ = [
+    "ClarifyRequirementsNode",
     "EvidenceJoinNode",
+    "ExtractRequirementsNode",
     "GenerateItineraryNode",
     "HotelNode",
     "MapWeatherNode",
     "RenderResponseNode",
+    "ResolveCapabilitiesNode",
     "TransportNode",
     "ValidateItineraryNode",
+    "ValidateRequirementsNode",
 ]
