@@ -9,7 +9,8 @@ from app.services.map_itinerary_renderer import (
 
 _UNIFIED_MAP_SCOPE_NOTE = (
     "> 本方案的地点、坐标、距离和路线只来自本次高德地图查询；景点筛选、分天与顺序由"
-    "确定性规则完成，推荐理由、天气建议和已启用的可选结果由模型整理。"
+    "确定性规则完成，推荐理由和天气建议由模型整理；已启用的交通与酒店结果由后端根据"
+    "本次 FlyAI 查询确定性整理。"
 )
 
 
@@ -40,14 +41,14 @@ def render_trip_itinerary(
             label="交通",
             enabled=evidence.capabilities.transport.enabled,
             evidence=evidence.transport,
-            options=narrative.transport_options,
+            options=evidence.transport.display_options,
         ),
         *_render_optional_section(
             title="酒店结果",
             label="酒店",
             enabled=evidence.capabilities.hotel.enabled,
             evidence=evidence.hotel,
-            options=narrative.hotel_options,
+            options=evidence.hotel.display_options,
         ),
     ]
     if not optional_sections:

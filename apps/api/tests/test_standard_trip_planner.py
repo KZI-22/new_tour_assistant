@@ -125,7 +125,35 @@ class FakeFlyAIClient:
         return FlyAIResult(
             success=True,
             command=["redacted"],
-            data={"items": [{"flight_no": "CA1234"}]},
+            data={
+                "data": {
+                    "itemList": [
+                        {
+                            "journeys": [
+                                {
+                                    "journeyType": "直达",
+                                    "segments": [
+                                        {
+                                            "depDateTime": "2026-07-25 08:00:00",
+                                            "depStationName": "南京禄口国际机场",
+                                            "arrDateTime": "2026-07-25 10:30:00",
+                                            "arrStationName": "成都天府机场",
+                                            "marketingTransportName": "国航",
+                                            "marketingTransportNo": "CA1234",
+                                            "seatClassName": "经济舱",
+                                        }
+                                    ],
+                                    "totalDuration": "150",
+                                }
+                            ],
+                            "ticketPrice": "680.00",
+                            "totalDuration": "150",
+                        }
+                    ]
+                },
+                "message": "success",
+                "status": 0,
+            },
             duration_ms=10,
         )
 
@@ -134,7 +162,7 @@ class FakeFlyAIClient:
         return FlyAIResult(
             success=True,
             command=["redacted"],
-            data={"items": [{"train_no": "G123"}]},
+            data={"data": {"itemList": []}, "message": "success", "status": 0},
             duration_ms=10,
         )
 
@@ -143,7 +171,20 @@ class FakeFlyAIClient:
         return FlyAIResult(
             success=True,
             command=["redacted"],
-            data={"items": [{"name": "酒店 A"}]},
+            data={
+                "data": {
+                    "itemList": [
+                        {
+                            "name": "酒店 A",
+                            "price": "¥399",
+                            "star": "高档型",
+                            "address": "锦江区测试路 1 号",
+                        }
+                    ]
+                },
+                "message": "success",
+                "status": 0,
+            },
             duration_ms=10,
         )
 
@@ -207,8 +248,8 @@ def narrative(
                 weather_advice=["晴天注意防晒，最高温度 32℃。"],
             )
         ],
-        transport_options=(["航班 CA1234，按查询结果展示"] if transport else []),
-        hotel_options=["酒店 A，按查询结果展示"] if hotel else [],
+        transport_options=[],
+        hotel_options=[],
     )
 
 
@@ -298,8 +339,10 @@ async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabil
     assert flyai.hotel_calls == 1
     assert "## 城际交通结果" in answer
     assert "航班 CA1234" in answer
+    assert "参考价 ¥680.00" in answer
     assert "## 酒店结果" in answer
     assert "酒店 A" in answer
+    assert "参考价 ¥399" in answer
     assert answer.count("数据来源：FlyAI；查询时间：") == 2
 
 

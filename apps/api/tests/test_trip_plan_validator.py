@@ -67,6 +67,11 @@ def raw_evidence(
         queried_at=QUERY_TIME,
         duration_ms=25,
         data={"raw": SENSITIVE_PROVIDER_TEXT},
+        display_options=(
+            [f"{'具体班次 G123' if capability == 'transport' else '具体酒店 A'}"]
+            if status is EvidenceStatus.USABLE
+            else []
+        ),
         error_code="UPSTREAM_TIMEOUT" if status is EvidenceStatus.FAILED else None,
     )
 
@@ -265,6 +270,51 @@ def test_optional_capability_output_validation_codes(
         plan.hotel_options = ["具体酒店 A"]
 
     assert expected_code in codes(evidence, plan)
+
+
+@pytest.mark.parametrize(
+    ("capability", "missing_code", "mismatch_code"),
+    [
+        (
+            "transport",
+            "TRANSPORT_USABLE_EVIDENCE_WITHOUT_OPTIONS",
+            "TRANSPORT_OPTION_MISMATCH",
+        ),
+        (
+            "hotel",
+            "HOTEL_USABLE_EVIDENCE_WITHOUT_OPTIONS",
+            "HOTEL_OPTION_MISMATCH",
+        ),
+    ],
+)
+def test_usable_optional_evidence_requires_matching_normalized_options(
+    capability: str,
+    missing_code: str,
+    mismatch_code: str,
+) -> None:
+    evidence = joined_evidence(
+        transport_enabled=capability == "transport",
+        transport_status=(
+            EvidenceStatus.USABLE if capability == "transport" else EvidenceStatus.SKIPPED
+        ),
+        hotel_enabled=capability == "hotel",
+        hotel_status=(EvidenceStatus.USABLE if capability == "hotel" else EvidenceStatus.SKIPPED),
+    )
+    plan = valid_plan()
+    assert mismatch_code in codes(evidence, plan)
+
+    normalized = (
+        evidence.transport.display_options
+        if capability == "transport"
+        else evidence.hotel.display_options
+    )
+    if capability == "transport":
+        plan.transport_options = list(normalized)
+        evidence.transport.display_options = []
+    else:
+        plan.hotel_options = list(normalized)
+        evidence.hotel.display_options = []
+    assert missing_code in codes(evidence, plan)
 
 
 def test_booking_completion_claim_is_forbidden() -> None:

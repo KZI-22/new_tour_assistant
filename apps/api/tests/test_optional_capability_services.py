@@ -42,6 +42,66 @@ def _failure(code: FlyAIErrorCode) -> FlyAIResult:
     )
 
 
+def _transport_payload(kind: str = "train", *, item_count: int = 1) -> dict[str, object]:
+    is_flight = kind == "flight"
+    item: dict[str, object] = {
+        "journeys": [
+            {
+                "journeyType": "直达",
+                "segments": [
+                    {
+                        "depCityName": "北京",
+                        "depDateTime": "2026-08-01 08:00:00",
+                        "depStationName": "首都国际机场" if is_flight else "北京南站",
+                        "depTerm": "T2" if is_flight else None,
+                        "arrCityName": "成都",
+                        "arrDateTime": "2026-08-01 10:30:00",
+                        "arrStationName": "天府机场" if is_flight else "成都东站",
+                        "arrTerm": "T2" if is_flight else None,
+                        "marketingTransportName": "国航" if is_flight else "高铁",
+                        "marketingTransportNo": "CA1234" if is_flight else "G123",
+                        "seatClassName": "经济舱" if is_flight else "二等座",
+                    }
+                ],
+                "totalDuration": "150",
+            }
+        ],
+        "jumpUrl": "https://a.feizhu.com/example",
+        "totalDuration": "150",
+    }
+    item["ticketPrice" if is_flight else "price"] = "680.00" if is_flight else "263.00"
+    return {
+        "data": {"itemList": [item for _ in range(item_count)]},
+        "message": "success",
+        "status": 0,
+        "systemMessage": None,
+    }
+
+
+def _hotel_payload() -> dict[str, object]:
+    return {
+        "data": {
+            "itemList": [
+                {
+                    "name": "酒店 A",
+                    "star": "高档型",
+                    "price": "¥399",
+                    "interestsPoi": "近春熙路",
+                    "address": "锦江区测试路 1 号",
+                    "detailUrl": "https://a.feizhu.com/hotel-a",
+                }
+            ]
+        },
+        "message": "success",
+        "status": 0,
+        "systemMessage": None,
+    }
+
+
+def _empty_payload() -> dict[str, object]:
+    return {"data": {"itemList": []}, "message": "success", "status": 0}
+
+
 class FakeFlyAIClient:
     def __init__(
         self,
@@ -127,7 +187,7 @@ async def test_disabled_capabilities_are_skipped_without_client_calls() -> None:
 async def test_round_trip_flight_and_train_queries_run_concurrently() -> None:
     gate = asyncio.Event()
     client = FakeFlyAIClient(
-        lambda kind: _success({"provider": kind, "nested": [{"raw": [1, 2]}]}),
+        lambda kind: _success(_transport_payload(kind, item_count=10)),
         gate=gate,
     )
     service = IntercityTransportService(client)
@@ -144,35 +204,15 @@ async def test_round_trip_flight_and_train_queries_run_concurrently() -> None:
     assert len(client.flight_queries) == len(client.train_queries) == 2
     assert client.flight_queries[0].origin == "北京"
     assert client.flight_queries[1].origin == "成都"
-    assert evidence.data == {
-        "results": [
-            {
-                "mode": "flight",
-                "direction": "outbound",
-                "data": {"provider": "flight", "nested": [{"raw": [1, 2]}]},
-            },
-            {
-                "mode": "flight",
-                "direction": "return",
-                "data": {"provider": "flight", "nested": [{"raw": [1, 2]}]},
-            },
-            {
-                "mode": "train",
-                "direction": "outbound",
-                "data": {"provider": "train", "nested": [{"raw": [1, 2]}]},
-            },
-            {
-                "mode": "train",
-                "direction": "return",
-                "data": {"provider": "train", "nested": [{"raw": [1, 2]}]},
-            },
-        ]
-    }
+    assert len(evidence.data["results"]) == 4  # type: ignore[index]
+    assert len(evidence.display_options) == 20
+    assert any("去程航班 CA1234" in option for option in evidence.display_options)
+    assert any("返程火车 G123" in option for option in evidence.display_options)
 
 
 @pytest.mark.asyncio
 async def test_one_way_transport_does_not_query_return() -> None:
-    client = FakeFlyAIClient(_success([{"opaque": True}]))
+    client = FakeFlyAIClient(_success(_transport_payload("flight")))
 
     evidence = await IntercityTransportService(client).search(
         _transport_plan(scope=JourneyScope.ONE_WAY)
@@ -181,12 +221,16 @@ async def test_one_way_transport_does_not_query_return() -> None:
     assert evidence.status is EvidenceStatus.USABLE
     assert len(client.flight_queries) == 1
     assert evidence.query["queries"][0]["direction"] == "outbound"
+    assert evidence.display_options == [
+        "去程航班 CA1234（国航，直达）｜首都国际机场 T2 2026-08-01 08:00 → "
+        "天府机场 T2 2026-08-01 10:30｜2小时30分｜经济舱｜参考价 ¥680.00"
+        "｜[查看详情](https://a.feizhu.com/example)"
+    ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("empty_data", [[], {}])
-async def test_successful_empty_transport_data_is_empty(empty_data: object) -> None:
-    client = FakeFlyAIClient(_success(empty_data))
+async def test_successful_empty_transport_data_is_empty() -> None:
+    client = FakeFlyAIClient(_success(_empty_payload()))
 
     evidence = await IntercityTransportService(client).search(
         _transport_plan(scope=JourneyScope.ONE_WAY)
@@ -194,6 +238,19 @@ async def test_successful_empty_transport_data_is_empty(empty_data: object) -> N
 
     assert evidence.status is EvidenceStatus.EMPTY
     assert evidence.data is None
+
+
+@pytest.mark.asyncio
+async def test_nonempty_unrecognized_transport_data_is_failed() -> None:
+    client = FakeFlyAIClient(_success({"arbitrary": [{"deep": {"json": True}}]}))
+
+    evidence = await IntercityTransportService(client).search(
+        _transport_plan(scope=JourneyScope.ONE_WAY)
+    )
+
+    assert evidence.status is EvidenceStatus.FAILED
+    assert evidence.error_code == "PROVIDER_SCHEMA_INVALID"
+    assert evidence.display_options == []
 
 
 @pytest.mark.asyncio
@@ -222,15 +279,15 @@ async def test_transport_failures_use_safe_error_codes(code: FlyAIErrorCode) -> 
 @pytest.mark.parametrize(
     ("result", "expected_status"),
     [
-        (_success({"arbitrary": [{"deep": {"json": True}}]}), EvidenceStatus.USABLE),
-        (_success([]), EvidenceStatus.EMPTY),
-        (_success({}), EvidenceStatus.EMPTY),
+        (_success(_hotel_payload()), EvidenceStatus.USABLE),
+        (_success(_empty_payload()), EvidenceStatus.EMPTY),
+        (_success({"arbitrary": [{"deep": {"json": True}}]}), EvidenceStatus.FAILED),
         (_failure(FlyAIErrorCode.CLI_TIMEOUT), EvidenceStatus.FAILED),
         (_failure(FlyAIErrorCode.AUTH_ERROR), EvidenceStatus.FAILED),
         (_failure(FlyAIErrorCode.CLI_NOT_FOUND), EvidenceStatus.FAILED),
     ],
 )
-async def test_hotel_results_remain_opaque(
+async def test_hotel_results_are_normalized_for_display(
     result: FlyAIResult,
     expected_status: EvidenceStatus,
 ) -> None:
@@ -242,8 +299,13 @@ async def test_hotel_results_remain_opaque(
     assert len(client.hotel_queries) == 1
     if expected_status is EvidenceStatus.USABLE:
         assert evidence.data is result.data
+        assert evidence.display_options == [
+            "酒店 A｜高档型｜参考价 ¥399｜近春熙路｜地址：锦江区测试路 1 号"
+            "｜[查看详情](https://a.feizhu.com/hotel-a)"
+        ]
     else:
         assert evidence.data is None
+        assert evidence.display_options == []
     if result.error_message:
         assert result.error_message not in " ".join(evidence.warnings)
 

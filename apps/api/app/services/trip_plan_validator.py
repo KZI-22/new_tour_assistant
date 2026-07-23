@@ -55,6 +55,7 @@ class TripPlanValidator:
                 name="transport",
                 enabled=evidence.capabilities.transport.enabled,
                 evidence_status=evidence.transport.status,
+                evidence_options=evidence.transport.display_options,
                 options=getattr(plan, "transport_options", []),
             )
         )
@@ -63,6 +64,7 @@ class TripPlanValidator:
                 name="hotel",
                 enabled=evidence.capabilities.hotel.enabled,
                 evidence_status=evidence.hotel.status,
+                evidence_options=evidence.hotel.display_options,
                 options=getattr(plan, "hotel_options", []),
             )
         )
@@ -245,21 +247,28 @@ def _validate_optional_output(
     name: str,
     enabled: bool,
     evidence_status: EvidenceStatus,
+    evidence_options: Sequence[str],
     options: Sequence[str],
 ) -> list[ValidationIssue]:
-    if not options:
-        return []
     if name == "transport":
         disabled_code = "TRANSPORT_OUTPUT_WHILE_DISABLED"
         unavailable_code = "TRANSPORT_FACT_WITHOUT_USABLE_EVIDENCE"
+        missing_code = "TRANSPORT_USABLE_EVIDENCE_WITHOUT_OPTIONS"
+        mismatch_code = "TRANSPORT_OPTION_MISMATCH"
         path = "transport_options"
         label = "交通"
     else:
         disabled_code = "HOTEL_OUTPUT_WHILE_DISABLED"
         unavailable_code = "HOTEL_FACT_WITHOUT_USABLE_EVIDENCE"
+        missing_code = "HOTEL_USABLE_EVIDENCE_WITHOUT_OPTIONS"
+        mismatch_code = "HOTEL_OPTION_MISMATCH"
         path = "hotel_options"
         label = "酒店"
+    if not options and evidence_status is not EvidenceStatus.USABLE:
+        return []
     if not enabled:
+        if not options:
+            return []
         return [
             _issue(
                 disabled_code,
@@ -270,6 +279,8 @@ def _validate_optional_output(
             )
         ]
     if evidence_status is not EvidenceStatus.USABLE:
+        if not options:
+            return []
         return [
             _issue(
                 unavailable_code,
@@ -277,6 +288,26 @@ def _validate_optional_output(
                 f"{label}证据不可用时不得输出具体{label}结果。",
                 expected=f"empty {name} output without usable evidence",
                 actual=f"{name} output present",
+            )
+        ]
+    if not evidence_options:
+        return [
+            _issue(
+                missing_code,
+                path,
+                f"{label}证据标记为可用，但没有可展示的规范化结果。",
+                expected=f"normalized {name} options for usable evidence",
+                actual=f"usable {name} evidence without normalized options",
+            )
+        ]
+    if list(options) != list(evidence_options):
+        return [
+            _issue(
+                mismatch_code,
+                path,
+                f"{label}展示结果必须与供应商规范化证据完全一致。",
+                expected=f"{name} output matching normalized evidence",
+                actual=f"{name} output differs from normalized evidence",
             )
         ]
     return []

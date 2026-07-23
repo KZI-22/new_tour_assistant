@@ -127,6 +127,7 @@ def raw_evidence(
     status: EvidenceStatus,
     *,
     data: object | None = None,
+    display_options: list[str] | None = None,
     warning: str | None = None,
 ) -> RawCapabilityEvidence:
     return RawCapabilityEvidence(
@@ -136,6 +137,7 @@ def raw_evidence(
         queried_at=QUERY_TIME,
         duration_ms=25,
         data=data,
+        display_options=display_options or [],
         warnings=[warning] if warning else [],
         error_code="UPSTREAM_TIMEOUT" if status is EvidenceStatus.FAILED else None,
     )
@@ -211,13 +213,14 @@ def test_joiner_applies_required_map_and_optional_capability_status_rules() -> N
     assert failed_hotel.warnings == ["酒店暂时不可用"]
 
 
-def test_generation_prompt_only_exposes_usable_enabled_opaque_evidence() -> None:
+def test_generation_prompt_only_exposes_normalized_enabled_options() -> None:
     evidence = joined(
         plan=capability_plan(transport=True, hotel=True),
         transport=raw_evidence(
             "transport",
             EvidenceStatus.USABLE,
             data={"opaque": {"flight": "CA1234"}},
+            display_options=["去程航班 CA1234｜参考价 ¥680"],
         ),
         hotel=raw_evidence(
             "hotel",
@@ -228,18 +231,21 @@ def test_generation_prompt_only_exposes_usable_enabled_opaque_evidence() -> None
 
     prompt = json.loads(build_trip_generation_prompt(evidence, validation_issues=[]))
 
-    assert prompt["transport_evidence"]["data"] == {"opaque": {"flight": "CA1234"}}
-    assert prompt["hotel_evidence"]["data"] is None
+    assert prompt["transport_evidence"]["display_options"] == ["去程航班 CA1234｜参考价 ¥680"]
+    assert prompt["hotel_evidence"]["display_options"] == []
+    assert "opaque" not in json.dumps(prompt, ensure_ascii=False)
+    assert "hotel-secret" not in json.dumps(prompt, ensure_ascii=False)
 
     disabled = joined(
         transport=raw_evidence(
             "transport",
             EvidenceStatus.USABLE,
             data={"must_not_reach_model": "transport-secret"},
+            display_options=["不应进入提示词"],
         )
     )
     disabled_prompt = json.loads(build_trip_generation_prompt(disabled, validation_issues=[]))
-    assert disabled_prompt["transport_evidence"]["data"] is None
+    assert disabled_prompt["transport_evidence"]["display_options"] == []
     assert disabled_prompt["transport_evidence"]["query"] == {}
 
 
@@ -273,6 +279,7 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
             "transport",
             EvidenceStatus.USABLE,
             data={"trains": [{"number": "G123"}]},
+            display_options=["去程火车 G123｜成都方向"],
         ),
         "hotel_evidence": raw_evidence(
             "hotel",
@@ -283,7 +290,7 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
     joined_update = await EvidenceJoinNode()(state)  # type: ignore[arg-type]
     assert joined_update["joined_evidence"].overall_status == "partial"
 
-    expected = narrative(transport_options=["G123 成都方向"])
+    expected = narrative()
     model = FakeModel(expected)
     generation_update = await GenerateItineraryNode(
         TripItineraryGenerator(
@@ -305,7 +312,7 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
     )
 
     answer = render_update["final_answer"]
-    assert "G123 成都方向" in answer
+    assert "去程火车 G123｜成都方向" in answer
     assert "酒店查询暂时失败（UPSTREAM_TIMEOUT）" in answer
     assert "地图与天气行程仍可继续使用" in answer
     assert model.calls
@@ -318,6 +325,7 @@ def test_renderer_is_deterministic_for_optional_statuses_without_reliability_cop
             "transport",
             EvidenceStatus.USABLE,
             data={"opaque": True},
+            display_options=["航班 CA1234，按查询结果展示"],
         ),
         hotel=raw_evidence("hotel", EvidenceStatus.EMPTY),
     )

@@ -18,6 +18,12 @@ from app.schemas.trip_capabilities import (
     TransportMode,
 )
 from app.schemas.trip_evidence import EvidenceStatus, RawCapabilityEvidence
+from app.services.flyai_option_normalizer import (
+    OptionNormalization,
+    normalize_transport_options,
+)
+
+_PROVIDER_SCHEMA_ERROR = "PROVIDER_SCHEMA_INVALID"
 
 
 class FlyAITransportClient(Protocol):
@@ -83,9 +89,12 @@ class IntercityTransportService:
                 for mode, direction, query, _ in calls
             ],
         }
-        usable = [item for item in results if item["usable"]]
-        failures = [item for item in results if not item["result"].success]
+        usable = [item for item in results if item["normalization"].usable]
+        failures = [item for item in results if item["error_code"] is not None]
         if usable:
+            display_options = [
+                option for item in usable for option in item["normalization"].options
+            ]
             return _transport_evidence(
                 status=EvidenceStatus.USABLE,
                 queried_at=queried_at,
@@ -101,9 +110,9 @@ class IntercityTransportService:
                         for item in usable
                     ]
                 },
+                display_options=display_options,
                 warnings=[
-                    f"{item['mode']} {item['direction']} 查询失败"
-                    f"（{_error_code(item['result'])}）。"
+                    f"{item['mode']} {item['direction']} 查询失败（{item['error_code']}）。"
                     for item in failures
                 ],
             )
@@ -114,11 +123,10 @@ class IntercityTransportService:
                 started=started,
                 query=query_summary,
                 warnings=[
-                    f"{item['mode']} {item['direction']} 查询失败"
-                    f"（{_error_code(item['result'])}）。"
+                    f"{item['mode']} {item['direction']} 查询失败（{item['error_code']}）。"
                     for item in failures
                 ],
-                error_code=_error_code(failures[0]["result"]),
+                error_code=str(failures[0]["error_code"]),
             )
         return _transport_evidence(
             status=EvidenceStatus.EMPTY,
@@ -200,11 +208,33 @@ async def _execute_call(
             error_message=f"provider exception: {type(exc).__name__}",
             duration_ms=0,
         )
+    normalization = (
+        normalize_transport_options(
+            result.data,
+            mode=mode.value,
+            direction=direction,
+        )
+        if result.success
+        else OptionNormalization(
+            options=(),
+            provider_item_count=0,
+            rejected_item_count=0,
+            schema_valid=False,
+        )
+    )
     return {
         "mode": mode.value,
         "direction": direction,
         "result": result,
-        "usable": _has_data(result),
+        "normalization": normalization,
+        "error_code": (
+            _error_code(result)
+            if not result.success
+            else _PROVIDER_SCHEMA_ERROR
+            if not normalization.schema_valid
+            or (normalization.provider_item_count > 0 and not normalization.options)
+            else None
+        ),
     }
 
 
@@ -230,6 +260,7 @@ def _transport_evidence(
     started: float,
     query: dict[str, object],
     data: object | None = None,
+    display_options: list[str] | None = None,
     warnings: list[str] | None = None,
     error_code: str | None = None,
 ) -> RawCapabilityEvidence:
@@ -240,13 +271,10 @@ def _transport_evidence(
         queried_at=queried_at,
         duration_ms=max(0, round((perf_counter() - started) * 1_000)),
         data=data,
+        display_options=display_options or [],
         warnings=warnings or [],
         error_code=error_code,
     )
-
-
-def _has_data(result: FlyAIResult) -> bool:
-    return result.success and bool(result.data)
 
 
 def _error_code(result: FlyAIResult) -> str:

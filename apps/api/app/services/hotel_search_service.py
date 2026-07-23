@@ -8,6 +8,9 @@ from typing import Protocol
 from app.schemas.travel import FlyAIResult, HotelSearchInput
 from app.schemas.trip_capabilities import HotelCapabilityPlan
 from app.schemas.trip_evidence import EvidenceStatus, RawCapabilityEvidence
+from app.services.flyai_option_normalizer import normalize_hotel_options
+
+_PROVIDER_SCHEMA_ERROR = "PROVIDER_SCHEMA_INVALID"
 
 
 class FlyAIHotelClient(Protocol):
@@ -71,21 +74,32 @@ class HotelSearchService:
                 error_code="PROVIDER_EXCEPTION",
             )
 
-        if result.success and bool(result.data):
+        normalization = normalize_hotel_options(result.data) if result.success else None
+        if normalization is not None and normalization.usable:
             return _hotel_evidence(
                 status=EvidenceStatus.USABLE,
                 queried_at=queried_at,
                 started=started,
                 query=summary,
                 data=result.data,
+                display_options=list(normalization.options),
             )
-        if result.success:
+        if normalization is not None and normalization.empty:
             return _hotel_evidence(
                 status=EvidenceStatus.EMPTY,
                 queried_at=queried_at,
                 started=started,
                 query=summary,
                 warnings=["酒店供应商返回空结果。"],
+            )
+        if normalization is not None:
+            return _hotel_evidence(
+                status=EvidenceStatus.FAILED,
+                queried_at=queried_at,
+                started=started,
+                query=summary,
+                warnings=["酒店供应商返回了无法识别的数据结构。"],
+                error_code=_PROVIDER_SCHEMA_ERROR,
             )
         error_code = result.error_code.value if result.error_code is not None else "UNKNOWN_ERROR"
         return _hotel_evidence(
@@ -105,6 +119,7 @@ def _hotel_evidence(
     started: float,
     query: dict[str, object],
     data: object | None = None,
+    display_options: list[str] | None = None,
     warnings: list[str] | None = None,
     error_code: str | None = None,
 ) -> RawCapabilityEvidence:
@@ -115,6 +130,7 @@ def _hotel_evidence(
         queried_at=queried_at,
         duration_ms=max(0, round((perf_counter() - started) * 1_000)),
         data=data,
+        display_options=display_options or [],
         warnings=warnings or [],
         error_code=error_code,
     )
