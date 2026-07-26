@@ -27,10 +27,15 @@ class _Runnable:
 
 
 class FakeHybridModel:
-    def __init__(self, structured: dict[str, list[Any]], answer: str = "单项查询") -> None:
+    def __init__(
+        self,
+        structured: dict[str, list[Any]],
+        answer: str | Exception = "单项查询",
+    ) -> None:
         self.structured = defaultdict(list, structured)
         self.answer = answer
         self.bind_calls = 0
+        self.invoke_calls = 0
 
     def with_structured_output(self, schema: type[Any]) -> _Runnable:
         return _Runnable(self.structured[schema.__name__].pop(0))
@@ -40,6 +45,9 @@ class FakeHybridModel:
         return self
 
     async def ainvoke(self, _: Any) -> AIMessage:
+        self.invoke_calls += 1
+        if isinstance(self.answer, Exception):
+            raise self.answer
         return AIMessage(content=self.answer)
 
 
@@ -64,7 +72,8 @@ class FakeRegistry:
 
 
 def _router_model(decision: TripRouteDecision | Exception) -> FakeHybridModel:
-    return FakeHybridModel({"TripRouteDecision": [decision]})
+    answer = decision if isinstance(decision, Exception) else decision.model_dump_json()
+    return FakeHybridModel({}, answer=answer)
 
 
 class FakeResearchService:

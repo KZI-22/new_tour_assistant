@@ -8,53 +8,37 @@ import pytest
 from app.schemas.chat import ChatMessage
 from app.schemas.routing import TripRouteDecision
 from app.services.trip_request_router import TripRequestRouter, build_route_context
+from langchain_core.messages import AIMessage
 from pydantic import ValidationError
-
-
-class _Runnable:
-    def __init__(
-        self,
-        value: Any,
-        captured_messages: list[Any],
-        *,
-        delay: float = 0,
-    ) -> None:
-        self.value = value
-        self.captured_messages = captured_messages
-        self.delay = delay
-
-    async def ainvoke(self, messages: list[Any]) -> Any:
-        self.captured_messages.extend(messages)
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if isinstance(self.value, Exception):
-            raise self.value
-        return self.value
 
 
 class FakeRouterModel:
     def __init__(
         self,
-        value: Any,
+        value: Any | list[Any],
         *,
         delay: float = 0,
-        structured_error: Exception | None = None,
     ) -> None:
-        self.value = value
+        self.values = value if isinstance(value, list) else [value]
         self.delay = delay
-        self.structured_error = structured_error
-        self.schema: type[Any] | None = None
         self.captured_messages: list[Any] = []
+        self.calls = 0
 
-    def with_structured_output(self, schema: type[Any]) -> _Runnable:
-        self.schema = schema
-        if self.structured_error is not None:
-            raise self.structured_error
-        return _Runnable(
-            self.value,
-            self.captured_messages,
-            delay=self.delay,
-        )
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        self.captured_messages.extend(messages)
+        value = self.values[min(self.calls, len(self.values) - 1)]
+        self.calls += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if isinstance(value, Exception):
+            raise value
+        if isinstance(value, AIMessage):
+            return value
+        if isinstance(value, TripRouteDecision):
+            return AIMessage(content=value.model_dump_json())
+        if isinstance(value, str):
+            return AIMessage(content=value)
+        return AIMessage(content=json.dumps(value))
 
 
 class FakeRegistry:
@@ -95,7 +79,7 @@ async def test_router_uses_only_the_eight_most_recent_conversation_messages() ->
     assert result.route == "trip_planner"
     assert result.source == "llm_router"
     assert registry.create_calls == 1
-    assert model.schema is TripRouteDecision
+    assert model.calls == 1
     assert len(model.captured_messages) == 2
     context_content = model.captured_messages[1].content
     assert isinstance(context_content, str)
@@ -154,6 +138,10 @@ async def test_router_prompt_routes_mixed_planning_requests_to_trip_planner() ->
     assert "不决定" in prompt
     assert "混合" in prompt
     assert "clarify" not in prompt
+    assert "JSON" in prompt
+    assert '{"route":"general_agent"}' in prompt
+    assert '{"route":"trip_planner"}' in prompt
+    assert "不要输出 Markdown" in prompt
 
 
 @pytest.mark.asyncio
@@ -161,12 +149,7 @@ async def test_router_prompt_routes_mixed_planning_requests_to_trip_planner() ->
     "registry",
     [
         FakeRegistry(None, factory_error=RuntimeError("not configured")),
-        FakeRegistry(
-            FakeRouterModel(
-                None,
-                structured_error=NotImplementedError("structured output unavailable"),
-            )
-        ),
+        FakeRegistry(FakeRouterModel(NotImplementedError("model unavailable"))),
         FakeRegistry(FakeRouterModel({"route": "invalid"})),
         FakeRegistry(FakeRouterModel(RuntimeError("provider failed"))),
         FakeRegistry(
@@ -187,6 +170,48 @@ async def test_router_failures_always_fall_back_to_general_agent(
 
     assert result.route == "general_agent"
     assert result.source == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_router_retries_once_after_schema_validation_failure() -> None:
+    model = FakeRouterModel(
+        [
+            {"decision": "trip_planner", "reasoning": "planning request"},
+            TripRouteDecision(route="trip_planner"),
+        ]
+    )
+    registry = FakeRegistry(model)
+
+    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
+        [ChatMessage(role="user", content="帮我规划成都四日游")]
+    )
+
+    assert result.route == "trip_planner"
+    assert result.source == "llm_router"
+    assert model.calls == 2
+    retry_prompt = model.captured_messages[3].content
+    assert isinstance(retry_prompt, str)
+    assert "上一次输出未通过 JSON 格式或字段校验" in retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_router_never_attempts_more_than_one_retry() -> None:
+    model = FakeRouterModel(
+        [
+            "not json",
+            "still not json",
+            TripRouteDecision(route="trip_planner"),
+        ]
+    )
+    registry = FakeRegistry(model)
+
+    result = await TripRequestRouter(registry).route(  # type: ignore[arg-type]
+        [ChatMessage(role="user", content="帮我规划成都四日游")]
+    )
+
+    assert result.route == "general_agent"
+    assert result.source == "fallback"
+    assert model.calls == 2
 
 
 @pytest.mark.asyncio

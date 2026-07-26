@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict
 
 from app.core.model_registry import ModelRegistry
@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONTEXT_MESSAGES = 8
 _MAX_MESSAGE_CHARS = 4_000
+_MAX_ROUTE_ATTEMPTS = 2
 
 ROUTER_SYSTEM_PROMPT = """你只负责判断用户是否正在创建或修改多日旅游计划，
 不回答用户问题，不调用工具。
@@ -31,7 +32,15 @@ ROUTER_SYSTEM_PROMPT = """你只负责判断用户是否正在创建或修改多
 - 混合请求只要核心交付物是攻略，就进入 trip_planner。
 - “亲子、美食、轻松”等偏好不会改变链路。
 
-只输出符合 TripRouteDecision 的严格结构化结果。"""
+只输出一个 JSON 对象，不要输出 Markdown、代码围栏、解释、理由或额外字段。
+允许的精确格式只有以下两种：
+{"route":"general_agent"}
+{"route":"trip_planner"}
+字段名必须是 route，字段值必须是 general_agent 或 trip_planner。"""
+
+_ROUTER_RETRY_INSTRUCTION = """
+
+上一次输出未通过 JSON 格式或字段校验。请重新判断，并严格按照系统消息规定的精确 JSON 格式输出。"""
 
 
 class RouteMessage(BaseModel):
@@ -56,31 +65,60 @@ class TripRequestRouter:
         try:
             context = build_route_context(messages)
             model, timeout_seconds = self._registry.create_router_model()
-            structured_model = model.with_structured_output(TripRouteDecision)
-            raw_decision = await asyncio.wait_for(
-                structured_model.ainvoke(
-                    [
-                        SystemMessage(content=ROUTER_SYSTEM_PROMPT),
-                        HumanMessage(content=context.model_dump_json()),
-                    ]
-                ),
-                timeout=timeout_seconds,
-            )
-            decision = (
-                raw_decision
-                if isinstance(raw_decision, TripRouteDecision)
-                else TripRouteDecision.model_validate(raw_decision)
-            )
-            return ResolvedTripRoute(
-                **decision.model_dump(),
-                source="llm_router",
-            )
         except Exception as exc:
             logger.warning(
-                "Trip request router failed; using general agent fallback exception_type=%s",
+                "Trip request router setup failed; using general agent fallback "
+                "exception_type=%s",
                 type(exc).__name__,
             )
             return fallback_route()
+
+        last_error: Exception | None = None
+        for attempt_index in range(_MAX_ROUTE_ATTEMPTS):
+            user_prompt = context.model_dump_json()
+            if attempt_index > 0:
+                user_prompt += _ROUTER_RETRY_INSTRUCTION
+            try:
+                response = await asyncio.wait_for(
+                    model.ainvoke(
+                        [
+                            SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+                            HumanMessage(content=user_prompt),
+                        ]
+                    ),
+                    timeout=timeout_seconds,
+                )
+                decision = parse_route_decision(response)
+                return ResolvedTripRoute(
+                    **decision.model_dump(),
+                    source="llm_router",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.info(
+                    "Trip request router attempt failed attempt=%d max_attempts=%d "
+                    "will_retry=%s exception_type=%s",
+                    attempt_index + 1,
+                    _MAX_ROUTE_ATTEMPTS,
+                    str(attempt_index + 1 < _MAX_ROUTE_ATTEMPTS).lower(),
+                    type(exc).__name__,
+                )
+
+        assert last_error is not None
+        logger.warning(
+            "Trip request router failed after retry; using general agent fallback "
+            "exception_type=%s",
+            type(last_error).__name__,
+        )
+        return fallback_route()
+
+
+def parse_route_decision(response: BaseMessage) -> TripRouteDecision:
+    if not isinstance(response.content, str):
+        raise ValueError("router model response content must be text")
+    return TripRouteDecision.model_validate_json(response.content)
 
 
 def build_route_context(messages: list[ChatMessage]) -> RouteContext:
@@ -117,4 +155,5 @@ __all__ = [
     "TripRequestRouter",
     "build_route_context",
     "fallback_route",
+    "parse_route_decision",
 ]
