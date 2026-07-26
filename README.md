@@ -4,7 +4,8 @@
 
 - 通过 YAML 配置新增、禁用或删除模型。
 - OpenAI、Anthropic、Google GenAI 及 OpenAI-compatible 接口接入方式。
-- FastAPI + LangChain 的 SSE 流式聊天接口。
+- FastAPI + LangChain 的 SSE 流式聊天接口，普通聊天与单项查询按模型生成节奏逐段下发，
+  包含工具调用轮次中的模型说明文本。
 - Python FlyAI CLI 客户端，以及航班、火车、酒店三个结构化 LangChain Tool。
 - 高德 Web Service 异步客户端，以及 IP 城市推测、POI、路线、距离矩阵、天气五个结构化 Tool。
 - 单 Agent 工具调用闭环，支持多轮决策、同轮并发、统一错误和最大轮数限制。
@@ -101,6 +102,15 @@ AMAP_MIN_REQUEST_INTERVAL_SECONDS=0.2
 
 高德返回的坐标统一标记为 GCJ-02。外部 WGS84、BD-09 或 Mapbar 坐标可通过客户端内部
 转换接口显式转换；项目不会猜测 FlyAI 数据的坐标系。Key 不会写入工具结果、异常或应用日志。
+
+高德响应缓存按接口时效性分级：地理编码与坐标转换 7 天，POI 搜索 24 小时，距离矩阵
+12 小时，路线 1 小时，天气预报 30 分钟，实时天气 5 分钟。配置了 `REDIS_URL` 时缓存写入
+Redis，多进程共享且重启后仍然有效；未配置时回落到进程内缓存。缓存是纯性能优化，
+Redis 不可用只会退化为未命中并记录警告，不影响请求成败。如需覆盖某个接口的 TTL：
+
+```dotenv
+AMAP_CACHE_TTL_OVERRIDES={"place_search_v2": 3600, "route_plan": 600}
+```
 
 请求时间和代理配置如下：
 
