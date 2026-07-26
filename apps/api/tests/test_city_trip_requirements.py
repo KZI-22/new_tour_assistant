@@ -27,6 +27,8 @@ def test_explicit_start_date_supports_stable_formats_and_simple_relative_dates()
     assert explicit_start_date("七月22日开始", today=today) == date(2026, 7, 22)
     assert explicit_start_date("7月二十二日开始", today=today) == date(2026, 7, 22)
     assert explicit_start_date("后天出发", today=today) == date(2026, 7, 22)
+    assert explicit_start_date("下周五出发", today=today) == date(2026, 7, 31)
+    assert explicit_start_date("下周末出发", today=today) == date(2026, 8, 1)
     assert explicit_start_date("下周找一天", today=today) is None
 
 

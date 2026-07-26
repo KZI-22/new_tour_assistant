@@ -19,6 +19,7 @@ class TripPlanningState(TypedDict, total=False):
     assistant_message_id: str
     extraction_method: str
     extraction_overrides: dict[str, bool]
+    extraction_details: dict[str, object]
 
     request: TripPlanningRequest
     capability_plan: CapabilityPlan

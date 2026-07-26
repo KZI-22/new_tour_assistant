@@ -22,14 +22,6 @@ from app.schemas.tool_execution import (
     PlanningTraceEvent,
 )
 from app.schemas.travel import FlyAIResult
-from app.schemas.trip_capabilities import (
-    CapabilityAction,
-    HotelIntent,
-    JourneyScope,
-    TransportIntent,
-    TransportMode,
-    TripPlanningRequest,
-)
 from app.schemas.trip_itinerary import TripNarrativePlan
 from app.schemas.trip_planning import (
     CityTripRequest,
@@ -198,34 +190,6 @@ def settings() -> Settings:
     )
 
 
-def request(
-    *,
-    transport: bool = False,
-    hotel: bool = False,
-    origin: str | None = "南京",
-) -> TripPlanningRequest:
-    return TripPlanningRequest(
-        core=CityTripRequest(
-            destination_city="成都",
-            duration_days=1,
-            start_date=date(2026, 7, 25),
-        ),
-        transport=TransportIntent(
-            action=(CapabilityAction.ENABLE if transport else CapabilityAction.UNSPECIFIED),
-            modes=[TransportMode.FLIGHT] if transport else [],
-            journey_scope=JourneyScope.ONE_WAY,
-            origin_city=origin if transport else None,
-            evidence_text="查单程飞机" if transport else None,
-        ),
-        hotel=HotelIntent(
-            action=(CapabilityAction.ENABLE if hotel else CapabilityAction.UNSPECIFIED),
-            check_in_date=date(2026, 7, 25) if hotel else None,
-            check_out_date=date(2026, 7, 26) if hotel else None,
-            evidence_text="查酒店" if hotel else None,
-        ),
-    )
-
-
 def narrative(
     *,
     transport: bool = False,
@@ -292,7 +256,6 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     trip_planner, collection, weather, flyai = planner()
     model = FakeTripModel(
         {
-            "TripPlanningRequest": [request()],
             "TripNarrativePlan": [narrative()],
         }
     )
@@ -316,6 +279,7 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert "27-32℃" not in answer
     assert "SPF50" not in answer
     assert "预报含晴天，户外活动请注意防晒。" in answer
+    assert "TripPlanningRequest" not in model.calls
     assert model.calls.count("TripNarrativePlan") == 1
     capability_trace = next(trace for trace in traces if trace.title == "已解析本轮能力执行计划")
     assert capability_trace.data["transport_enabled"] is False
@@ -327,7 +291,6 @@ async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabil
     trip_planner, collection, weather, flyai = planner()
     model = FakeTripModel(
         {
-            "TripPlanningRequest": [request(transport=True, hotel=True)],
             "TripNarrativePlan": [narrative(transport=True, hotel=True)],
         }
     )
@@ -335,7 +298,7 @@ async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabil
     events = await collect(
         trip_planner,
         model,
-        "帮我规划成都一日游，2026-07-25 开始，并查单程飞机、查酒店",
+        "帮我规划成都一日游，2026-07-25 开始，从南京出发，并查单程飞机、查酒店",
     )
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
@@ -350,16 +313,13 @@ async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabil
     assert "酒店 A" in answer
     assert "参考价 ¥399" in answer
     assert answer.count("数据来源：FlyAI；查询时间：") == 2
+    assert "TripPlanningRequest" not in model.calls
 
 
 @pytest.mark.asyncio
 async def test_unified_missing_requirement_stops_before_all_provider_calls() -> None:
     trip_planner, collection, weather, flyai = planner()
-    model = FakeTripModel(
-        {
-            "TripPlanningRequest": [request(transport=True, origin=None)],
-        }
-    )
+    model = FakeTripModel({})
 
     events = await collect(
         trip_planner,
@@ -375,3 +335,4 @@ async def test_unified_missing_requirement_stops_before_all_provider_calls() -> 
         isinstance(event, PlanningStageEvent) and event.stage == "collecting_pois"
         for event in events
     )
+    assert model.calls == []

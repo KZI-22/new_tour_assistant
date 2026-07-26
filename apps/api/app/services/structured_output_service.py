@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Mapping
-from typing import TypeVar, cast
+from collections.abc import Callable, Mapping
+from typing import Literal, TypeVar, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -30,10 +30,13 @@ class StructuredOutputService:
         user_prompt: str,
         *,
         timeout_seconds: float,
+        attempt_observer: Callable[[Literal["native", "fallback"]], None] | None = None,
     ) -> SchemaT:
         native_error: Exception | None = None
         try:
             structured_model = self._model.with_structured_output(schema)
+            if attempt_observer is not None:
+                attempt_observer("native")
             raw = await asyncio.wait_for(
                 structured_model.ainvoke(
                     [
@@ -59,6 +62,8 @@ class StructuredOutputService:
             f"{json.dumps(schema.model_json_schema(), ensure_ascii=False)}"
         )
         try:
+            if attempt_observer is not None:
+                attempt_observer("fallback")
             response = await asyncio.wait_for(
                 self._model.ainvoke(
                     [

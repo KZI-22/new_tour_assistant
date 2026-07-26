@@ -18,26 +18,16 @@ from app.services.capability_resolver import (
 from app.services.hotel_search_service import HotelSearchService
 from app.services.intercity_transport_service import IntercityTransportService
 from app.services.map_weather_collection_service import MapWeatherCollectionService
-from app.services.structured_output_service import (
-    StructuredOutputError,
-    StructuredOutputService,
+from app.services.rule_first_trip_requirement_extractor import (
+    RuleFirstTripRequirementExtractor,
 )
 from app.services.trip_evidence_joiner import join_trip_evidence
 from app.services.trip_itinerary_generator import TripItineraryGenerator
 from app.services.trip_itinerary_renderer import render_trip_itinerary
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.trip_planner_logging import safe_log_value
-from app.services.trip_requirement_extractor import (
-    apply_trip_request_overrides,
-    trip_request_extraction_prompt,
-)
 
 logger = logging.getLogger(__name__)
-
-_TRIP_EXTRACTION_SYSTEM_PROMPT = """你只负责从最近对话提取统一旅行规划请求。
-不得猜测城市、日期、天数、交通、酒店或预算。交通和酒店只有在用户明确要求实时查询、
-查找、推荐或比较时才能启用；仅描述出发地、交通方式、住宿区域或已有预订不能启用。
-只输出符合指定 JSON Schema 的结构化结果。"""
 
 
 class ExtractRequirementsNode:
@@ -47,29 +37,59 @@ class ExtractRequirementsNode:
         *,
         timeout_seconds: float,
     ) -> None:
-        self._structured = StructuredOutputService(model)
-        self._timeout_seconds = timeout_seconds
+        self._extractor = RuleFirstTripRequirementExtractor(
+            model,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
         try:
-            request = await self._structured.invoke(
-                TripPlanningRequest,
-                _TRIP_EXTRACTION_SYSTEM_PROMPT,
-                trip_request_extraction_prompt(state["messages"]),
-                timeout_seconds=self._timeout_seconds,
-            )
-            method = "model"
-        except StructuredOutputError:
+            result = await self._extractor.extract(state["messages"])
+        except Exception:
+            logger.exception("Rule-first trip requirement extraction failed")
             request = TripPlanningRequest(core=CityTripRequest())
-            method = "fallback"
-        request, overrides = apply_trip_request_overrides(
-            request,
-            state["messages"],
-        )
+            return {
+                "request": request,
+                "extraction_method": "fallback",
+                "extraction_overrides": {
+                    "explicit_duration_override": False,
+                    "explicit_start_date_override": False,
+                },
+                "extraction_details": {
+                    "path": "fallback",
+                    "rule_duration_ms": 0,
+                    "llm_duration_ms": 0,
+                    "llm_call_count": 0,
+                    "llm_retry_count": 0,
+                    "ambiguity_fields": [],
+                    "field_sources": {},
+                    "explicit_missing": [
+                        "core.destination_city",
+                        "core.duration_days",
+                        "core.start_date",
+                    ],
+                },
+                "current_stage": "understanding_request",
+            }
+
+        metrics = result.metrics.model_dump()
         return {
-            "request": request,
-            "extraction_method": method,
-            "extraction_overrides": overrides,
+            "request": result.request,
+            "extraction_method": result.metrics.path,
+            "extraction_overrides": {
+                "explicit_duration_override": (
+                    result.field_sources.get("core.duration_days") == "explicit_rule"
+                ),
+                "explicit_start_date_override": (
+                    result.field_sources.get("core.start_date") == "explicit_rule"
+                ),
+            },
+            "extraction_details": {
+                **metrics,
+                "field_sources": result.field_sources,
+                "explicit_missing": result.explicit_missing,
+                "ambiguity_count": len(result.ambiguities),
+            },
             "current_stage": "understanding_request",
         }
 

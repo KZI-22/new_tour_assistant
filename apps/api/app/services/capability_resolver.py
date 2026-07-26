@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import Literal
@@ -70,9 +71,13 @@ _TRANSPORT_MARKERS = (
 )
 _FLIGHT_MARKERS = ("机票", "航班", "飞机")
 _TRAIN_MARKERS = ("火车", "高铁", "动车", "车票")
+_MODE_DISABLE_PREFIXES = ("不要", "不用", "别", "不坐", "不乘", "不考虑", "排除")
 _HOTEL_MARKERS = ("酒店", "住宿", "民宿")
 _ONE_WAY_MARKERS = ("单程", "只查去程", "不用返程", "不要返程")
 _ROUND_TRIP_MARKERS = ("往返", "返程")
+_CLAUSE_SPLIT = re.compile(
+    r"[，,。；;！？!?]+|(?:但是|不过|然而|顺便|然后)|只(?=(?:查|看|搜|推荐|比较|对比))"
+)
 
 
 def resolve_capabilities(
@@ -192,7 +197,7 @@ def _effective_instruction(
     user_messages = [message.content.strip() for message in messages if message.role == "user"]
     latest = user_messages[-1] if user_messages else ""
 
-    current_action = _classify_instruction(latest, capability)
+    current_action = classify_capability_instruction(latest, capability)
     if current_action is not CapabilityAction.UNSPECIFIED:
         return current_action, latest, "explicit_user_input"
 
@@ -201,26 +206,102 @@ def _effective_instruction(
         intent.action is not CapabilityAction.UNSPECIFIED
         and evidence
         and evidence in latest
-        and _classify_instruction(evidence, capability) is intent.action
+        and classify_capability_instruction(evidence, capability) is intent.action
     ):
         return intent.action, evidence, "explicit_user_input"
 
     for text in reversed(user_messages[:-1]):
-        action = _classify_instruction(text, capability)
+        action = classify_capability_instruction(text, capability)
         if action is not CapabilityAction.UNSPECIFIED:
             return action, text, "conversation_context"
     return CapabilityAction.UNSPECIFIED, None, None
 
 
-def _classify_instruction(text: str, capability: CapabilityName) -> CapabilityAction:
+def classify_capability_instruction(
+    text: str,
+    capability: CapabilityName,
+) -> CapabilityAction:
+    action = CapabilityAction.UNSPECIFIED
+    for clause in _capability_clauses(text, capability):
+        clause_action = _classify_capability_clause(clause, capability)
+        if clause_action is not CapabilityAction.UNSPECIFIED:
+            action = clause_action
+    return action
+
+
+def extract_transport_modes(text: str) -> list[TransportMode]:
+    enabled: dict[TransportMode, bool] = {}
+    for clause in _capability_clauses(text, "transport"):
+        modes = _raw_transport_modes(clause)
+        if not modes:
+            continue
+        action = _classify_capability_clause(clause, "transport")
+        for mode in modes:
+            enabled[mode] = (
+                action is not CapabilityAction.DISABLE
+                and not _transport_mode_is_disabled(clause, mode)
+            )
+    return [
+        mode for mode in (TransportMode.FLIGHT, TransportMode.TRAIN) if enabled.get(mode, False)
+    ]
+
+
+def extract_journey_scope(text: str) -> JourneyScope:
+    scope = JourneyScope.UNSPECIFIED
+    for clause in _capability_clauses(text, "transport"):
+        if _contains_any(clause, _ONE_WAY_MARKERS):
+            scope = JourneyScope.ONE_WAY
+        elif _contains_any(clause, _ROUND_TRIP_MARKERS):
+            scope = JourneyScope.ROUND_TRIP
+    return scope
+
+
+def _classify_capability_clause(
+    text: str,
+    capability: CapabilityName,
+) -> CapabilityAction:
     markers = _TRANSPORT_MARKERS if capability == "transport" else _HOTEL_MARKERS
     if not _contains_any(text, markers):
         return CapabilityAction.UNSPECIFIED
-    if _contains_any(text, _DISABLE_MARKERS):
-        return CapabilityAction.DISABLE
-    if _contains_any(text, _QUERY_MARKERS):
+    has_disable = _contains_any(text, _DISABLE_MARKERS)
+    if capability == "transport":
+        has_disable = has_disable or any(
+            _transport_mode_is_disabled(text, mode)
+            for mode in (TransportMode.FLIGHT, TransportMode.TRAIN)
+        )
+    positive_text = text
+    for marker in _DISABLE_MARKERS:
+        positive_text = positive_text.replace(marker, "")
+    if _contains_any(positive_text, _QUERY_MARKERS):
         return CapabilityAction.ENABLE
+    if has_disable:
+        return CapabilityAction.DISABLE
     return CapabilityAction.UNSPECIFIED
+
+
+def _capability_clauses(text: str, capability: CapabilityName) -> list[str]:
+    markers = _TRANSPORT_MARKERS if capability == "transport" else _HOTEL_MARKERS
+    clauses: list[str] = []
+    query_context = False
+    for raw_clause in _CLAUSE_SPLIT.split(text):
+        clause = raw_clause.strip()
+        if not clause:
+            continue
+        positive_text = clause
+        for marker in _DISABLE_MARKERS:
+            positive_text = positive_text.replace(marker, "")
+        if _contains_any(positive_text, _QUERY_MARKERS):
+            query_context = True
+        if not _contains_any(clause, markers):
+            continue
+        if (
+            query_context
+            and clause.startswith(("以及", "和", "并且", "还有"))
+            and not _contains_any(clause, (*_QUERY_MARKERS, *_DISABLE_MARKERS))
+        ):
+            clause = f"查{clause}"
+        clauses.append(clause)
+    return clauses
 
 
 def _resolve_transport(
@@ -239,7 +320,7 @@ def _resolve_transport(
         return TransportCapabilityPlan(reason=reason), []
 
     intent = request.transport
-    detected_modes = _transport_modes(instruction_text or "")
+    detected_modes = extract_transport_modes(instruction_text or "")
     modes = detected_modes or list(dict.fromkeys(intent.modes))
     if not modes and _contains_any(instruction_text or "", ("比较", "对比")):
         modes = [TransportMode.FLIGHT, TransportMode.TRAIN]
@@ -247,12 +328,13 @@ def _resolve_transport(
     journey_scope = intent.journey_scope
     derivations: list[ValueDerivation] = []
     if journey_scope is JourneyScope.UNSPECIFIED:
-        if _contains_any(instruction_text or "", _ONE_WAY_MARKERS):
-            journey_scope = JourneyScope.ONE_WAY
+        explicit_scope = extract_journey_scope(instruction_text or "")
+        if explicit_scope is JourneyScope.ONE_WAY:
+            journey_scope = explicit_scope
             scope_source: Literal["explicit_user_input", "default_policy"] = "explicit_user_input"
             explanation = "用户明确要求单程"
-        elif _contains_any(instruction_text or "", _ROUND_TRIP_MARKERS):
-            journey_scope = JourneyScope.ROUND_TRIP
+        elif explicit_scope is JourneyScope.ROUND_TRIP:
+            journey_scope = explicit_scope
             scope_source = "explicit_user_input"
             explanation = "用户明确要求往返"
         else:
@@ -333,7 +415,7 @@ def _resolve_hotel(
 
     intent = request.hotel
     check_in_date = intent.check_in_date or request.core.start_date
-    check_out_date = intent.check_out_date or _last_trip_date(request)
+    check_out_date = intent.check_out_date or _hotel_check_out_date(request)
     derivations: list[ValueDerivation] = []
     if intent.check_in_date is None and check_in_date is not None:
         derivations.append(
@@ -350,7 +432,7 @@ def _resolve_hotel(
                 field="hotel.check_out_date",
                 value=check_out_date.isoformat(),
                 source="derived_from_trip_dates",
-                explanation="默认使用行程最后一天作为退房日期",
+                explanation="默认使用行程结束后的次日作为退房日期",
             )
         )
     if instruction_source is not None:
@@ -378,7 +460,7 @@ def _resolve_hotel(
     )
 
 
-def _transport_modes(text: str) -> list[TransportMode]:
+def _raw_transport_modes(text: str) -> list[TransportMode]:
     modes: list[TransportMode] = []
     if _contains_any(text, _FLIGHT_MARKERS):
         modes.append(TransportMode.FLIGHT)
@@ -387,10 +469,25 @@ def _transport_modes(text: str) -> list[TransportMode]:
     return modes
 
 
+def _transport_mode_is_disabled(text: str, mode: TransportMode) -> bool:
+    markers = _FLIGHT_MARKERS if mode is TransportMode.FLIGHT else _TRAIN_MARKERS
+    return any(
+        re.search(rf"{re.escape(prefix)}.{{0,3}}{re.escape(marker)}", text)
+        for prefix in _MODE_DISABLE_PREFIXES
+        for marker in markers
+    )
+
+
 def _last_trip_date(request: TripPlanningRequest):
     if request.core.start_date is None or request.core.duration_days is None:
         return None
     return request.core.start_date + timedelta(days=request.core.duration_days - 1)
+
+
+def _hotel_check_out_date(request: TripPlanningRequest):
+    if request.core.start_date is None or request.core.duration_days is None:
+        return None
+    return request.core.start_date + timedelta(days=request.core.duration_days)
 
 
 def _contains_any(text: str, markers: Sequence[str]) -> bool:
@@ -398,7 +495,10 @@ def _contains_any(text: str, markers: Sequence[str]) -> bool:
 
 
 __all__ = [
+    "classify_capability_instruction",
     "check_requirements",
+    "extract_journey_scope",
+    "extract_transport_modes",
     "render_requirement_clarification",
     "resolve_capabilities",
 ]

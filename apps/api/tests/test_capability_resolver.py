@@ -85,6 +85,32 @@ def test_comparing_plane_and_high_speed_rail_enables_both() -> None:
     assert plan.transport.modes == [TransportMode.FLIGHT, TransportMode.TRAIN]
 
 
+def test_transport_mode_negation_is_scoped_before_positive_train_and_hotel_query() -> None:
+    request, messages = _request(
+        text="不要飞机，帮我查北京到西安的高铁和酒店",
+        transport=TransportIntent(origin_city="北京"),
+    )
+
+    plan = resolve_capabilities(request, messages)
+
+    assert plan.transport.enabled is True
+    assert plan.transport.modes == [TransportMode.TRAIN]
+    assert plan.hotel.enabled is True
+
+
+def test_existing_hotel_clause_does_not_disable_separate_flight_query() -> None:
+    request, messages = _request(
+        text="酒店已经订好了，帮我查机票",
+        transport=TransportIntent(origin_city="北京"),
+    )
+
+    plan = resolve_capabilities(request, messages)
+
+    assert plan.hotel.enabled is False
+    assert plan.transport.enabled is True
+    assert plan.transport.modes == [TransportMode.FLIGHT]
+
+
 def test_explicit_hotel_recommendation_enables_hotel() -> None:
     request, messages = _request(text="酒店推荐几个")
 
@@ -92,7 +118,7 @@ def test_explicit_hotel_recommendation_enables_hotel() -> None:
 
     assert plan.hotel.enabled is True
     assert plan.hotel.check_in_date == START_DATE
-    assert plan.hotel.check_out_date == date(2026, 8, 3)
+    assert plan.hotel.check_out_date == date(2026, 8, 4)
 
 
 def test_hotel_location_background_does_not_enable_search() -> None:

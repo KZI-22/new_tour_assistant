@@ -222,6 +222,7 @@ class _StandardTripPlanningRun:
                                 "unknown",
                             ),
                             **state.get("extraction_overrides", {}),
+                            **state.get("extraction_details", {}),
                         },
                     ),
                     _stage(
