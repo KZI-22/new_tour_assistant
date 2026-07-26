@@ -4,18 +4,17 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 
 from app.schemas.tool_execution import ChatStreamEvent, MessageDeltaEvent
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 
 MAX_TOOL_ROUNDS = 5
-_TEXT_CHUNK_SIZE = 80
 logger = logging.getLogger(__name__)
 
 
 class ToolEnabledModel(Protocol):
-    async def ainvoke(self, input: list[BaseMessage]) -> BaseMessage: ...
+    def astream(self, input: list[BaseMessage]) -> AsyncIterator[AIMessageChunk]: ...
 
 
 class AgentExecutionError(RuntimeError):
@@ -60,21 +59,26 @@ class AgentExecutor:
         retried_empty_response = False
 
         while True:
-            response = await self._model.ainvoke(context_messages)
-            if not isinstance(response, AIMessage):
-                raise AgentExecutionError(
-                    "MODEL_RESPONSE_INVALID",
-                    "模型返回了无法处理的响应，请更换模型或稍后重试。",
-                )
+            response: AIMessageChunk | None = None
+            streamed_text = False
+            async for chunk in self._model.astream(context_messages):
+                if not isinstance(chunk, AIMessageChunk):
+                    raise AgentExecutionError(
+                        "MODEL_RESPONSE_INVALID",
+                        "模型返回了无法处理的响应，请更换模型或稍后重试。",
+                    )
+                response = chunk if response is None else response + chunk
+                if text := _message_text(chunk):
+                    streamed_text = True
+                    yield MessageDeltaEvent(delta=text)
 
-            if not response.tool_calls:
-                text = _message_text(response)
-                if not text:
+            if response is None or not response.tool_calls:
+                if not streamed_text:
                     logger.warning(
                         "Model returned empty final response additional_fields=%s "
                         "metadata_fields=%s",
-                        sorted(response.additional_kwargs),
-                        sorted(response.response_metadata),
+                        sorted(response.additional_kwargs) if response else [],
+                        sorted(response.response_metadata) if response else [],
                     )
                     if not retried_empty_response:
                         retried_empty_response = True
@@ -83,15 +87,13 @@ class AgentExecutor:
                         "MODEL_EMPTY_RESPONSE",
                         "模型没有返回有效内容，请稍后重试。",
                     )
-                for chunk in _split_text(text):
-                    yield MessageDeltaEvent(delta=chunk)
                 return
 
             if tool_rounds >= self._max_tool_rounds:
                 raise ToolLoopLimitError()
 
             retried_empty_response = False
-            context_messages.append(response)
+            context_messages.append(_to_ai_message(response))
             prepared = self._tool_executor.prepare_calls(
                 [dict(tool_call) for tool_call in response.tool_calls],
                 round_index=tool_rounds,
@@ -109,6 +111,18 @@ class AgentExecutor:
             tool_rounds += 1
 
 
+def _to_ai_message(chunk: AIMessageChunk) -> AIMessage:
+    """Convert an accumulated chunk so replayed history keeps the plain ``ai`` type."""
+    return AIMessage(
+        content=chunk.content,
+        additional_kwargs=chunk.additional_kwargs,
+        response_metadata=chunk.response_metadata,
+        tool_calls=chunk.tool_calls,
+        invalid_tool_calls=chunk.invalid_tool_calls,
+        id=chunk.id,
+    )
+
+
 def _message_text(message: AIMessage) -> str:
     content = message.content
     if isinstance(content, str):
@@ -123,12 +137,6 @@ def _message_text(message: AIMessage) -> str:
         elif isinstance(block, dict) and isinstance(block.get("text"), str):
             parts.append(block["text"])
     return "".join(parts)
-
-
-def _split_text(value: str) -> list[str]:
-    return [
-        value[index : index + _TEXT_CHUNK_SIZE] for index in range(0, len(value), _TEXT_CHUNK_SIZE)
-    ]
 
 
 __all__ = [

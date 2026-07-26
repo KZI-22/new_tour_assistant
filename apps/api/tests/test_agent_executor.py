@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
 from app.core.model_registry import UnavailableModelError
@@ -12,7 +13,7 @@ from app.services.agent_executor import AgentExecutor, ToolLoopLimitError
 from app.services.chat_service import ChatService
 from app.services.tool_call_log_service import ToolCallLogEntry
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict
 
@@ -27,14 +28,56 @@ class EmptyInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def tool_call_chunk(
+    name: str,
+    args: dict[str, object],
+    call_id: str,
+    index: int,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "args": json.dumps(args, ensure_ascii=False),
+        "id": call_id,
+        "index": index,
+    }
+
+
 class FakeModel:
+    """Streams each scripted response so the executor sees provider-style chunks."""
+
     def __init__(self, responses: list[AIMessage]) -> None:
         self._responses = list(responses)
         self.inputs: list[list[BaseMessage]] = []
 
-    async def ainvoke(self, input: list[BaseMessage]) -> BaseMessage:
+    async def astream(self, input: list[BaseMessage]) -> AsyncIterator[AIMessageChunk]:
         self.inputs.append(list(input))
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        text = str(response.content)
+        for start in range(0, len(text), 4):
+            yield AIMessageChunk(content=text[start : start + 4])
+        if response.tool_calls:
+            yield AIMessageChunk(
+                content="",
+                tool_call_chunks=[
+                    tool_call_chunk(call["name"], call["args"], str(call["id"]), index)
+                    for index, call in enumerate(response.tool_calls)
+                ],
+            )
+
+
+class GatedStreamingModel:
+    """Emits one chunk, then blocks until the test releases the rest."""
+
+    def __init__(self, first: str, rest: str) -> None:
+        self._first = first
+        self._rest = rest
+        self.released = asyncio.Event()
+
+    async def astream(self, input: list[BaseMessage]) -> AsyncIterator[AIMessageChunk]:
+        del input
+        yield AIMessageChunk(content=self._first)
+        await self.released.wait()
+        yield AIMessageChunk(content=self._rest)
 
 
 def value_tool(
@@ -88,6 +131,20 @@ async def collect(executor: AgentExecutor) -> list[object]:
     return [event async for event in executor.stream([])]
 
 
+def event_kinds(events: list[object]) -> list[str]:
+    """Event type order with consecutive text deltas collapsed into one entry."""
+    kinds: list[str] = []
+    for event in events:
+        name = type(event).__name__
+        if not kinds or kinds[-1] != name:
+            kinds.append(name)
+    return kinds
+
+
+def streamed_text(events: list[object]) -> str:
+    return "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+
+
 @pytest.mark.asyncio
 async def test_plain_conversation_does_not_execute_tools() -> None:
     calls: list[str] = []
@@ -101,6 +158,53 @@ async def test_plain_conversation_does_not_execute_tools() -> None:
         "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
         == "你好，我可以帮你规划旅行。"
     )
+
+
+@pytest.mark.asyncio
+async def test_text_reaches_the_user_before_generation_finishes() -> None:
+    model = GatedStreamingModel("南京今天", "天气晴。")
+    executor = AgentExecutor(model, ToolExecutor([]))
+    stream = executor.stream([])
+
+    first = await asyncio.wait_for(anext(stream), timeout=1)
+
+    assert isinstance(first, MessageDeltaEvent)
+    assert first.delta == "南京今天"
+    assert not model.released.is_set()
+
+    model.released.set()
+    remaining = [event async for event in stream]
+
+    assert (
+        "".join(event.delta for event in remaining if isinstance(event, MessageDeltaEvent))
+        == "天气晴。"
+    )
+
+
+@pytest.mark.asyncio
+async def test_text_from_a_tool_calling_round_reaches_the_user() -> None:
+    calls: list[str] = []
+    model = FakeModel(
+        [
+            AIMessage(
+                content="让我先查一下天气。",
+                tool_calls=[{"name": "echo", "args": {"value": "南京"}, "id": "call-one"}],
+            ),
+            AIMessage(content="南京今天晴。"),
+        ]
+    )
+    executor = AgentExecutor(model, ToolExecutor([value_tool("echo", calls)]))
+
+    events = await collect(executor)
+
+    assert calls == ["南京"]
+    assert streamed_text(events) == "让我先查一下天气。南京今天晴。"
+    assert event_kinds(events) == [
+        "MessageDeltaEvent",
+        "ToolCallEvent",
+        "ToolResultEvent",
+        "MessageDeltaEvent",
+    ]
 
 
 @pytest.mark.asyncio
@@ -157,10 +261,10 @@ async def test_single_tool_call_writes_correlated_tool_message() -> None:
     events = await collect(executor)
 
     assert calls == ["航班"]
-    assert [type(event) for event in events] == [
-        ToolCallEvent,
-        ToolResultEvent,
-        MessageDeltaEvent,
+    assert event_kinds(events) == [
+        "ToolCallEvent",
+        "ToolResultEvent",
+        "MessageDeltaEvent",
     ]
     tool_messages = [message for message in model.inputs[1] if isinstance(message, ToolMessage)]
     assert len(tool_messages) == 1
@@ -402,17 +506,13 @@ async def test_tool_round_limit_stops_repeated_calls() -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def ainvoke(self, input: list[BaseMessage]) -> BaseMessage:
+        async def astream(self, input: list[BaseMessage]) -> AsyncIterator[AIMessageChunk]:
             del input
             self.calls += 1
-            return AIMessage(
+            yield AIMessageChunk(
                 content="",
-                tool_calls=[
-                    {
-                        "name": "echo",
-                        "args": {"value": str(self.calls)},
-                        "id": f"call-{self.calls}",
-                    }
+                tool_call_chunks=[
+                    tool_call_chunk("echo", {"value": str(self.calls)}, f"call-{self.calls}", 0)
                 ],
             )
 

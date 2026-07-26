@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from app.schemas.routing import TripRouteDecision
 from app.schemas.tool_execution import MessageDeltaEvent, PlanningStageEvent
 from app.schemas.xhs_planning import XhsPostEvidence, XhsResearchResult
 from app.services.chat_service import ChatService
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 
 class _Runnable:
@@ -49,6 +50,12 @@ class FakeHybridModel:
         if isinstance(self.answer, Exception):
             raise self.answer
         return AIMessage(content=self.answer)
+
+    async def astream(self, _: Any) -> AsyncIterator[AIMessageChunk]:
+        self.invoke_calls += 1
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        yield AIMessageChunk(content=self.answer)
 
 
 class FakeRegistry:
