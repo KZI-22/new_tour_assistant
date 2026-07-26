@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 
 from app.api.auth_routes import router as auth_router
 from app.api.routes import router
+from app.clients.amap_cache import AmapCache, InMemoryAmapCache, RedisAmapCache
 from app.clients.amap_client import AmapClient
 from app.clients.flyai_client import FlyAIClient
 from app.clients.xhs_mcp_client import XhsMcpClient
@@ -44,15 +45,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conversation_service = ConversationService(session_factory)
         tool_call_log_service = ToolCallLogService(session_factory)
 
-    redis_client = None
+    # Created independently of authentication: the shared Amap cache needs it too.
+    redis_client = (
+        Redis.from_url(current_settings.redis_url, decode_responses=True)
+        if current_settings.redis_url
+        else None
+    )
+
     auth_service = None
     otp_service = None
     if current_settings.auth_enabled:
         assert session_factory is not None
-        assert current_settings.redis_url is not None
+        assert redis_client is not None
         assert current_settings.auth_jwt_secret is not None
         assert current_settings.auth_hmac_secret is not None
-        redis_client = Redis.from_url(current_settings.redis_url, decode_responses=True)
         jwt_codec = JwtCodec(
             current_settings.auth_jwt_secret,
             issuer=current_settings.auth_jwt_issuer,
@@ -76,6 +82,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expose_debug_code=current_settings.app_environment in {"local", "test"},
         )
 
+    amap_cache: AmapCache = (
+        RedisAmapCache(redis_client) if redis_client is not None else InMemoryAmapCache()
+    )
     amap_client = None
     if current_settings.amap_api_key:
         amap_client = AmapClient(
@@ -84,6 +93,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout_seconds=current_settings.amap_timeout_seconds,
             max_retries=current_settings.amap_max_retries,
             min_request_interval_seconds=current_settings.amap_min_request_interval_seconds,
+            cache=amap_cache,
+            cache_ttl_overrides=current_settings.amap_cache_ttl_overrides,
         )
     else:
         logging.getLogger(__name__).warning(
@@ -152,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.jwt_codec = jwt_codec if current_settings.auth_enabled else None
     application.state.otp_service = otp_service
     application.state.redis_client = redis_client
+    application.state.amap_cache = amap_cache
     application.state.chat_service = ChatService(
         registry,
         travel_tools,

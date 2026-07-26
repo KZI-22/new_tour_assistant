@@ -23,6 +23,32 @@ def test_configure_no_proxy_preserves_terminal_rules_and_adds_project_hosts(
     assert os.environ["no_proxy"] == expected
 
 
+def test_amap_cache_ttl_overrides_default_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AMAP_CACHE_TTL_OVERRIDES", raising=False)
+
+    assert get_settings().amap_cache_ttl_overrides == {}
+
+
+def test_amap_cache_ttl_overrides_are_parsed_from_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AMAP_CACHE_TTL_OVERRIDES", '{"geocode": 60, "route_plan": 120.5}')
+
+    assert get_settings().amap_cache_ttl_overrides == {"geocode": 60.0, "route_plan": 120.5}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ['["geocode"]', '{"geocode": "soon"}', '{"geocode": 0}', '{"geocode": -1}', "{"],
+)
+def test_invalid_amap_cache_ttl_overrides_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setenv("AMAP_CACHE_TTL_OVERRIDES", raw)
+
+    with pytest.raises(ValueError, match="AMAP_CACHE_TTL_OVERRIDES"):
+        get_settings()
+
+
 def test_get_settings_reads_flyai_runtime_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FLYAI_CLI_PATH", "C:\\tools\\flyai.cmd")
     monkeypatch.setenv("FLYAI_TIMEOUT_SECONDS", "90")

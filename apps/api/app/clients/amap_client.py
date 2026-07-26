@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.clients.amap_cache import AmapCache, InMemoryAmapCache
+from app.clients.amap_cache import AmapCache, InMemoryAmapCache, ttl_for_namespace
 from app.clients.amap_errors import (
     AmapConfigurationError,
     AmapEmptyResultError,
@@ -84,6 +84,7 @@ class AmapClient:
         min_request_interval_seconds: float = 0.2,
         matrix_batch_size: int = 100,
         cache: AmapCache | None = None,
+        cache_ttl_overrides: Mapping[str, float] | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         normalized_key = (api_key or "").strip()
@@ -119,6 +120,7 @@ class AmapClient:
         self._sleep = asyncio.sleep
         self._matrix_batch_size = matrix_batch_size
         self._cache = cache or InMemoryAmapCache()
+        self._cache_ttl_overrides = dict(cache_ttl_overrides or {})
         self._owns_http_client = http_client is None
         self._http = http_client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -546,8 +548,12 @@ class AmapClient:
                 infocode or "10000",
                 duration_ms,
             )
-            if cache_key is not None:
-                await self._cache.set(cache_key, payload)
+            if cache_key is not None and cache_namespace is not None:
+                await self._cache.set(
+                    cache_key,
+                    payload,
+                    ttl_seconds=ttl_for_namespace(cache_namespace, self._cache_ttl_overrides),
+                )
             return payload
 
         raise AssertionError("Amap request retry loop exited unexpectedly")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from app.clients.amap_cache import InMemoryAmapCache, RedisAmapCache
 from app.clients.xhs_mcp_client import XhsMcpClient
 from app.core.request_context import get_request_context
 from app.core.settings import Settings
@@ -11,7 +12,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 
-def settings(tmp_path: Path, *, api_key: str | None) -> Settings:
+def settings(tmp_path: Path, *, api_key: str | None, redis_url: str | None = None) -> Settings:
     config_path = tmp_path / "models.yaml"
     config_path.write_text("default_model: null\nmodels: []\n", encoding="utf-8")
     return Settings(
@@ -20,7 +21,27 @@ def settings(tmp_path: Path, *, api_key: str | None) -> Settings:
         cors_origins=("http://localhost:3000",),
         log_level="WARNING",
         amap_api_key=api_key,
+        redis_url=redis_url,
     )
+
+
+def test_configured_redis_backs_the_amap_cache_even_without_authentication(
+    tmp_path: Path,
+) -> None:
+    application = create_app(
+        settings(tmp_path, api_key="test-key", redis_url="redis://127.0.0.1:6379/0")
+    )
+
+    assert application.state.auth_service is None
+    assert application.state.redis_client is not None
+    assert isinstance(application.state.amap_cache, RedisAmapCache)
+
+
+def test_without_redis_the_amap_cache_stays_process_local(tmp_path: Path) -> None:
+    application = create_app(settings(tmp_path, api_key="test-key"))
+
+    assert application.state.redis_client is None
+    assert isinstance(application.state.amap_cache, InMemoryAmapCache)
 
 
 def test_missing_amap_key_keeps_the_existing_three_flyai_tools(tmp_path: Path) -> None:

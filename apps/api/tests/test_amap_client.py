@@ -35,6 +35,8 @@ def make_client(
     retry_delay_seconds: float = 0,
     min_request_interval_seconds: float = 0,
     matrix_batch_size: int = 100,
+    cache: object | None = None,
+    cache_ttl_overrides: dict[str, float] | None = None,
 ) -> AmapClient:
     http_client = httpx.AsyncClient(
         base_url="https://restapi.amap.test",
@@ -47,7 +49,24 @@ def make_client(
         min_request_interval_seconds=min_request_interval_seconds,
         matrix_batch_size=matrix_batch_size,
         http_client=http_client,
+        cache=cache,  # type: ignore[arg-type]
+        cache_ttl_overrides=cache_ttl_overrides,
     )
+
+
+class RecordingCache:
+    """Captures the TTL the client asks for, without serving any hit."""
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, float]] = []
+
+    async def get(self, key: str) -> dict[str, object] | None:
+        del key
+        return None
+
+    async def set(self, key: str, value: dict[str, object], *, ttl_seconds: float) -> None:
+        del value
+        self.writes.append((key.split(":", 1)[0], ttl_seconds))
 
 
 def ok(**values: object) -> dict[str, object]:
@@ -57,6 +76,44 @@ def ok(**values: object) -> dict[str, object]:
 def test_missing_api_key_is_a_configuration_error() -> None:
     with pytest.raises(AmapConfigurationError, match="AMAP_API_KEY"):
         AmapClient(None)
+
+
+def geocode_or_place_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/v3/geocode/geo":
+        return httpx.Response(
+            200,
+            json=ok(geocodes=[{"location": "118.796877,32.060255", "citycode": "025"}]),
+        )
+    return httpx.Response(
+        200,
+        json=ok(pois=[{"id": "B001", "name": "南京博物院", "location": "118.815365,32.040384"}]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_endpoint_is_cached_with_its_own_namespace_ttl() -> None:
+    cache = RecordingCache()
+    client = make_client(geocode_or_place_handler, cache=cache)
+
+    await client.geocode("中山东路321号")
+    await client.search_places(SearchPlacesInput(keywords="南京博物院"))
+
+    assert cache.writes == [("geocode", 7 * 24 * 60 * 60), ("place_search_v2", 24 * 60 * 60)]
+
+
+@pytest.mark.asyncio
+async def test_configured_overrides_replace_the_namespace_ttl() -> None:
+    cache = RecordingCache()
+    client = make_client(
+        geocode_or_place_handler,
+        cache=cache,
+        cache_ttl_overrides={"geocode": 90},
+    )
+
+    await client.geocode("中山东路321号")
+    await client.search_places(SearchPlacesInput(keywords="南京博物院"))
+
+    assert cache.writes == [("geocode", 90), ("place_search_v2", 24 * 60 * 60)]
 
 
 @pytest.mark.asyncio

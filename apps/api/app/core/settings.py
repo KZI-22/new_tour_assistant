@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -76,6 +77,7 @@ class Settings:
     amap_timeout_seconds: float = 15
     amap_max_retries: int = 1
     amap_min_request_interval_seconds: float = 0.2
+    amap_cache_ttl_overrides: Mapping[str, float] = field(default_factory=dict)
     amap_poi_max_concurrency: int = 5
     amap_route_max_concurrency: int = 5
     amap_poi_page_size: int = 10
@@ -245,6 +247,7 @@ def get_settings() -> Settings:
         amap_min_request_interval_seconds=float(
             os.getenv("AMAP_MIN_REQUEST_INTERVAL_SECONDS", "0.2")
         ),
+        amap_cache_ttl_overrides=_environment_ttl_mapping("AMAP_CACHE_TTL_OVERRIDES"),
         amap_poi_max_concurrency=int(os.getenv("AMAP_POI_MAX_CONCURRENCY", "5")),
         amap_route_max_concurrency=int(os.getenv("AMAP_ROUTE_MAX_CONCURRENCY", "5")),
         amap_poi_page_size=int(os.getenv("AMAP_POI_PAGE_SIZE", "10")),
@@ -297,6 +300,24 @@ def _environment_bool(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value.")
+
+
+def _environment_ttl_mapping(name: str) -> Mapping[str, float]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a JSON object of namespace to seconds.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{name} must be a JSON object of namespace to seconds.")
+    overrides: dict[str, float] = {}
+    for namespace, seconds in parsed.items():
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
+            raise ValueError(f"{name} values must be positive numbers of seconds.")
+        overrides[namespace] = float(seconds)
+    return overrides
 
 
 def _environment_json_string_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
