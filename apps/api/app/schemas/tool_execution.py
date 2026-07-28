@@ -54,13 +54,6 @@ class MessageDeltaEvent(BaseModel):
     delta: str
 
 
-class MessagePreviewEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["message_preview"] = "message_preview"
-    content: str
-
-
 class ToolCallEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -158,7 +151,6 @@ class XhsLoginRequiredEvent(BaseModel):
 
 type ChatStreamEvent = (
     MessageDeltaEvent
-    | MessagePreviewEvent
     | ToolCallEvent
     | ToolResultEvent
     | PlanningStageEvent
@@ -170,7 +162,6 @@ type ChatStreamEvent = (
 __all__ = [
     "ChatStreamEvent",
     "MessageDeltaEvent",
-    "MessagePreviewEvent",
     "PlanningStageEvent",
     "PlanningTraceEvent",
     "ToolCallEvent",

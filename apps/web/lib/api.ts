@@ -146,13 +146,8 @@ export type XhsLoginRequiredUpdate = {
   fallback_mode?: "map_weather" | null;
 };
 
-export type MessagePreviewUpdate = {
-  content: string;
-};
-
 type StreamCallbacks = {
   onToken: (delta: string) => void;
-  onMessagePreview?: (update: MessagePreviewUpdate) => void;
   onConversation?: (conversation: {
     id: string;
     title: string;
@@ -409,9 +404,6 @@ export async function streamChat(
     } else if (parsed.event === "message_delta" || parsed.event === "token") {
       const data = parsed.data as { delta?: string };
       if (data.delta) callbacks.onToken(data.delta);
-    } else if (parsed.event === "message_preview") {
-      const data = parsed.data as Partial<MessagePreviewUpdate>;
-      if (data.content) callbacks.onMessagePreview?.({ content: data.content });
     } else if (parsed.event === "tool_call") {
       const data = parsed.data as Partial<ToolCallUpdate>;
       if (data.tool_call_id && data.tool_name && data.display_name) {

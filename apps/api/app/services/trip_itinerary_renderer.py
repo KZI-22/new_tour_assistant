@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.schemas.trip_evidence import EvidenceStatus, JoinedTripEvidence, RawCapabilityEvidence
 from app.schemas.trip_itinerary import TripNarrativePlan
 from app.services.map_itinerary_renderer import (
@@ -67,6 +69,23 @@ def render_trip_itinerary(
     )
 
 
+def split_trip_itinerary_sections(markdown: str) -> list[str]:
+    """Split a complete itinerary into render-safe semantic SSE chunks."""
+    if not markdown:
+        return []
+
+    section_starts = [match.start() for match in re.finditer(r"(?m)^## ", markdown)]
+    if not section_starts:
+        return [markdown]
+
+    boundaries = [0, *section_starts, len(markdown)]
+    return [
+        markdown[start:end]
+        for start, end in zip(boundaries, boundaries[1:], strict=False)
+        if start < end
+    ]
+
+
 def _render_optional_section(
     *,
     title: str,
@@ -94,4 +113,4 @@ def _render_optional_section(
     return lines
 
 
-__all__ = ["render_trip_itinerary"]
+__all__ = ["render_trip_itinerary", "split_trip_itinerary_sections"]

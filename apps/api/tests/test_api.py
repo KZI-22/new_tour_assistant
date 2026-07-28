@@ -11,7 +11,6 @@ from app.main import create_app
 from app.schemas.chat import ChatMessage
 from app.schemas.tool_execution import (
     MessageDeltaEvent,
-    MessagePreviewEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
     ToolCallEvent,
@@ -110,9 +109,7 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
             *,
             planning_source: str,
             execution_context: ToolExecutionContext,
-        ) -> AsyncIterator[
-            MessageDeltaEvent | MessagePreviewEvent | PlanningStageEvent | PlanningTraceEvent
-        ]:
+        ) -> AsyncIterator[MessageDeltaEvent | PlanningStageEvent | PlanningTraceEvent]:
             assert model_id == "test-model"
             assert planning_source == "standard"
             assert messages
@@ -130,7 +127,6 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
                 status="success",
                 data={"keyword": "你好 2日游 攻略"},
             )
-            yield MessagePreviewEvent(content="确定性骨架")
             yield MessageDeltaEvent(delta="你")
             yield MessageDeltaEvent(delta="好")
 
@@ -188,10 +184,6 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assert 'event: message_start\ndata: {"type":"message_start"' in response.text
     assert 'event: planning_stage\ndata: {"type":"planning_stage"' in response.text
     assert 'event: planning_trace\ndata: {"type":"planning_trace"' in response.text
-    assert (
-        'event: message_preview\ndata: {"type":"message_preview","content":"确定性骨架"}'
-        in response.text
-    )
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"你"}' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"好"}' in response.text
     assert 'event: message_end\ndata: {"type":"message_end"' in response.text

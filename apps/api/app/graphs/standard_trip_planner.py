@@ -27,7 +27,6 @@ from app.schemas.chat import ChatMessage
 from app.schemas.tool_execution import (
     ChatStreamEvent,
     MessageDeltaEvent,
-    MessagePreviewEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
 )
@@ -49,6 +48,7 @@ from app.services.trip_itinerary_generator import (
     TripItineraryGenerationError,
     TripItineraryGenerator,
 )
+from app.services.trip_itinerary_renderer import split_trip_itinerary_sections
 from app.services.weather_evidence_service import WeatherEvidenceService
 
 
@@ -438,7 +438,6 @@ class _StandardTripPlanningRun:
             else:
                 events.extend(
                     [
-                        MessagePreviewEvent(content=state["skeleton_answer"]),
                         self._trace(
                             "itinerary_skeleton_ready",
                             "确定性旅行骨架已生成并通过校验",
@@ -448,9 +447,9 @@ class _StandardTripPlanningRun:
                         ),
                         _stage(
                             "generating_itinerary",
-                            "旅行骨架已展示，正在生成文案",
+                            "确定性旅行骨架已就绪，正在生成文案",
                             "running",
-                            detail="日期、地点、顺序与供应商事实已就绪。",
+                            detail="完整方案将在文案生成、后端合并并校验后开始展示。",
                         ),
                     ]
                 )
@@ -505,13 +504,17 @@ class _StandardTripPlanningRun:
                 )
         elif node == "render_response":
             answer = cast(str, result["final_answer"])
+            chunks = split_trip_itinerary_sections(answer)
             events.extend(
                 [
-                    MessageDeltaEvent(delta=answer),
+                    *(MessageDeltaEvent(delta=chunk) for chunk in chunks),
                     self._trace(
                         "response_completed",
                         "最终统一旅行方案已渲染",
-                        data={"output_chars": len(answer)},
+                        data={
+                            "output_chars": len(answer),
+                            "output_chunks": len(chunks),
+                        },
                     ),
                     _stage(
                         "finalizing",

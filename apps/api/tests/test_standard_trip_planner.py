@@ -16,7 +16,6 @@ from app.schemas.map_planning import (
 )
 from app.schemas.tool_execution import (
     MessageDeltaEvent,
-    MessagePreviewEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
 )
@@ -259,12 +258,12 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
         "帮我规划成都一日游，2027-07-25 开始",
     )
 
-    answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
+    deltas = [event.delta for event in events if isinstance(event, MessageDeltaEvent)]
+    answer = "".join(deltas)
     stages = [
         (event.stage, event.status) for event in events if isinstance(event, PlanningStageEvent)
     ]
     traces = [event for event in events if isinstance(event, PlanningTraceEvent)]
-    previews = [event for event in events if isinstance(event, MessagePreviewEvent)]
     assert collection.calls == weather.calls == 1
     assert flyai.flight_calls == flyai.train_calls == flyai.hotel_calls == 0
     assert ("collecting_transport", "skipped") in stages
@@ -273,14 +272,20 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert "27-32℃" not in answer
     assert "SPF50" not in answer
     assert "预报含晴天，户外活动请注意防晒。" in answer
-    assert len(previews) == 1
-    assert "确定性行程已就绪" not in previews[0].content
-    assert "地点 a1" in previews[0].content
+    assert len(deltas) > 1
+    assert deltas[0].startswith("# ")
+    assert all(delta.startswith("## ") for delta in deltas[1:])
     assert not any(call.startswith("native:") for call in model.calls)
     assert model.calls.count("stream:TripNarrativeDraft") == 1
-    assert next(
-        index for index, event in enumerate(events) if isinstance(event, MessagePreviewEvent)
-    ) < next(index for index, event in enumerate(events) if isinstance(event, MessageDeltaEvent))
+    validation_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, PlanningTraceEvent) and event.step == "validation_completed"
+    )
+    first_delta_index = next(
+        index for index, event in enumerate(events) if isinstance(event, MessageDeltaEvent)
+    )
+    assert validation_index < first_delta_index
     capability_trace = next(trace for trace in traces if trace.title == "已解析本轮能力执行计划")
     assert capability_trace.data["transport_enabled"] is False
     assert capability_trace.data["hotel_enabled"] is False

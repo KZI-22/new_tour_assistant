@@ -38,7 +38,6 @@ import {
   ToolResultUpdate,
   PlanningStageUpdate,
   PlanningTraceUpdate,
-  MessagePreviewUpdate,
   XhsLoginRequiredUpdate,
 } from "@/lib/api";
 
@@ -54,7 +53,6 @@ type ChatMessage = ApiChatMessage & {
   tools?: ToolStatus[];
   planningStages?: PlanningStageUpdate[];
   debugTrace?: PlanningTraceUpdate[];
-  preview?: string;
   xhsLogin?: XhsLoginRequiredUpdate & { status: "pending" | "failed" | "skipped" };
 };
 
@@ -293,15 +291,6 @@ export function ChatShell() {
               current.map((message) =>
                 message.id === assistantId
                   ? { ...message, content: message.content + delta }
-                  : message,
-              ),
-            );
-          },
-          onMessagePreview: (update: MessagePreviewUpdate) => {
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId
-                  ? { ...message, preview: update.content }
                   : message,
               ),
             );
@@ -821,17 +810,9 @@ export function ChatShell() {
                               ))}
                             </div>
                           )}
-                          {message.content || message.preview ? (
-                            <div>
-                              {!message.content && message.preview && (
-                                <div className="mb-2 flex items-center gap-1.5 text-xs text-[var(--muted)]">
-                                  <LoaderCircle size={12} className="animate-spin" />
-                                  确定性行程已就绪，正在补充旅行文案
-                                </div>
-                              )}
-                              <div className="markdown-body">
-                                <AssistantMarkdown content={message.content || message.preview || ""} />
-                              </div>
+                          {message.content ? (
+                            <div className="markdown-body">
+                              <AssistantMarkdown content={message.content} />
                             </div>
                           ) : (
                             <div className="flex h-7 items-center gap-1" aria-label="正在思考">

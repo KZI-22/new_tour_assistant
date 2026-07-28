@@ -44,7 +44,10 @@ from app.services.trip_itinerary_generator import (
     TripItineraryGenerator,
     build_trip_generation_prompt,
 )
-from app.services.trip_itinerary_renderer import render_trip_itinerary
+from app.services.trip_itinerary_renderer import (
+    render_trip_itinerary,
+    split_trip_itinerary_sections,
+)
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.weather_advice_service import (
     UNAVAILABLE_WEATHER_ADVICE,
@@ -446,6 +449,17 @@ def test_renderer_is_deterministic_for_optional_statuses_without_reliability_cop
     assert "本次未查询机票、火车、酒店" not in answer
     assert "字段级校验" not in answer
     assert "未经校验" not in answer
+
+
+def test_renderer_splits_complete_answer_into_lossless_semantic_chunks() -> None:
+    answer = render_trip_itinerary(joined(), narrative())
+
+    chunks = split_trip_itinerary_sections(answer)
+
+    assert len(chunks) > 1
+    assert chunks[0].startswith("# ")
+    assert all(chunk.startswith("## ") for chunk in chunks[1:])
+    assert "".join(chunks) == answer
 
 
 def test_renderer_keeps_existing_map_only_scope_when_optional_capabilities_are_disabled() -> None:
