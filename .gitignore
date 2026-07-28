@@ -1,5 +1,7 @@
 # Python
 __pycache__/
+.ruff_cache/
+evals/results/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/

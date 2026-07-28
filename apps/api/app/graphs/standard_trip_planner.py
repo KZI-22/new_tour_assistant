@@ -217,6 +217,16 @@ class _StandardTripPlanningRun:
                                 if request.core.start_date
                                 else None
                             ),
+                            "transport_action": request.transport.action.value,
+                            "transport_modes": [
+                                mode.value for mode in request.transport.modes
+                            ],
+                            "transport_journey_scope": (
+                                request.transport.journey_scope.value
+                            ),
+                            "transport_origin_city": request.transport.origin_city,
+                            "hotel_action": request.hotel.action.value,
+                            "hotel_nearby_poi": request.hotel.nearby_poi,
                             "extraction_method": state.get(
                                 "extraction_method",
                                 "unknown",
@@ -243,7 +253,31 @@ class _StandardTripPlanningRun:
                         "transport_enabled": plan.transport.enabled,
                         "transport_modes": [mode.value for mode in plan.transport.modes],
                         "journey_scope": plan.transport.journey_scope.value,
+                        "transport_origin": plan.transport.origin,
+                        "transport_destination": plan.transport.destination,
+                        "transport_outbound_date": (
+                            plan.transport.outbound_date.isoformat()
+                            if plan.transport.outbound_date
+                            else None
+                        ),
+                        "transport_return_date": (
+                            plan.transport.return_date.isoformat()
+                            if plan.transport.return_date
+                            else None
+                        ),
                         "hotel_enabled": plan.hotel.enabled,
+                        "hotel_destination": plan.hotel.destination,
+                        "hotel_check_in_date": (
+                            plan.hotel.check_in_date.isoformat()
+                            if plan.hotel.check_in_date
+                            else None
+                        ),
+                        "hotel_check_out_date": (
+                            plan.hotel.check_out_date.isoformat()
+                            if plan.hotel.check_out_date
+                            else None
+                        ),
+                        "hotel_nearby_poi": plan.hotel.nearby_poi,
                         "derivation_fields": [item.field for item in plan.derivations],
                     },
                 )
