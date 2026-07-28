@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from app.core.settings import Settings
 from app.graphs.trip_planner import TripPlannerGraph, TripPlannerNodeSet
 from app.graphs.trip_planner_nodes import (
+    BuildItinerarySkeletonNode,
     ClarifyRequirementsNode,
     EvidenceJoinNode,
     ExtractRequirementsNode,
@@ -26,6 +27,7 @@ from app.schemas.chat import ChatMessage
 from app.schemas.tool_execution import (
     ChatStreamEvent,
     MessageDeltaEvent,
+    MessagePreviewEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
 )
@@ -179,6 +181,7 @@ class _StandardTripPlanningRun:
                 collect_transport=TransportNode(IntercityTransportService(self._flyai_client)),
                 collect_hotels=HotelNode(HotelSearchService(self._flyai_client)),
                 join_evidence=EvidenceJoinNode(),
+                build_itinerary_skeleton=BuildItinerarySkeletonNode(),
                 generate_itinerary=GenerateItineraryNode(
                     TripItineraryGenerator(
                         self._model,
@@ -218,12 +221,8 @@ class _StandardTripPlanningRun:
                                 else None
                             ),
                             "transport_action": request.transport.action.value,
-                            "transport_modes": [
-                                mode.value for mode in request.transport.modes
-                            ],
-                            "transport_journey_scope": (
-                                request.transport.journey_scope.value
-                            ),
+                            "transport_modes": [mode.value for mode in request.transport.modes],
+                            "transport_journey_scope": (request.transport.journey_scope.value),
                             "transport_origin_city": request.transport.origin_city,
                             "hotel_action": request.hotel.action.value,
                             "hotel_nearby_poi": request.hotel.nearby_poi,
@@ -421,16 +420,46 @@ class _StandardTripPlanningRun:
                 events.append(
                     _stage(
                         "generating_itinerary",
-                        "正在整理统一旅行方案",
+                        "正在生成确定性旅行骨架",
                         "running",
                     )
+                )
+        elif node == "build_itinerary_skeleton":
+            issues = state.get("skeleton_validation_issues", [])
+            if issues:
+                events.append(
+                    _stage(
+                        "generating_itinerary",
+                        "正在生成确定性旅行骨架",
+                        "failed",
+                        detail=f"骨架校验发现 {len(issues)} 个问题。",
+                    )
+                )
+            else:
+                events.extend(
+                    [
+                        MessagePreviewEvent(content=state["skeleton_answer"]),
+                        self._trace(
+                            "itinerary_skeleton_ready",
+                            "确定性旅行骨架已生成并通过校验",
+                            data={
+                                "output_chars": len(state["skeleton_answer"]),
+                            },
+                        ),
+                        _stage(
+                            "generating_itinerary",
+                            "旅行骨架已展示，正在生成文案",
+                            "running",
+                            detail="日期、地点、顺序与供应商事实已就绪。",
+                        ),
+                    ]
                 )
         elif node == "generate_itinerary":
             events.extend(
                 [
                     _stage(
                         "generating_itinerary",
-                        "正在整理统一旅行方案",
+                        "旅行文案生成完成",
                         "success",
                     ),
                     self._trace(
@@ -493,6 +522,10 @@ class _StandardTripPlanningRun:
             )
         elif node == "controlled_failure":
             answer = cast(str, result["final_answer"])
+            issues = state.get("validation_issues") or state.get(
+                "skeleton_validation_issues",
+                [],
+            )
             events.extend(
                 [
                     MessageDeltaEvent(delta=answer),
@@ -501,13 +534,7 @@ class _StandardTripPlanningRun:
                         "统一旅行方案未通过确定性校验",
                         status="failed",
                         data={
-                            "issue_codes": [
-                                issue.code
-                                for issue in state.get(
-                                    "validation_issues",
-                                    [],
-                                )
-                            ],
+                            "issue_codes": [issue.code for issue in issues],
                         },
                     ),
                 ]

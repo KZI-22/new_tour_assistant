@@ -54,6 +54,13 @@ class MessageDeltaEvent(BaseModel):
     delta: str
 
 
+class MessagePreviewEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["message_preview"] = "message_preview"
+    content: str
+
+
 class ToolCallEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -125,6 +132,7 @@ class PlanningTraceEvent(BaseModel):
         "search_results",
         "post_detail",
         "evidence_selected",
+        "itinerary_skeleton_ready",
         "itinerary_generated",
         "validation_completed",
         "response_completed",
@@ -150,6 +158,7 @@ class XhsLoginRequiredEvent(BaseModel):
 
 type ChatStreamEvent = (
     MessageDeltaEvent
+    | MessagePreviewEvent
     | ToolCallEvent
     | ToolResultEvent
     | PlanningStageEvent
@@ -161,6 +170,7 @@ type ChatStreamEvent = (
 __all__ = [
     "ChatStreamEvent",
     "MessageDeltaEvent",
+    "MessagePreviewEvent",
     "PlanningStageEvent",
     "PlanningTraceEvent",
     "ToolCallEvent",

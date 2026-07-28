@@ -56,7 +56,7 @@ class TripItineraryGenerator:
     ) -> TripNarrativePlan:
         prompt = build_trip_generation_prompt(evidence)
         try:
-            draft = await self._structured.invoke(
+            draft = await self._structured.invoke_prompt_json_stream(
                 TripNarrativeDraft,
                 TRIP_GENERATION_SYSTEM_PROMPT,
                 prompt,
@@ -65,6 +65,25 @@ class TripItineraryGenerator:
             return compose_trip_narrative(evidence, draft)
         except StructuredOutputError as exc:
             raise TripItineraryGenerationError("模型没有生成有效的统一旅行方案。") from exc
+
+
+def build_trip_narrative_skeleton(
+    evidence: JoinedTripEvidence,
+) -> TripNarrativePlan:
+    core = evidence.request.core
+    city = core.destination_city or "目的地"
+    duration_days = core.duration_days or len(
+        evidence.map_weather.map.days if evidence.map_weather.map else []
+    )
+    draft = TripNarrativeDraft(
+        title=f"{city}{duration_days}日旅行方案",
+        summary=(
+            "日期、地点、顺序、路线、天气、交通与酒店信息已由后端根据查询证据确定，"
+            "旅行文案正在生成。"
+        ),
+        days=[],
+    )
+    return compose_trip_narrative(evidence, draft)
 
 
 def build_trip_generation_prompt(evidence: JoinedTripEvidence) -> str:
@@ -205,6 +224,7 @@ __all__ = [
     "TRIP_GENERATION_SYSTEM_PROMPT",
     "TripItineraryGenerationError",
     "TripItineraryGenerator",
+    "build_trip_narrative_skeleton",
     "build_trip_generation_prompt",
     "compose_trip_narrative",
 ]

@@ -16,6 +16,7 @@ from app.schemas.map_planning import (
 )
 from app.schemas.tool_execution import (
     MessageDeltaEvent,
+    MessagePreviewEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
 )
@@ -26,6 +27,7 @@ from app.schemas.trip_planning import (
     DailyWeatherEvidence,
     TripWeatherEvidence,
 )
+from langchain_core.messages import AIMessageChunk
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -44,8 +46,17 @@ class FakeTripModel:
         self.calls: list[str] = []
 
     def with_structured_output(self, schema: type[object]) -> Runnable:
-        self.calls.append(schema.__name__)
+        self.calls.append(f"native:{schema.__name__}")
         return Runnable(self._responses[schema.__name__].pop(0))
+
+    async def astream(self, _: object):
+        self.calls.append("stream:TripNarrativeDraft")
+        value = self._responses["TripNarrativeDraft"].pop(0)
+        assert isinstance(value, TripNarrativeDraft)
+        payload = value.model_dump_json()
+        midpoint = len(payload) // 2
+        yield AIMessageChunk(content=payload[:midpoint])
+        yield AIMessageChunk(content=payload[midpoint:])
 
 
 class FakeMapCollection:
@@ -253,6 +264,7 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
         (event.stage, event.status) for event in events if isinstance(event, PlanningStageEvent)
     ]
     traces = [event for event in events if isinstance(event, PlanningTraceEvent)]
+    previews = [event for event in events if isinstance(event, MessagePreviewEvent)]
     assert collection.calls == weather.calls == 1
     assert flyai.flight_calls == flyai.train_calls == flyai.hotel_calls == 0
     assert ("collecting_transport", "skipped") in stages
@@ -261,8 +273,14 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert "27-32℃" not in answer
     assert "SPF50" not in answer
     assert "预报含晴天，户外活动请注意防晒。" in answer
-    assert "TripPlanningRequest" not in model.calls
-    assert model.calls.count("TripNarrativeDraft") == 1
+    assert len(previews) == 1
+    assert "确定性行程已就绪" not in previews[0].content
+    assert "地点 a1" in previews[0].content
+    assert not any(call.startswith("native:") for call in model.calls)
+    assert model.calls.count("stream:TripNarrativeDraft") == 1
+    assert next(
+        index for index, event in enumerate(events) if isinstance(event, MessagePreviewEvent)
+    ) < next(index for index, event in enumerate(events) if isinstance(event, MessageDeltaEvent))
     capability_trace = next(trace for trace in traces if trace.title == "已解析本轮能力执行计划")
     assert capability_trace.data["transport_enabled"] is False
     assert capability_trace.data["hotel_enabled"] is False

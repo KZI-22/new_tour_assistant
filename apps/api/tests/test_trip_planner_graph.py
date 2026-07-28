@@ -66,6 +66,7 @@ def _node_set(
     transport_node: Node | None = None,
     hotel_node: Node | None = None,
     join_node: Node | None = None,
+    skeleton_node: Node | None = None,
     generate_node: Node | None = None,
     validate_node: Node | None = None,
     render_node: Node | None = None,
@@ -139,6 +140,12 @@ def _node_set(
             )
         ),
         join_evidence=join_node or default_join,
+        build_itinerary_skeleton=skeleton_node
+        or _node(
+            narrative_skeleton={"draft": True},
+            skeleton_validation_issues=[],
+            skeleton_answer="预览",
+        ),
         generate_itinerary=generate_node or _node(narrative={"draft": True}),
         validate_itinerary=validate_node or _node(validation_issues=[]),
         render_response=render_node or _node(final_answer="完成"),
@@ -349,3 +356,34 @@ async def test_validation_failure_does_not_regenerate_model_output() -> None:
     assert validation_count == 1
     assert result["controlled_error"] is True
     assert result["current_stage"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_skeleton_validation_failure_stops_before_model_generation() -> None:
+    generation_count = 0
+
+    async def generate(_: TripPlanningState) -> dict[str, Any]:
+        nonlocal generation_count
+        generation_count += 1
+        return {"narrative": {"unexpected": True}}
+
+    graph = TripPlannerGraph(
+        _node_set(
+            skeleton_node=_node(
+                skeleton_validation_issues=[
+                    ValidationIssue(
+                        code="MAP_REFERENCE_ORDER_MISMATCH",
+                        path="days.0.places",
+                        message="顺序不匹配",
+                    )
+                ],
+                skeleton_answer="",
+            ),
+            generate_node=generate,
+        )
+    )
+
+    result = await graph.ainvoke({"messages": []})
+
+    assert generation_count == 0
+    assert result["controlled_error"] is True

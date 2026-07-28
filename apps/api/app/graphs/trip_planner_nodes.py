@@ -22,7 +22,10 @@ from app.services.rule_first_trip_requirement_extractor import (
     RuleFirstTripRequirementExtractor,
 )
 from app.services.trip_evidence_joiner import join_trip_evidence
-from app.services.trip_itinerary_generator import TripItineraryGenerator
+from app.services.trip_itinerary_generator import (
+    TripItineraryGenerator,
+    build_trip_narrative_skeleton,
+)
 from app.services.trip_itinerary_renderer import render_trip_itinerary
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.trip_planner_logging import safe_log_value
@@ -176,6 +179,23 @@ class EvidenceJoinNode:
         }
 
 
+class BuildItinerarySkeletonNode:
+    def __init__(self, validator: TripPlanValidator | None = None) -> None:
+        self._validator = validator or TripPlanValidator()
+
+    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
+        evidence = state["joined_evidence"]
+        narrative = build_trip_narrative_skeleton(evidence)
+        issues = self._validator.validate(evidence, narrative)
+        _log_validation_issues(state, issues, node="build_itinerary_skeleton")
+        return {
+            "narrative_skeleton": narrative,
+            "skeleton_validation_issues": issues,
+            "skeleton_answer": (render_trip_itinerary(evidence, narrative) if not issues else ""),
+            "current_stage": "building_itinerary_skeleton",
+        }
+
+
 class GenerateItineraryNode:
     def __init__(self, generator: TripItineraryGenerator) -> None:
         self._generator = generator
@@ -219,6 +239,8 @@ class ValidateItineraryNode:
 def _log_validation_issues(
     state: TripPlanningState,
     issues: list[Any],
+    *,
+    node: str = "validate_itinerary",
 ) -> None:
     if not issues:
         return
@@ -228,9 +250,10 @@ def _log_validation_issues(
     issue_paths = ",".join(safe_log_value(issue.path) for issue in issues)
     logger.error(
         "event=trip_plan_validation_failed planning_run_id=%s "
-        "node=validate_itinerary status=failed duration_ms=0 "
+        "node=%s status=failed duration_ms=0 "
         "issue_count=%d issue_codes=%s issue_paths=%s",
         planning_run_id,
+        node,
         len(issues),
         issue_codes,
         issue_paths,
@@ -238,10 +261,11 @@ def _log_validation_issues(
     for issue in issues:
         logger.error(
             "event=trip_plan_validation_issue planning_run_id=%s "
-            "node=validate_itinerary status=failed duration_ms=0 "
+            "node=%s status=failed duration_ms=0 "
             "code=%s path=%s reference_id=%s "
             "expected_summary=%s actual_summary=%s",
             planning_run_id,
+            node,
             safe_log_value(issue.code),
             safe_log_value(issue.path),
             _reference_fingerprint(issue.reference_id),
@@ -258,6 +282,7 @@ def _reference_fingerprint(reference_id: str | None) -> str:
 
 
 __all__ = [
+    "BuildItinerarySkeletonNode",
     "ClarifyRequirementsNode",
     "EvidenceJoinNode",
     "ExtractRequirementsNode",

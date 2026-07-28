@@ -23,6 +23,7 @@ class TripPlannerNodeSet:
     collect_transport: TripPlannerNode
     collect_hotels: TripPlannerNode
     join_evidence: TripPlannerNode
+    build_itinerary_skeleton: TripPlannerNode
     generate_itinerary: TripPlannerNode
     validate_itinerary: TripPlannerNode
     render_response: TripPlannerNode
@@ -99,6 +100,13 @@ class TripPlannerGraph:
             ),
         )
         workflow.add_node(
+            "build_itinerary_skeleton",
+            logged_trip_planner_node(
+                "build_itinerary_skeleton",
+                self._nodes.build_itinerary_skeleton,
+            ),
+        )
+        workflow.add_node(
             "generate_itinerary",
             logged_trip_planner_node(
                 "generate_itinerary",
@@ -150,6 +158,14 @@ class TripPlannerGraph:
         workflow.add_conditional_edges(
             "join_evidence",
             _route_after_evidence_join,
+            {
+                "generate": "build_itinerary_skeleton",
+                "fail": "controlled_failure",
+            },
+        )
+        workflow.add_conditional_edges(
+            "build_itinerary_skeleton",
+            _route_after_skeleton_validation,
             {
                 "generate": "generate_itinerary",
                 "fail": "controlled_failure",
@@ -217,6 +233,12 @@ def _route_after_evidence_join(
 ) -> Literal["generate", "fail"]:
     evidence = state.get("joined_evidence")
     return "fail" if evidence is None or evidence.overall_status == "failed" else "generate"
+
+
+def _route_after_skeleton_validation(
+    state: TripPlanningState,
+) -> Literal["generate", "fail"]:
+    return "fail" if state.get("skeleton_validation_issues") else "generate"
 
 
 def _route_after_validation(

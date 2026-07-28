@@ -31,6 +31,9 @@ class TripPlanningState(TypedDict, total=False):
     hotel_evidence: RawCapabilityEvidence
     joined_evidence: JoinedTripEvidence
 
+    narrative_skeleton: TripNarrativePlan
+    skeleton_validation_issues: list[ValidationIssue]
+    skeleton_answer: str
     narrative: TripNarrativePlan
     validation_issues: list[ValidationIssue]
 

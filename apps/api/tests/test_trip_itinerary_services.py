@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 from app.graphs.trip_planner_nodes import (
+    BuildItinerarySkeletonNode,
     EvidenceJoinNode,
     GenerateItineraryNode,
     RenderResponseNode,
@@ -49,6 +50,7 @@ from app.services.weather_advice_service import (
     UNAVAILABLE_WEATHER_ADVICE,
     build_weather_advice,
 )
+from langchain_core.messages import AIMessageChunk
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -296,23 +298,35 @@ def test_generation_prompt_only_exposes_fields_needed_for_narrative_copy() -> No
         assert excluded not in serialized
 
 
-class FakeRunnable:
-    def __init__(self, value: TripNarrativeDraft, calls: list[object]) -> None:
-        self._value = value
-        self._calls = calls
-
-    async def ainvoke(self, messages: object) -> TripNarrativeDraft:
-        self._calls.append(messages)
-        return self._value
-
-
 class FakeModel:
     def __init__(self, value: TripNarrativeDraft) -> None:
         self.value = value
         self.calls: list[object] = []
 
-    def with_structured_output(self, _: type[object]) -> FakeRunnable:
-        return FakeRunnable(self.value, self.calls)
+    def with_structured_output(self, _: type[object]) -> object:
+        raise AssertionError("itinerary generation must not use native structured output")
+
+    async def astream(self, messages: object):
+        self.calls.append(messages)
+        payload = self.value.model_dump_json()
+        midpoint = len(payload) // 2
+        yield AIMessageChunk(content=payload[:midpoint])
+        yield AIMessageChunk(content=payload[midpoint:])
+
+
+@pytest.mark.asyncio
+async def test_skeleton_is_deterministic_valid_and_renderable_before_model_generation() -> None:
+    evidence = joined()
+
+    update = await BuildItinerarySkeletonNode()(
+        {"joined_evidence": evidence}  # type: ignore[arg-type]
+    )
+
+    assert update["skeleton_validation_issues"] == []
+    assert update["narrative_skeleton"].title == "成都1日旅行方案"
+    assert update["narrative_skeleton"].days[0].date == date(2026, 7, 25)
+    assert "地点 a1" in update["skeleton_answer"]
+    assert "旅行文案正在生成" in update["skeleton_answer"]
 
 
 @pytest.mark.asyncio
