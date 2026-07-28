@@ -26,7 +26,7 @@ from app.schemas.trip_planning import (
     DailyWeatherEvidence,
     TripWeatherEvidence,
 )
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -48,14 +48,11 @@ class FakeTripModel:
         self.calls.append(f"native:{schema.__name__}")
         return Runnable(self._responses[schema.__name__].pop(0))
 
-    async def astream(self, _: object):
-        self.calls.append("stream:TripNarrativeDraft")
+    async def ainvoke(self, _: object):
+        self.calls.append("invoke:TripNarrativeDraft")
         value = self._responses["TripNarrativeDraft"].pop(0)
         assert isinstance(value, TripNarrativeDraft)
-        payload = value.model_dump_json()
-        midpoint = len(payload) // 2
-        yield AIMessageChunk(content=payload[:midpoint])
-        yield AIMessageChunk(content=payload[midpoint:])
+        return AIMessage(content=value.model_dump_json())
 
 
 class FakeMapCollection:
@@ -276,7 +273,7 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert deltas[0].startswith("# ")
     assert all(delta.startswith("## ") for delta in deltas[1:])
     assert not any(call.startswith("native:") for call in model.calls)
-    assert model.calls.count("stream:TripNarrativeDraft") == 1
+    assert model.calls.count("invoke:TripNarrativeDraft") == 1
     validation_index = next(
         index
         for index, event in enumerate(events)

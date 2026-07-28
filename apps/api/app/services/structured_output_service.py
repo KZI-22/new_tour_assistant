@@ -81,7 +81,7 @@ class StructuredOutputService:
                 native_error or exc
             )
 
-    async def invoke_prompt_json_stream(
+    async def invoke_prompt_json(
         self,
         schema: type[SchemaT],
         system_prompt: str,
@@ -94,17 +94,17 @@ class StructuredOutputService:
             f"{user_prompt}\n\n请只输出符合以下 JSON Schema 的 JSON 对象，不要输出 Markdown：\n"
             f"{json.dumps(schema.model_json_schema(), ensure_ascii=False)}"
         )
-        chunks: list[str] = []
         try:
-            async with asyncio.timeout(timeout_seconds):
-                async for response_chunk in self._model.astream(
+            response = await asyncio.wait_for(
+                self._model.ainvoke(
                     [
                         SystemMessage(content=system_prompt),
                         HumanMessage(content=fallback_prompt),
                     ]
-                ):
-                    chunks.append(_message_text(response_chunk))
-            return schema.model_validate_json(_extract_json("".join(chunks)))
+                ),
+                timeout=timeout_seconds,
+            )
+            return schema.model_validate_json(_extract_json(_message_text(response)))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

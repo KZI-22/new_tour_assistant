@@ -56,7 +56,7 @@ class TripItineraryGenerator:
     ) -> TripNarrativePlan:
         prompt = build_trip_generation_prompt(evidence)
         try:
-            draft = await self._structured.invoke_prompt_json_stream(
+            draft = await self._structured.invoke_prompt_json(
                 TripNarrativeDraft,
                 TRIP_GENERATION_SYSTEM_PROMPT,
                 prompt,

@@ -53,7 +53,7 @@ from app.services.weather_advice_service import (
     UNAVAILABLE_WEATHER_ADVICE,
     build_weather_advice,
 )
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -309,12 +309,9 @@ class FakeModel:
     def with_structured_output(self, _: type[object]) -> object:
         raise AssertionError("itinerary generation must not use native structured output")
 
-    async def astream(self, messages: object):
+    async def ainvoke(self, messages: object):
         self.calls.append(messages)
-        payload = self.value.model_dump_json()
-        midpoint = len(payload) // 2
-        yield AIMessageChunk(content=payload[:midpoint])
-        yield AIMessageChunk(content=payload[midpoint:])
+        return AIMessage(content=self.value.model_dump_json())
 
 
 @pytest.mark.asyncio
