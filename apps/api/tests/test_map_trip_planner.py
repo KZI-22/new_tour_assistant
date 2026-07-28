@@ -132,11 +132,11 @@ def map_evidence() -> MapTripEvidence:
     return MapTripEvidence(
         city="成都",
         planning_run_id="test-run",
-        queried_at=datetime(2026, 7, 20, tzinfo=UTC),
+        queried_at=datetime(2027, 7, 20, tzinfo=UTC),
         days=[
             MapDayEvidence(
                 day_index=1,
-                date=date(2026, 7, 25),
+                date=date(2027, 7, 25),
                 attractions=places,
                 estimated_visit_minutes=270,
                 estimated_transport_minutes=16,
@@ -160,11 +160,11 @@ def weather_evidence() -> TripWeatherEvidence:
     return TripWeatherEvidence(
         city="成都",
         adcode="510100",
-        report_time="2026-07-20 10:00:00",
-        queried_at=datetime(2026, 7, 20, tzinfo=UTC),
+        report_time="2027-07-20 10:00:00",
+        queried_at=datetime(2027, 7, 20, tzinfo=UTC),
         days=[
             DailyWeatherEvidence(
-                date=date(2026, 7, 25),
+                date=date(2027, 7, 25),
                 coverage="available",
                 day_weather="晴",
                 night_weather="多云",
@@ -189,7 +189,7 @@ def narrative(
         days=[
             MapDayNarrative(
                 day_index=1,
-                date=date(2026, 7, 25),
+                date=date(2027, 7, 25),
                 theme="城市人文漫游",
                 places=[
                     MapPlaceNarrative(
@@ -206,7 +206,7 @@ def narrative(
 
 def model(
     *narratives: MapNarrativePlan,
-    start_date: date | None = date(2026, 7, 25),
+    start_date: date | None = date(2027, 7, 25),
 ) -> FakeMapModel:
     return FakeMapModel(
         {
@@ -263,10 +263,10 @@ async def test_map_and_weather_collection_overlap_and_render_verified_output() -
     assert "未搜索或推荐具体餐厅" in answer
     assert "`a2`" in answer
     assert "高德步行路线" in answer
-    assert "2026-07-25" in answer
+    assert "2027-07-25" in answer
     assert "白天 晴 32℃" in answer
-    assert answer.count("查询时间：2026-07-20 08:00:00（北京时间）") == 2
-    assert "2026-07-20T00:00:00+00:00" not in answer
+    assert answer.count("查询时间：2027-07-20 08:00:00（北京时间）") == 2
+    assert "2027-07-20T00:00:00+00:00" not in answer
     assert collection.calls == weather.calls == 1
 
 
