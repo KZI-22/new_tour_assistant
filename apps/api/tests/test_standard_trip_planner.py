@@ -76,7 +76,7 @@ class FakeMapCollection:
             days=[
                 MapDayEvidence(
                     day_index=1,
-                    date=date(2026, 7, 25),
+                    date=date(2027, 7, 25),
                     attractions=[place],
                     estimated_visit_minutes=90,
                 )
@@ -95,7 +95,7 @@ class FakeWeatherService:
             queried_at=QUERY_TIME,
             days=[
                 DailyWeatherEvidence(
-                    date=date(2026, 7, 25),
+                    date=date(2027, 7, 25),
                     coverage="available",
                     day_weather="晴",
                     night_weather="多云",
@@ -126,9 +126,9 @@ class FakeFlyAIClient:
                                     "journeyType": "直达",
                                     "segments": [
                                         {
-                                            "depDateTime": "2026-07-25 08:00:00",
+                                            "depDateTime": "2027-07-25 08:00:00",
                                             "depStationName": "南京禄口国际机场",
-                                            "arrDateTime": "2026-07-25 10:30:00",
+                                            "arrDateTime": "2027-07-25 10:30:00",
                                             "arrStationName": "成都天府机场",
                                             "marketingTransportName": "国航",
                                             "marketingTransportNo": "CA1234",
@@ -201,7 +201,7 @@ def narrative(
         days=[
             MapDayNarrative(
                 day_index=1,
-                date=date(2026, 7, 25),
+                date=date(2027, 7, 25),
                 theme="城市漫游",
                 places=[
                     MapPlaceNarrative(
@@ -263,7 +263,7 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     events = await collect(
         trip_planner,
         model,
-        "帮我规划成都一日游，2026-07-25 开始",
+        "帮我规划成都一日游，2027-07-25 开始",
     )
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
@@ -298,7 +298,7 @@ async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabil
     events = await collect(
         trip_planner,
         model,
-        "帮我规划成都一日游，2026-07-25 开始，从南京出发，并查单程飞机、查酒店",
+        "帮我规划成都一日游，2027-07-25 开始，从南京出发，并查单程飞机、查酒店",
     )
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
@@ -324,7 +324,7 @@ async def test_unified_missing_requirement_stops_before_all_provider_calls() -> 
     events = await collect(
         trip_planner,
         model,
-        "帮我规划成都一日游，2026-07-25 开始，并查单程飞机",
+        "帮我规划成都一日游，2027-07-25 开始，并查单程飞机",
     )
 
     answer = "".join(event.delta for event in events if isinstance(event, MessageDeltaEvent))
