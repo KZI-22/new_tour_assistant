@@ -113,13 +113,6 @@ class TripPlannerGraph:
             ),
         )
         workflow.add_node(
-            "prepare_revision",
-            logged_trip_planner_node(
-                "prepare_revision",
-                _prepare_revision,
-            ),
-        )
-        workflow.add_node(
             "render_response",
             logged_trip_planner_node(
                 "render_response",
@@ -168,11 +161,9 @@ class TripPlannerGraph:
             _route_after_validation,
             {
                 "render": "render_response",
-                "revise": "prepare_revision",
                 "fail": "controlled_failure",
             },
         )
-        workflow.add_edge("prepare_revision", "generate_itinerary")
         workflow.add_edge("render_response", END)
         workflow.add_edge("controlled_failure", END)
         return workflow.compile()
@@ -183,7 +174,6 @@ class TripPlannerGraph:
     ) -> TripPlanningState:
         state: TripPlanningState = {
             "planning_run_id": str(uuid4()),
-            "revision_count": 0,
             **initial_state,
         }
         result = await self._graph.ainvoke(state)
@@ -197,7 +187,6 @@ class TripPlannerGraph:
     ) -> AsyncIterator[object]:
         state: TripPlanningState = {
             "planning_run_id": str(uuid4()),
-            "revision_count": 0,
             **initial_state,
         }
         async for event in self._graph.astream(state, stream_mode=stream_mode):
@@ -206,13 +195,6 @@ class TripPlannerGraph:
 
 async def _dispatch_collection(_: TripPlanningState) -> dict[str, Any]:
     return {"current_stage": "collecting_evidence"}
-
-
-async def _prepare_revision(state: TripPlanningState) -> dict[str, Any]:
-    return {
-        "revision_count": state.get("revision_count", 0) + 1,
-        "current_stage": "revising_itinerary",
-    }
 
 
 async def _controlled_failure(_: TripPlanningState) -> dict[str, Any]:
@@ -239,12 +221,8 @@ def _route_after_evidence_join(
 
 def _route_after_validation(
     state: TripPlanningState,
-) -> Literal["render", "revise", "fail"]:
-    if not state.get("validation_issues"):
-        return "render"
-    if state.get("revision_count", 0) < 1:
-        return "revise"
-    return "fail"
+) -> Literal["render", "fail"]:
+    return "fail" if state.get("validation_issues") else "render"
 
 
 __all__ = [

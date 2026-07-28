@@ -180,15 +180,13 @@ def _completion_metrics(
             else:
                 output_chars = len(str(narrative))
             return (
-                f" model_call_count={state.get('revision_count', 0) + 1}"
-                f" output_chars={output_chars}"
+                f" model_call_count=1 output_chars={output_chars}"
             )
     if node == "validate_itinerary":
         issues = result.get("validation_issues", [])
         codes = ",".join(safe_log_value(issue.code) for issue in issues) or "none"
         return (
-            f" validation_count={state.get('revision_count', 0) + 1}"
-            f" issue_count={len(issues)} issue_codes={codes}"
+            f" validation_count=1 issue_count={len(issues)} issue_codes={codes}"
         )
     if node == "render_response":
         return f" output_chars={len(result.get('final_answer', ''))}"

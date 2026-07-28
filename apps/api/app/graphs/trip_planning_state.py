@@ -9,6 +9,7 @@ from app.schemas.trip_evidence import (
     MapWeatherEvidenceBundle,
     RawCapabilityEvidence,
 )
+from app.schemas.trip_itinerary import TripNarrativePlan
 from app.schemas.trip_validation import ValidationIssue
 
 
@@ -30,9 +31,8 @@ class TripPlanningState(TypedDict, total=False):
     hotel_evidence: RawCapabilityEvidence
     joined_evidence: JoinedTripEvidence
 
-    narrative: object
+    narrative: TripNarrativePlan
     validation_issues: list[ValidationIssue]
-    revision_count: int
 
     final_answer: str
     controlled_error: bool

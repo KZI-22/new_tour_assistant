@@ -344,7 +344,7 @@ def test_booking_completion_claim_is_forbidden() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validation_failure_logs_every_safe_issue_for_both_attempts(
+async def test_validation_failure_logs_every_safe_issue_without_retry(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     evidence = joined_evidence()
@@ -353,29 +353,18 @@ async def test_validation_failure_logs_every_safe_issue_for_both_attempts(
     node = ValidateItineraryNode()
     caplog.set_level(logging.INFO)
 
-    first = await node(
+    result = await node(
         {
             "planning_run_id": "planner-run-123",
-            "revision_count": 0,
-            "joined_evidence": evidence,
-            "narrative": plan,
-        }
-    )
-    second = await node(
-        {
-            "planning_run_id": "planner-run-123",
-            "revision_count": 1,
             "joined_evidence": evidence,
             "narrative": plan,
         }
     )
 
-    assert first["validation_issues"]
-    assert second["validation_issues"]
-    assert caplog.text.count("event=trip_plan_validation_failed") == 2
+    assert result["validation_issues"]
+    assert caplog.text.count("event=trip_plan_validation_failed") == 1
     assert "planning_run_id=planner-run-123" in caplog.text
-    assert "revision_count=0" in caplog.text
-    assert "revision_count=1" in caplog.text
+    assert "revision_count" not in caplog.text
     assert "code=MAP_REFERENCE_UNKNOWN" in caplog.text
     assert "path=days.1.places.0.reference_id" in caplog.text
     assert "reference_id=sha256:" in caplog.text

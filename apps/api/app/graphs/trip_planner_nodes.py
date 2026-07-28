@@ -181,10 +181,7 @@ class GenerateItineraryNode:
         self._generator = generator
 
     async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
-        narrative = await self._generator.generate(
-            state["joined_evidence"],
-            validation_issues=state.get("validation_issues"),
-        )
+        narrative = await self._generator.generate(state["joined_evidence"])
         return {
             "narrative": narrative,
             "current_stage": "generating_itinerary",
@@ -226,29 +223,25 @@ def _log_validation_issues(
     if not issues:
         return
 
-    revision_count = state.get("revision_count", 0)
     planning_run_id = safe_log_value(state.get("planning_run_id", "unavailable"))
     issue_codes = ",".join(safe_log_value(issue.code) for issue in issues)
     issue_paths = ",".join(safe_log_value(issue.path) for issue in issues)
-    log_method = logger.warning if revision_count < 1 else logger.error
-    log_method(
+    logger.error(
         "event=trip_plan_validation_failed planning_run_id=%s "
-        "node=validate_itinerary status=failed duration_ms=0 revision_count=%d "
+        "node=validate_itinerary status=failed duration_ms=0 "
         "issue_count=%d issue_codes=%s issue_paths=%s",
         planning_run_id,
-        revision_count,
         len(issues),
         issue_codes,
         issue_paths,
     )
     for issue in issues:
-        log_method(
+        logger.error(
             "event=trip_plan_validation_issue planning_run_id=%s "
             "node=validate_itinerary status=failed duration_ms=0 "
-            "revision_count=%d code=%s path=%s reference_id=%s "
+            "code=%s path=%s reference_id=%s "
             "expected_summary=%s actual_summary=%s",
             planning_run_id,
-            revision_count,
             safe_log_value(issue.code),
             safe_log_value(issue.path),
             _reference_fingerprint(issue.reference_id),

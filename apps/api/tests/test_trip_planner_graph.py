@@ -314,7 +314,7 @@ async def test_cancellation_propagates_to_every_parallel_branch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_first_validation_failure_revises_once() -> None:
+async def test_validation_failure_does_not_regenerate_model_output() -> None:
     generation_count = 0
     validation_count = 0
 
@@ -326,18 +326,15 @@ async def test_first_validation_failure_revises_once() -> None:
     async def validate(_: TripPlanningState) -> dict[str, Any]:
         nonlocal validation_count
         validation_count += 1
-        issues = (
-            [
+        return {
+            "validation_issues": [
                 ValidationIssue(
                     code="DAY_DATE_MISMATCH",
                     path="days.0.date",
                     message="日期不匹配",
                 )
             ]
-            if validation_count == 1
-            else []
-        )
-        return {"validation_issues": issues}
+        }
 
     graph = TripPlannerGraph(
         _node_set(
@@ -348,29 +345,7 @@ async def test_first_validation_failure_revises_once() -> None:
 
     result = await graph.ainvoke({"messages": []})
 
-    assert generation_count == 2
-    assert validation_count == 2
-    assert result["revision_count"] == 1
-    assert result["final_answer"] == "完成"
-
-
-@pytest.mark.asyncio
-async def test_second_validation_failure_returns_controlled_error() -> None:
-    async def always_invalid(_: TripPlanningState) -> dict[str, Any]:
-        return {
-            "validation_issues": [
-                ValidationIssue(
-                    code="MAP_REFERENCE_UNKNOWN",
-                    path="days.0.places.0.reference_id",
-                    message="地图引用不存在",
-                )
-            ]
-        }
-
-    graph = TripPlannerGraph(_node_set(validate_node=always_invalid))
-
-    result = await graph.ainvoke({"messages": []})
-
-    assert result["revision_count"] == 1
+    assert generation_count == 1
+    assert validation_count == 1
     assert result["controlled_error"] is True
     assert result["current_stage"] == "failed"

@@ -28,7 +28,11 @@ from app.schemas.trip_evidence import (
     MapWeatherEvidenceBundle,
     RawCapabilityEvidence,
 )
-from app.schemas.trip_itinerary import TripNarrativePlan
+from app.schemas.trip_itinerary import (
+    TripDayNarrativeDraft,
+    TripNarrativeDraft,
+    TripNarrativePlan,
+)
 from app.schemas.trip_planning import (
     CityTripRequest,
     DailyWeatherEvidence,
@@ -179,6 +183,29 @@ def narrative(
     )
 
 
+def draft(
+    *,
+    reasons: list[str] | None = None,
+    include_day: bool = True,
+) -> TripNarrativeDraft:
+    return TripNarrativeDraft(
+        title="成都一日攻略",
+        summary="按地图与用户偏好整理。",
+        days=(
+            [
+                TripDayNarrativeDraft(
+                    theme="城市漫游",
+                    recommendation_reasons=reasons or ["适合按既定顺序游览。"],
+                    tips=["合理安排休息。"],
+                )
+            ]
+            if include_day
+            else []
+        ),
+        practical_tips=["出发前确认开放时间。"],
+    )
+
+
 def joined(
     *,
     plan: CapabilityPlan | None = None,
@@ -218,7 +245,7 @@ def test_joiner_applies_required_map_and_optional_capability_status_rules() -> N
     assert failed_hotel.warnings == ["酒店暂时不可用"]
 
 
-def test_generation_prompt_only_exposes_normalized_enabled_options() -> None:
+def test_generation_prompt_only_exposes_fields_needed_for_narrative_copy() -> None:
     evidence = joined(
         plan=capability_plan(transport=True, hotel=True),
         transport=raw_evidence(
@@ -234,38 +261,53 @@ def test_generation_prompt_only_exposes_normalized_enabled_options() -> None:
         ),
     )
 
-    prompt = json.loads(build_trip_generation_prompt(evidence, validation_issues=[]))
+    prompt = json.loads(build_trip_generation_prompt(evidence))
+    serialized = json.dumps(prompt, ensure_ascii=False)
 
-    assert prompt["transport_evidence"]["display_options"] == ["去程航班 CA1234｜参考价 ¥680"]
-    assert prompt["hotel_evidence"]["display_options"] == []
-    assert "opaque" not in json.dumps(prompt, ensure_ascii=False)
-    assert "hotel-secret" not in json.dumps(prompt, ensure_ascii=False)
-
-    disabled = joined(
-        transport=raw_evidence(
-            "transport",
-            EvidenceStatus.USABLE,
-            data={"must_not_reach_model": "transport-secret"},
-            display_options=["不应进入提示词"],
-        )
-    )
-    disabled_prompt = json.loads(build_trip_generation_prompt(disabled, validation_issues=[]))
-    assert disabled_prompt["transport_evidence"]["display_options"] == []
-    assert disabled_prompt["transport_evidence"]["query"] == {}
+    assert set(prompt) == {"request", "days"}
+    assert set(prompt["request"]) == {
+        "destination_city",
+        "duration_days",
+        "interests",
+        "food_preferences",
+    }
+    assert set(prompt["days"][0]) == {"day_index", "places"}
+    assert set(prompt["days"][0]["places"][0]) == {
+        "name",
+        "poi_type",
+        "estimated_visit_minutes",
+        "matched_preferences",
+        "selection_reasons",
+    }
+    for excluded in (
+        "reference_id",
+        "poi_id",
+        "address",
+        "location",
+        "candidate_score",
+        "transport_evidence",
+        "hotel_evidence",
+        "weather_evidence",
+        "capability_plan",
+        "opaque",
+        "hotel-secret",
+        "CA1234",
+    ):
+        assert excluded not in serialized
 
 
 class FakeRunnable:
-    def __init__(self, value: TripNarrativePlan, calls: list[object]) -> None:
+    def __init__(self, value: TripNarrativeDraft, calls: list[object]) -> None:
         self._value = value
         self._calls = calls
 
-    async def ainvoke(self, messages: object) -> TripNarrativePlan:
+    async def ainvoke(self, messages: object) -> TripNarrativeDraft:
         self._calls.append(messages)
         return self._value
 
 
 class FakeModel:
-    def __init__(self, value: TripNarrativePlan) -> None:
+    def __init__(self, value: TripNarrativeDraft) -> None:
         self.value = value
         self.calls: list[object] = []
 
@@ -295,7 +337,7 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
     joined_update = await EvidenceJoinNode()(state)  # type: ignore[arg-type]
     assert joined_update["joined_evidence"].overall_status == "partial"
 
-    expected = narrative()
+    expected = draft()
     model = FakeModel(expected)
     generation_update = await GenerateItineraryNode(
         TripItineraryGenerator(
@@ -320,17 +362,18 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
     assert "去程火车 G123｜成都方向" in answer
     assert "酒店查询暂时失败（UPSTREAM_TIMEOUT）" in answer
     assert "地图与天气行程仍可继续使用" in answer
+    generated = generation_update["narrative"]
+    assert generated.days[0].date == date(2026, 7, 25)
+    assert [place.reference_id for place in generated.days[0].places] == ["poi_a1"]
+    assert generated.transport_options == ["去程火车 G123｜成都方向"]
+    assert generated.hotel_options == []
     assert len(model.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_generation_replaces_model_weather_copy_before_validation() -> None:
+async def test_generation_injects_deterministic_weather_before_validation() -> None:
     evidence = joined()
-    model_plan = narrative()
-    model_plan.days[0].weather_advice = [
-        "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
-    ]
-    model = FakeModel(model_plan)
+    model = FakeModel(draft())
 
     generated = await TripItineraryGenerator(
         model,  # type: ignore[arg-type]
@@ -342,6 +385,26 @@ async def test_generation_replaces_model_weather_copy_before_validation() -> Non
     assert generated.days[0].weather_advice == build_weather_advice(weather.days[0])
     assert TripPlanValidator().validate(evidence, generated) == []
     assert len(model.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_fills_missing_draft_days_from_deterministic_evidence() -> None:
+    evidence = joined()
+    model = FakeModel(draft(include_day=False))
+
+    generated = await TripItineraryGenerator(
+        model,  # type: ignore[arg-type]
+        timeout_seconds=1,
+    ).generate(evidence)
+
+    assert generated.days[0].day_index == 1
+    assert generated.days[0].date == date(2026, 7, 25)
+    assert generated.days[0].theme == "成都第 1 天行程"
+    assert [place.reference_id for place in generated.days[0].places] == ["poi_a1"]
+    assert generated.days[0].places[0].recommendation_reason == (
+        "地点 a1已由后端纳入当天的既定游览顺序。"
+    )
+    assert TripPlanValidator().validate(evidence, generated) == []
 
 
 def test_renderer_is_deterministic_for_optional_statuses_without_reliability_copy() -> None:

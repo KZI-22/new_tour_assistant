@@ -1,30 +1,39 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from langchain_core.language_models import BaseChatModel
 
+from app.schemas.map_planning import (
+    MapDayEvidence,
+    MapDayNarrative,
+    MapPlaceEvidence,
+    MapPlaceNarrative,
+)
 from app.schemas.trip_evidence import EvidenceStatus, JoinedTripEvidence
-from app.schemas.trip_itinerary import TripNarrativePlan
-from app.schemas.trip_validation import ValidationIssue
+from app.schemas.trip_itinerary import (
+    TripDayNarrativeDraft,
+    TripNarrativeDraft,
+    TripNarrativePlan,
+)
+from app.schemas.trip_planning import DailyWeatherEvidence
 from app.services.structured_output_service import (
     StructuredOutputError,
     StructuredOutputService,
 )
-from app.services.weather_advice_service import normalize_weather_advice
+from app.services.weather_advice_service import build_weather_advice
 
-TRIP_GENERATION_SYSTEM_PROMPT = """你是受外部证据约束的旅行方案整理器。
+TRIP_GENERATION_SYSTEM_PROMPT = """你是受外部证据约束的旅行文案编辑器。
 
 严格规则：
-1. 每日 place 引用必须与 map_evidence 中的 attractions 顺序完全相同，不能增删、交换或跨天移动。
-2. 不得输出新的地点、具体餐厅或路线引用；地图、路线、距离和天气事实只能来自对应证据。
-3. transport_options 只能逐字复制 transport_evidence.display_options，不得改写或补充。
-4. hotel_options 只能逐字复制 hotel_evidence.display_options，不得改写或补充。
-5. display_options 由后端根据 FlyAI 响应确定性生成；不得猜测缺失字段、库存或预订状态。
-6. failed、empty 或 skipped 的可选 Evidence 不得生成具体班次或酒店，状态说明由后端确定性渲染。
-7. weather_advice 由后端根据 weather_evidence 确定性生成；模型必须为每一天返回空数组。
-8. 不得声称已完成预订、支付、锁价、占座或库存确认。
-9. 只输出符合指定 JSON Schema 的结构化结果。"""
+1. 后端已经确定行程天数、日期、地点、地点顺序、路线、天气、交通与酒店；你只生成文案。
+2. days 必须按输入 days 的顺序返回；recommendation_reasons 必须按对应 places 的顺序返回。
+3. 不得新增地点、具体餐厅、路线、距离、天气、班次、酒店、价格、库存或预订事实。
+4. 推荐理由只能依据地点名称、类型、用户偏好、匹配偏好和后端筛选理由整理。
+5. 文案保持简洁：summary 不超过 300 字，每条推荐理由不超过 120 字，每天 tips 不超过 3 条。
+6. 不得声称已完成预订、支付、出票、锁价、占座或库存确认。
+7. 只输出符合指定 JSON Schema 的结构化结果。"""
 
 
 class TripItineraryGenerationError(RuntimeError):
@@ -44,53 +53,37 @@ class TripItineraryGenerator:
     async def generate(
         self,
         evidence: JoinedTripEvidence,
-        *,
-        validation_issues: list[ValidationIssue] | None = None,
     ) -> TripNarrativePlan:
-        prompt = build_trip_generation_prompt(
-            evidence,
-            validation_issues=validation_issues or [],
-        )
+        prompt = build_trip_generation_prompt(evidence)
         try:
-            plan = await self._structured.invoke(
-                TripNarrativePlan,
+            draft = await self._structured.invoke(
+                TripNarrativeDraft,
                 TRIP_GENERATION_SYSTEM_PROMPT,
                 prompt,
                 timeout_seconds=self._timeout_seconds,
             )
-            plan = plan.model_copy(
-                update={
-                    "transport_options": _evidence_options(
-                        evidence.capabilities.transport.enabled,
-                        evidence.transport,
-                    ),
-                    "hotel_options": _evidence_options(
-                        evidence.capabilities.hotel.enabled,
-                        evidence.hotel,
-                    ),
-                }
-            )
-            weather = evidence.map_weather.weather
-            if weather is not None:
-                plan = normalize_weather_advice(plan, weather)
-            return plan
+            return compose_trip_narrative(evidence, draft)
         except StructuredOutputError as exc:
             raise TripItineraryGenerationError("模型没有生成有效的统一旅行方案。") from exc
 
 
-def build_trip_generation_prompt(
-    evidence: JoinedTripEvidence,
-    *,
-    validation_issues: list[ValidationIssue],
-) -> str:
+def build_trip_generation_prompt(evidence: JoinedTripEvidence) -> str:
     map_evidence = evidence.map_weather.map
-    weather = evidence.map_weather.weather
-    requirements = (
+    core = evidence.request.core
+    days = (
         [
             {
                 "day_index": day.day_index,
-                "date": day.date.isoformat(),
-                "ordered_place_refs": [place.reference_id for place in day.ordered_places()],
+                "places": [
+                    {
+                        "name": place.name,
+                        "poi_type": place.poi_type,
+                        "estimated_visit_minutes": place.estimated_visit_minutes,
+                        "matched_preferences": place.matched_preferences,
+                        "selection_reasons": place.selection_reasons,
+                    }
+                    for place in day.ordered_places()
+                ],
             }
             for day in map_evidence.days
         ]
@@ -98,39 +91,107 @@ def build_trip_generation_prompt(
         else []
     )
     payload = {
-        "request": evidence.request.model_dump(mode="json"),
-        "capability_plan": evidence.capabilities.model_dump(mode="json"),
-        "map_evidence": (
-            map_evidence.model_dump(mode="json") if map_evidence is not None else None
-        ),
-        "weather_evidence": (weather.model_dump(mode="json") if weather is not None else None),
-        "transport_evidence": _optional_prompt_evidence(
-            evidence.capabilities.transport.enabled,
-            evidence.transport,
-        ),
-        "hotel_evidence": _optional_prompt_evidence(
-            evidence.capabilities.hotel.enabled,
-            evidence.hotel,
-        ),
-        "requirements": requirements,
-        "validation_issues": [issue.model_dump(mode="json") for issue in validation_issues],
+        "request": {
+            "destination_city": core.destination_city,
+            "duration_days": core.duration_days,
+            "interests": core.interests,
+            "food_preferences": core.food_preferences,
+        },
+        "days": days,
     }
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _optional_prompt_evidence(
-    enabled: bool,
-    evidence: object,
-) -> dict[str, object]:
-    status = getattr(evidence, "status", EvidenceStatus.FAILED)
-    return {
-        "enabled": enabled,
-        "status": status.value if isinstance(status, EvidenceStatus) else str(status),
-        "query": getattr(evidence, "query", {}) if enabled else {},
-        "display_options": _evidence_options(enabled, evidence),
-        "warnings": getattr(evidence, "warnings", []) if enabled else [],
-        "error_code": getattr(evidence, "error_code", None) if enabled else None,
-    }
+def compose_trip_narrative(
+    evidence: JoinedTripEvidence,
+    draft: TripNarrativeDraft,
+) -> TripNarrativePlan:
+    map_evidence = evidence.map_weather.map
+    weather = evidence.map_weather.weather
+    if map_evidence is None or weather is None:
+        raise TripItineraryGenerationError("地图与天气核心证据不可用。")
+
+    weather_by_date = {day.date: day for day in weather.days}
+    narrative_days: list[MapDayNarrative] = []
+    for day_offset, evidence_day in enumerate(map_evidence.days):
+        draft_day = draft.days[day_offset] if day_offset < len(draft.days) else None
+        narrative_days.append(
+            _compose_day_narrative(
+                evidence,
+                evidence_day,
+                weather_by_date,
+                draft_day,
+            )
+        )
+
+    return TripNarrativePlan(
+        title=draft.title,
+        summary=draft.summary,
+        days=narrative_days,
+        practical_tips=list(draft.practical_tips),
+        warnings=list(draft.warnings),
+        transport_options=_evidence_options(
+            evidence.capabilities.transport.enabled,
+            evidence.transport,
+        ),
+        hotel_options=_evidence_options(
+            evidence.capabilities.hotel.enabled,
+            evidence.hotel,
+        ),
+    )
+
+
+def _compose_day_narrative(
+    evidence: JoinedTripEvidence,
+    evidence_day: MapDayEvidence,
+    weather_by_date: dict[date, DailyWeatherEvidence],
+    draft_day: TripDayNarrativeDraft | None,
+) -> MapDayNarrative:
+    reasons = draft_day.recommendation_reasons if draft_day is not None else []
+    return MapDayNarrative(
+        day_index=evidence_day.day_index,
+        date=evidence_day.date,
+        theme=(
+            draft_day.theme
+            if draft_day is not None
+            else _fallback_day_theme(evidence, evidence_day.day_index)
+        ),
+        places=[
+            MapPlaceNarrative(
+                reference_id=place.reference_id,
+                recommendation_reason=(
+                    reasons[place_offset]
+                    if place_offset < len(reasons)
+                    else _fallback_recommendation_reason(place)
+                ),
+            )
+            for place_offset, place in enumerate(evidence_day.ordered_places())
+        ],
+        weather_advice=(
+            build_weather_advice(weather_by_date[evidence_day.date])
+            if evidence_day.date in weather_by_date
+            else []
+        ),
+        tips=list(draft_day.tips) if draft_day is not None else [],
+    )
+
+
+def _fallback_day_theme(
+    evidence: JoinedTripEvidence,
+    day_index: int,
+) -> str:
+    city = evidence.request.core.destination_city or "目的地"
+    return f"{city}第 {day_index} 天行程"
+
+
+def _fallback_recommendation_reason(place: MapPlaceEvidence) -> str:
+    if place.selection_reasons:
+        detail = "；".join(place.selection_reasons)
+        return f"后端筛选依据：{detail}"[:500]
+    if place.matched_preferences:
+        preferences = "、".join(str(item) for item in place.matched_preferences)
+        return f"符合本次行程的{preferences}偏好，并纳入当天既定游览顺序。"
+    return f"{place.name}已由后端纳入当天的既定游览顺序。"
 
 
 def _evidence_options(enabled: bool, evidence: object) -> list[str]:
@@ -145,4 +206,5 @@ __all__ = [
     "TripItineraryGenerationError",
     "TripItineraryGenerator",
     "build_trip_generation_prompt",
+    "compose_trip_narrative",
 ]

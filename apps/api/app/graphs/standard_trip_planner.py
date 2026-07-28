@@ -426,14 +426,6 @@ class _StandardTripPlanningRun:
                     )
                 )
         elif node == "generate_itinerary":
-            if state.get("revision_count", 0):
-                events.append(
-                    _stage(
-                        "revising_itinerary",
-                        "正在修订未通过校验的旅行方案",
-                        "success",
-                    )
-                )
             events.extend(
                 [
                     _stage(
@@ -444,12 +436,6 @@ class _StandardTripPlanningRun:
                     self._trace(
                         "itinerary_generated",
                         "统一旅行方案文案生成完成",
-                        data={
-                            "revision_count": state.get(
-                                "revision_count",
-                                0,
-                            )
-                        },
                     ),
                     _stage(
                         "validating_itinerary",
@@ -465,7 +451,7 @@ class _StandardTripPlanningRun:
                     _stage(
                         "validating_itinerary",
                         "正在校验日期、引用与能力输出",
-                        ("partial" if state.get("revision_count", 0) < 1 else "failed"),
+                        "failed",
                         detail=f"检测到 {len(issues)} 个确定性校验问题。",
                     )
                 )
@@ -480,12 +466,6 @@ class _StandardTripPlanningRun:
                         self._trace(
                             "validation_completed",
                             "统一旅行方案确定性校验通过",
-                            data={
-                                "revision_count": state.get(
-                                    "revision_count",
-                                    0,
-                                )
-                            },
                         ),
                         _stage(
                             "finalizing",
@@ -494,14 +474,6 @@ class _StandardTripPlanningRun:
                         ),
                     ]
                 )
-        elif node == "prepare_revision":
-            events.append(
-                _stage(
-                    "revising_itinerary",
-                    "正在修订未通过校验的旅行方案",
-                    "running",
-                )
-            )
         elif node == "render_response":
             answer = cast(str, result["final_answer"])
             events.extend(
@@ -529,10 +501,6 @@ class _StandardTripPlanningRun:
                         "统一旅行方案未通过确定性校验",
                         status="failed",
                         data={
-                            "revision_count": state.get(
-                                "revision_count",
-                                0,
-                            ),
                             "issue_codes": [
                                 issue.code
                                 for issue in state.get(

@@ -11,9 +11,7 @@ from app.schemas.amap import AmapCoordinate
 from app.schemas.chat import ChatMessage
 from app.schemas.map_planning import (
     MapDayEvidence,
-    MapDayNarrative,
     MapPlaceEvidence,
-    MapPlaceNarrative,
     MapTripEvidence,
 )
 from app.schemas.tool_execution import (
@@ -22,7 +20,7 @@ from app.schemas.tool_execution import (
     PlanningTraceEvent,
 )
 from app.schemas.travel import FlyAIResult
-from app.schemas.trip_itinerary import TripNarrativePlan
+from app.schemas.trip_itinerary import TripDayNarrativeDraft, TripNarrativeDraft
 from app.schemas.trip_planning import (
     CityTripRequest,
     DailyWeatherEvidence,
@@ -190,32 +188,16 @@ def settings() -> Settings:
     )
 
 
-def narrative(
-    *,
-    transport: bool = False,
-    hotel: bool = False,
-) -> TripNarrativePlan:
-    return TripNarrativePlan(
+def narrative() -> TripNarrativeDraft:
+    return TripNarrativeDraft(
         title="成都一日攻略",
-        summary="按地图、天气与已启用能力结果整理。",
+        summary="按地图与用户偏好整理。",
         days=[
-            MapDayNarrative(
-                day_index=1,
-                date=date(2027, 7, 25),
+            TripDayNarrativeDraft(
                 theme="城市漫游",
-                places=[
-                    MapPlaceNarrative(
-                        reference_id="poi_a1",
-                        recommendation_reason="按既定地图顺序游览。",
-                    )
-                ],
-                weather_advice=[
-                    "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
-                ],
+                recommendation_reasons=["按既定地图顺序游览。"],
             )
         ],
-        transport_options=[],
-        hotel_options=[],
     )
 
 
@@ -256,7 +238,7 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     trip_planner, collection, weather, flyai = planner()
     model = FakeTripModel(
         {
-            "TripNarrativePlan": [narrative()],
+            "TripNarrativeDraft": [narrative()],
         }
     )
 
@@ -280,7 +262,7 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert "SPF50" not in answer
     assert "预报含晴天，户外活动请注意防晒。" in answer
     assert "TripPlanningRequest" not in model.calls
-    assert model.calls.count("TripNarrativePlan") == 1
+    assert model.calls.count("TripNarrativeDraft") == 1
     capability_trace = next(trace for trace in traces if trace.title == "已解析本轮能力执行计划")
     assert capability_trace.data["transport_enabled"] is False
     assert capability_trace.data["hotel_enabled"] is False
@@ -291,7 +273,7 @@ async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabil
     trip_planner, collection, weather, flyai = planner()
     model = FakeTripModel(
         {
-            "TripNarrativePlan": [narrative(transport=True, hotel=True)],
+            "TripNarrativeDraft": [narrative()],
         }
     )
 
