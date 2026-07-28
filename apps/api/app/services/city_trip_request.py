@@ -24,7 +24,10 @@ _ORDINAL_DAY = re.compile(rf"第\s*{_SMALL_NUMBER_PATTERN}\s*[天日]")
 _DURATION_PATTERNS = (
     re.compile(rf"(?<!第)(?:游玩|行程|玩|游)?\s*({_SMALL_NUMBER_PATTERN})\s*天"),
     re.compile(rf"(?<!第)(?:游玩|行程|玩|游)\s*({_SMALL_NUMBER_PATTERN})\s*日"),
-    re.compile(rf"(?<!第)({_SMALL_NUMBER_PATTERN})\s*日\s*(?:游|行程)"),
+    re.compile(
+        rf"(?<!第)({_SMALL_NUMBER_PATTERN})\s*日\s*"
+        r"(?:游|行程|(?:旅游|旅行)(?:规划|攻略|计划)?|规划|攻略|计划)"
+    ),
 )
 _CHINESE_DIGITS = {
     "零": 0,

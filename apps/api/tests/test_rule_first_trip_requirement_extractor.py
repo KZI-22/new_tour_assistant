@@ -79,6 +79,23 @@ def test_core_acceptance_sample_is_fully_parsed_by_rules() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "做一个去杭州的三日旅游规划",
+        "做一个去杭州的三日旅游攻略",
+        "做一个去杭州的三日旅行计划",
+        "做一个去杭州的3日攻略",
+        "做一个去杭州的三日旅游规划/攻略",
+    ],
+)
+def test_duration_is_extracted_from_trip_planning_and_guide_phrases(text: str) -> None:
+    result = extract_trip_request_by_rules(_messages(text))
+
+    assert result.request.core.destination_city == "杭州"
+    assert result.request.core.duration_days == 3
+
+
 def test_clause_scoped_negation_keeps_train_and_hotel_enabled() -> None:
     result = extract_trip_request_by_rules(_messages("不要飞机，帮我查北京到西安的高铁和酒店"))
 
