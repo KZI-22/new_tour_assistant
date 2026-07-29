@@ -67,9 +67,6 @@ def _node_set(
     hotel_node: Node | None = None,
     join_node: Node | None = None,
     skeleton_node: Node | None = None,
-    generate_node: Node | None = None,
-    validate_node: Node | None = None,
-    render_node: Node | None = None,
     clarify_node: Node | None = None,
 ) -> TripPlannerNodeSet:
     request = _request()
@@ -146,9 +143,6 @@ def _node_set(
             skeleton_validation_issues=[],
             skeleton_answer="预览",
         ),
-        generate_itinerary=generate_node or _node(narrative={"draft": True}),
-        validate_itinerary=validate_node or _node(validation_issues=[]),
-        render_response=render_node or _node(final_answer="完成"),
     )
 
 
@@ -220,7 +214,7 @@ async def test_capability_combinations_join_once(
     assert result["hotel_evidence"].status is (
         EvidenceStatus.USABLE if hotel_enabled else EvidenceStatus.SKIPPED
     )
-    assert result["final_answer"] == "完成"
+    assert result["skeleton_answer"] == "预览"
 
 
 @pytest.mark.asyncio
@@ -280,7 +274,7 @@ async def test_collection_branches_run_in_parallel_before_join() -> None:
     result = await task
 
     assert join_count == 1
-    assert result["final_answer"] == "完成"
+    assert result["skeleton_answer"] == "预览"
 
 
 @pytest.mark.asyncio
@@ -321,52 +315,7 @@ async def test_cancellation_propagates_to_every_parallel_branch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validation_failure_does_not_regenerate_model_output() -> None:
-    generation_count = 0
-    validation_count = 0
-
-    async def generate(_: TripPlanningState) -> dict[str, Any]:
-        nonlocal generation_count
-        generation_count += 1
-        return {"narrative": {"revision": generation_count}}
-
-    async def validate(_: TripPlanningState) -> dict[str, Any]:
-        nonlocal validation_count
-        validation_count += 1
-        return {
-            "validation_issues": [
-                ValidationIssue(
-                    code="DAY_DATE_MISMATCH",
-                    path="days.0.date",
-                    message="日期不匹配",
-                )
-            ]
-        }
-
-    graph = TripPlannerGraph(
-        _node_set(
-            generate_node=generate,
-            validate_node=validate,
-        )
-    )
-
-    result = await graph.ainvoke({"messages": []})
-
-    assert generation_count == 1
-    assert validation_count == 1
-    assert result["controlled_error"] is True
-    assert result["current_stage"] == "failed"
-
-
-@pytest.mark.asyncio
-async def test_skeleton_validation_failure_stops_before_model_generation() -> None:
-    generation_count = 0
-
-    async def generate(_: TripPlanningState) -> dict[str, Any]:
-        nonlocal generation_count
-        generation_count += 1
-        return {"narrative": {"unexpected": True}}
-
+async def test_skeleton_validation_failure_stops_before_markdown_streaming() -> None:
     graph = TripPlannerGraph(
         _node_set(
             skeleton_node=_node(
@@ -379,11 +328,9 @@ async def test_skeleton_validation_failure_stops_before_model_generation() -> No
                 ],
                 skeleton_answer="",
             ),
-            generate_node=generate,
         )
     )
 
     result = await graph.ainvoke({"messages": []})
 
-    assert generation_count == 0
     assert result["controlled_error"] is True

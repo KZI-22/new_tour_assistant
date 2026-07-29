@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, date, datetime
 
 import pytest
-from app.graphs.trip_planner_nodes import ValidateItineraryNode
+from app.graphs.trip_planner_nodes import BuildItinerarySkeletonNode
 from app.schemas.amap import AmapCoordinate
 from app.schemas.map_planning import (
     MapDayEvidence,
@@ -229,9 +229,7 @@ def test_map_weather_validation_codes(case: str, expected_code: str) -> None:
 
 def test_model_weather_copy_must_be_replaced_by_deterministic_advice() -> None:
     plan = valid_plan()
-    plan.days[0].weather_advice = [
-        "预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"
-    ]
+    plan.days[0].weather_advice = ["预计 27-32℃，步行 30 分钟后使用 SPF50，并在阴凉处休息。"]
 
     assert codes(joined_evidence(), plan) == {"WEATHER_ADVICE_MISMATCH"}
 
@@ -350,18 +348,22 @@ async def test_validation_failure_logs_every_safe_issue_without_retry(
     evidence = joined_evidence()
     plan = valid_plan()
     plan.days[0].places[0].reference_id = SENSITIVE_PROVIDER_TEXT
-    node = ValidateItineraryNode()
+
+    class InvalidPlanValidator:
+        def validate(self, _: object, __: object):
+            return TripPlanValidator().validate(evidence, plan)
+
+    node = BuildItinerarySkeletonNode(InvalidPlanValidator())  # type: ignore[arg-type]
     caplog.set_level(logging.INFO)
 
     result = await node(
         {
             "planning_run_id": "planner-run-123",
             "joined_evidence": evidence,
-            "narrative": plan,
         }
     )
 
-    assert result["validation_issues"]
+    assert result["skeleton_validation_issues"]
     assert caplog.text.count("event=trip_plan_validation_failed") == 1
     assert "planning_run_id=planner-run-123" in caplog.text
     assert "revision_count" not in caplog.text

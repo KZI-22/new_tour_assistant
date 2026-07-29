@@ -14,13 +14,10 @@ from app.graphs.trip_planner_nodes import (
     ClarifyRequirementsNode,
     EvidenceJoinNode,
     ExtractRequirementsNode,
-    GenerateItineraryNode,
     HotelNode,
     MapWeatherNode,
-    RenderResponseNode,
     ResolveCapabilitiesNode,
     TransportNode,
-    ValidateItineraryNode,
     ValidateRequirementsNode,
 )
 from app.graphs.trip_planning_state import TripPlanningState
@@ -198,11 +195,7 @@ class _StandardTripPlanningRun:
                 collect_hotels=HotelNode(HotelSearchService(self._flyai_client)),
                 join_evidence=EvidenceJoinNode(),
                 build_itinerary_skeleton=BuildItinerarySkeletonNode(),
-                generate_itinerary=GenerateItineraryNode(self._itinerary_generator),
-                validate_itinerary=ValidateItineraryNode(),
-                render_response=RenderResponseNode(),
-            ),
-            finish_after_skeleton=True,
+            )
         )
 
     async def _stream_itinerary_markdown(

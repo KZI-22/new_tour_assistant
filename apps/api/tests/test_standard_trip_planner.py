@@ -21,13 +21,12 @@ from app.schemas.tool_execution import (
     PlanningTraceEvent,
 )
 from app.schemas.travel import FlyAIResult
-from app.schemas.trip_itinerary import TripDayNarrativeDraft, TripNarrativeDraft
 from app.schemas.trip_planning import (
     CityTripRequest,
     DailyWeatherEvidence,
     TripWeatherEvidence,
 )
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -59,12 +58,6 @@ class FakeTripModel:
     def with_structured_output(self, schema: type[object]) -> Runnable:
         self.calls.append(f"native:{schema.__name__}")
         return Runnable(self._responses[schema.__name__].pop(0))
-
-    async def ainvoke(self, _: object):
-        self.calls.append("invoke:TripNarrativeDraft")
-        value = self._responses["TripNarrativeDraft"].pop(0)
-        assert isinstance(value, TripNarrativeDraft)
-        return AIMessage(content=value.model_dump_json())
 
     async def astream(self, _: object, **__: object):
         self.calls.append("stream:TripMarkdown")
@@ -233,19 +226,6 @@ def settings() -> Settings:
     )
 
 
-def narrative() -> TripNarrativeDraft:
-    return TripNarrativeDraft(
-        title="成都一日攻略",
-        summary="按地图与用户偏好整理。",
-        days=[
-            TripDayNarrativeDraft(
-                theme="城市漫游",
-                recommendation_reasons=["按既定地图顺序游览。"],
-            )
-        ],
-    )
-
-
 def planner():
     collection = FakeMapCollection()
     weather = FakeWeatherService()
@@ -281,11 +261,7 @@ async def collect(
 @pytest.mark.asyncio
 async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries() -> None:
     trip_planner, collection, weather, flyai = planner()
-    model = FakeTripModel(
-        {
-            "TripNarrativeDraft": [narrative()],
-        }
-    )
+    model = FakeTripModel({})
 
     events = await collect(
         trip_planner,
@@ -311,7 +287,6 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     assert answer.startswith("# 成都一日攻略")
     assert not any(call.startswith("native:") for call in model.calls)
     assert model.calls.count("stream:TripMarkdown") == 1
-    assert "invoke:TripNarrativeDraft" not in model.calls
     validation_index = next(
         index
         for index, event in enumerate(events)
@@ -391,9 +366,7 @@ async def test_standard_graph_falls_back_to_validated_skeleton_before_first_chun
 async def test_standard_graph_executes_only_explicit_transport_and_hotel_capabilities() -> None:
     trip_planner, collection, weather, flyai = planner()
     model = FakeTripModel(
-        {
-            "TripNarrativeDraft": [narrative()],
-        },
+        {},
         markdown=(
             "# 成都一日攻略\n\n"
             "## 城际交通参考\n\n"

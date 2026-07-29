@@ -7,8 +7,6 @@ import pytest
 from app.graphs.trip_planner_nodes import (
     BuildItinerarySkeletonNode,
     EvidenceJoinNode,
-    GenerateItineraryNode,
-    RenderResponseNode,
 )
 from app.schemas.amap import AmapCoordinate
 from app.schemas.map_planning import (
@@ -30,11 +28,7 @@ from app.schemas.trip_evidence import (
     MapWeatherEvidenceBundle,
     RawCapabilityEvidence,
 )
-from app.schemas.trip_itinerary import (
-    TripDayNarrativeDraft,
-    TripNarrativeDraft,
-    TripNarrativePlan,
-)
+from app.schemas.trip_itinerary import TripNarrativePlan
 from app.schemas.trip_planning import (
     CityTripRequest,
     DailyWeatherEvidence,
@@ -44,6 +38,7 @@ from app.services.trip_evidence_joiner import join_trip_evidence
 from app.services.trip_itinerary_generator import (
     TripItineraryGenerator,
     build_trip_generation_prompt,
+    build_trip_narrative_skeleton,
 )
 from app.services.trip_itinerary_renderer import (
     render_trip_itinerary,
@@ -54,7 +49,7 @@ from app.services.weather_advice_service import (
     UNAVAILABLE_WEATHER_ADVICE,
     build_weather_advice,
 )
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -186,29 +181,6 @@ def narrative(
         ],
         transport_options=transport_options or [],
         hotel_options=hotel_options or [],
-    )
-
-
-def draft(
-    *,
-    reasons: list[str] | None = None,
-    include_day: bool = True,
-) -> TripNarrativeDraft:
-    return TripNarrativeDraft(
-        title="成都一日攻略",
-        summary="按地图与用户偏好整理。",
-        days=(
-            [
-                TripDayNarrativeDraft(
-                    theme="城市漫游",
-                    recommendation_reasons=reasons or ["适合按既定顺序游览。"],
-                    tips=["合理安排休息。"],
-                )
-            ]
-            if include_day
-            else []
-        ),
-        practical_tips=["出发前确认开放时间。"],
     )
 
 
@@ -398,19 +370,6 @@ def test_generation_prompt_compacts_route_legs_without_navigation_steps() -> Non
     assert "逐步导航" not in json.dumps(prompt, ensure_ascii=False)
 
 
-class FakeModel:
-    def __init__(self, value: TripNarrativeDraft) -> None:
-        self.value = value
-        self.calls: list[object] = []
-
-    def with_structured_output(self, _: type[object]) -> object:
-        raise AssertionError("itinerary generation must not use native structured output")
-
-    async def ainvoke(self, messages: object):
-        self.calls.append(messages)
-        return AIMessage(content=self.value.model_dump_json())
-
-
 class FakeStreamingModel:
     def __init__(self, chunks: list[str]) -> None:
         self.chunks = chunks
@@ -461,7 +420,8 @@ async def test_markdown_generation_yields_provider_chunks_without_waiting_for_fu
     assert len(model.calls) == 1
     messages = model.calls[0]
     assert isinstance(messages, list)
-    assert "直接写成一份用户可以阅读的完整 Markdown" in messages[0].content
+    assert "可以直接收藏和照着走的成品攻略" in messages[0].content
+    assert "不同天之间使用 `---` 分隔" in messages[0].content
     assert '"destination_city":"成都"' in messages[1].content
     assert model.options == [
         {
@@ -472,7 +432,7 @@ async def test_markdown_generation_yields_provider_chunks_without_waiting_for_fu
 
 
 @pytest.mark.asyncio
-async def test_generation_and_graph_nodes_preserve_optional_failure_degradation() -> None:
+async def test_skeleton_preserves_optional_failure_degradation() -> None:
     plan = capability_plan(transport=True, hotel=True)
     state = {
         "request": planning_request(),
@@ -493,65 +453,39 @@ async def test_generation_and_graph_nodes_preserve_optional_failure_degradation(
     joined_update = await EvidenceJoinNode()(state)  # type: ignore[arg-type]
     assert joined_update["joined_evidence"].overall_status == "partial"
 
-    expected = draft()
-    model = FakeModel(expected)
-    generation_update = await GenerateItineraryNode(
-        TripItineraryGenerator(
-            model,  # type: ignore[arg-type]
-            timeout_seconds=1,
-        )
-    )(
+    skeleton_update = await BuildItinerarySkeletonNode()(
         {
             **state,
             **joined_update,
-        }  # type: ignore[arg-type]
-    )
-    render_update = await RenderResponseNode()(
-        {
-            **state,
-            **joined_update,
-            **generation_update,
         }  # type: ignore[arg-type]
     )
 
-    answer = render_update["final_answer"]
+    answer = skeleton_update["skeleton_answer"]
     assert "去程火车 G123｜成都方向" in answer
     assert "酒店查询暂时失败（UPSTREAM_TIMEOUT）" in answer
     assert "地图与天气行程仍可继续使用" in answer
-    generated = generation_update["narrative"]
+    generated = skeleton_update["narrative_skeleton"]
     assert generated.days[0].date == date(2026, 7, 25)
     assert [place.reference_id for place in generated.days[0].places] == ["poi_a1"]
     assert generated.transport_options == ["去程火车 G123｜成都方向"]
     assert generated.hotel_options == []
-    assert len(model.calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_generation_injects_deterministic_weather_before_validation() -> None:
+def test_skeleton_injects_deterministic_weather_before_validation() -> None:
     evidence = joined()
-    model = FakeModel(draft())
 
-    generated = await TripItineraryGenerator(
-        model,  # type: ignore[arg-type]
-        timeout_seconds=1,
-    ).generate(evidence)
+    generated = build_trip_narrative_skeleton(evidence)
 
     weather = evidence.map_weather.weather
     assert weather is not None
     assert generated.days[0].weather_advice == build_weather_advice(weather.days[0])
     assert TripPlanValidator().validate(evidence, generated) == []
-    assert len(model.calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_generation_fills_missing_draft_days_from_deterministic_evidence() -> None:
+def test_skeleton_fills_days_from_deterministic_evidence() -> None:
     evidence = joined()
-    model = FakeModel(draft(include_day=False))
 
-    generated = await TripItineraryGenerator(
-        model,  # type: ignore[arg-type]
-        timeout_seconds=1,
-    ).generate(evidence)
+    generated = build_trip_narrative_skeleton(evidence)
 
     assert generated.days[0].day_index == 1
     assert generated.days[0].date == date(2026, 7, 25)

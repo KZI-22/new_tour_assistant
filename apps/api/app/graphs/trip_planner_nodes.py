@@ -22,10 +22,7 @@ from app.services.rule_first_trip_requirement_extractor import (
     RuleFirstTripRequirementExtractor,
 )
 from app.services.trip_evidence_joiner import join_trip_evidence
-from app.services.trip_itinerary_generator import (
-    TripItineraryGenerator,
-    build_trip_narrative_skeleton,
-)
+from app.services.trip_itinerary_generator import build_trip_narrative_skeleton
 from app.services.trip_itinerary_renderer import render_trip_itinerary
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.trip_planner_logging import safe_log_value
@@ -196,46 +193,6 @@ class BuildItinerarySkeletonNode:
         }
 
 
-class GenerateItineraryNode:
-    def __init__(self, generator: TripItineraryGenerator) -> None:
-        self._generator = generator
-
-    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
-        narrative = await self._generator.generate(state["joined_evidence"])
-        return {
-            "narrative": narrative,
-            "current_stage": "generating_itinerary",
-        }
-
-
-class RenderResponseNode:
-    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
-        answer = render_trip_itinerary(
-            state["joined_evidence"],
-            state["narrative"],
-        )
-        return {
-            "final_answer": answer,
-            "current_stage": "completed",
-        }
-
-
-class ValidateItineraryNode:
-    def __init__(self, validator: TripPlanValidator | None = None) -> None:
-        self._validator = validator or TripPlanValidator()
-
-    async def __call__(self, state: TripPlanningState) -> dict[str, Any]:
-        issues = self._validator.validate(
-            state["joined_evidence"],
-            state["narrative"],
-        )
-        _log_validation_issues(state, issues)
-        return {
-            "validation_issues": issues,
-            "current_stage": "validating_itinerary",
-        }
-
-
 def _log_validation_issues(
     state: TripPlanningState,
     issues: list[Any],
@@ -286,12 +243,9 @@ __all__ = [
     "ClarifyRequirementsNode",
     "EvidenceJoinNode",
     "ExtractRequirementsNode",
-    "GenerateItineraryNode",
     "HotelNode",
     "MapWeatherNode",
-    "RenderResponseNode",
     "ResolveCapabilitiesNode",
     "TransportNode",
-    "ValidateItineraryNode",
     "ValidateRequirementsNode",
 ]

@@ -24,20 +24,11 @@ class TripPlannerNodeSet:
     collect_hotels: TripPlannerNode
     join_evidence: TripPlannerNode
     build_itinerary_skeleton: TripPlannerNode
-    generate_itinerary: TripPlannerNode
-    validate_itinerary: TripPlannerNode
-    render_response: TripPlannerNode
 
 
 class TripPlannerGraph:
-    def __init__(
-        self,
-        nodes: TripPlannerNodeSet,
-        *,
-        finish_after_skeleton: bool = False,
-    ) -> None:
+    def __init__(self, nodes: TripPlannerNodeSet) -> None:
         self._nodes = nodes
-        self._finish_after_skeleton = finish_after_skeleton
         self._graph = self._build_graph()
 
     def _build_graph(self) -> Any:
@@ -113,27 +104,6 @@ class TripPlannerGraph:
             ),
         )
         workflow.add_node(
-            "generate_itinerary",
-            logged_trip_planner_node(
-                "generate_itinerary",
-                self._nodes.generate_itinerary,
-            ),
-        )
-        workflow.add_node(
-            "validate_itinerary",
-            logged_trip_planner_node(
-                "validate_itinerary",
-                self._nodes.validate_itinerary,
-            ),
-        )
-        workflow.add_node(
-            "render_response",
-            logged_trip_planner_node(
-                "render_response",
-                self._nodes.render_response,
-            ),
-        )
-        workflow.add_node(
             "controlled_failure",
             logged_trip_planner_node(
                 "controlled_failure",
@@ -169,34 +139,14 @@ class TripPlannerGraph:
                 "fail": "controlled_failure",
             },
         )
-        if self._finish_after_skeleton:
-            workflow.add_conditional_edges(
-                "build_itinerary_skeleton",
-                _route_after_skeleton_validation,
-                {
-                    "generate": END,
-                    "fail": "controlled_failure",
-                },
-            )
-        else:
-            workflow.add_conditional_edges(
-                "build_itinerary_skeleton",
-                _route_after_skeleton_validation,
-                {
-                    "generate": "generate_itinerary",
-                    "fail": "controlled_failure",
-                },
-            )
-        workflow.add_edge("generate_itinerary", "validate_itinerary")
         workflow.add_conditional_edges(
-            "validate_itinerary",
-            _route_after_validation,
+            "build_itinerary_skeleton",
+            _route_after_skeleton_validation,
             {
-                "render": "render_response",
+                "generate": END,
                 "fail": "controlled_failure",
             },
         )
-        workflow.add_edge("render_response", END)
         workflow.add_edge("controlled_failure", END)
         return workflow.compile()
 
@@ -255,12 +205,6 @@ def _route_after_skeleton_validation(
     state: TripPlanningState,
 ) -> Literal["generate", "fail"]:
     return "fail" if state.get("skeleton_validation_issues") else "generate"
-
-
-def _route_after_validation(
-    state: TripPlanningState,
-) -> Literal["render", "fail"]:
-    return "fail" if state.get("validation_issues") else "render"
 
 
 __all__ = [
