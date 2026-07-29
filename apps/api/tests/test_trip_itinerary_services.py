@@ -17,6 +17,7 @@ from app.schemas.map_planning import (
     MapPlaceEvidence,
     MapPlaceNarrative,
     MapTripEvidence,
+    RouteLegEvidence,
 )
 from app.schemas.trip_capabilities import (
     CapabilityPlan,
@@ -250,55 +251,151 @@ def test_joiner_applies_required_map_and_optional_capability_status_rules() -> N
     assert failed_hotel.warnings == ["酒店暂时不可用"]
 
 
-def test_generation_prompt_only_exposes_fields_needed_for_narrative_copy() -> None:
+def test_generation_prompt_exposes_compact_verified_presentation_context() -> None:
     evidence = joined(
         plan=capability_plan(transport=True, hotel=True),
         transport=raw_evidence(
             "transport",
             EvidenceStatus.USABLE,
             data={"opaque": {"flight": "CA1234"}},
-            display_options=["去程航班 CA1234｜参考价 ¥680"],
+            display_options=[
+                "去程航班 CA1234｜参考价 ¥680｜[查看详情](https://provider.example/secret)"
+            ],
         ),
         hotel=raw_evidence(
             "hotel",
             EvidenceStatus.FAILED,
             data={"must_not_reach_model": "hotel-secret"},
+            display_options=["失败状态下不应暴露的旧酒店选项"],
         ),
     )
 
     prompt = json.loads(build_trip_generation_prompt(evidence))
     serialized = json.dumps(prompt, ensure_ascii=False)
 
-    assert set(prompt) == {"request", "days"}
-    assert set(prompt["request"]) == {
+    assert set(prompt) == {"trip", "transport", "hotel", "days", "warnings"}
+    assert set(prompt["trip"]) == {
+        "origin_city",
         "destination_city",
+        "start_date",
+        "end_date",
         "duration_days",
         "interests",
         "food_preferences",
+        "assumptions",
     }
-    assert set(prompt["days"][0]) == {"day_index", "places"}
+    assert set(prompt["transport"]) == {
+        "enabled",
+        "status",
+        "modes",
+        "journey_scope",
+        "origin",
+        "destination",
+        "outbound_date",
+        "return_date",
+        "options",
+        "warnings",
+        "error_code",
+    }
+    assert prompt["transport"]["options"] == ["去程航班 CA1234｜参考价 ¥680"]
+    assert set(prompt["hotel"]) == {
+        "enabled",
+        "status",
+        "destination",
+        "check_in_date",
+        "check_out_date",
+        "nearby_poi",
+        "options",
+        "warnings",
+        "error_code",
+    }
+    assert prompt["hotel"]["status"] == "failed"
+    assert set(prompt["days"][0]) == {
+        "day_index",
+        "date",
+        "weekday",
+        "weather",
+        "estimated_visit_minutes",
+        "estimated_transport_minutes",
+        "places",
+        "route_legs",
+        "warnings",
+    }
+    assert prompt["days"][0]["weather"] == {
+        "coverage": "available",
+        "day_weather": "晴",
+        "night_weather": "多云",
+        "day_temperature": "32",
+        "night_temperature": "23",
+        "advice": [
+            "预报含晴天，户外活动请注意防晒。",
+            "气温可能偏高，请避免长时间暴晒并及时补水。",
+            "昼夜温差较明显，建议分层穿着。",
+        ],
+    }
     assert set(prompt["days"][0]["places"][0]) == {
+        "reference_id",
         "name",
+        "address",
         "poi_type",
         "estimated_visit_minutes",
         "matched_preferences",
         "selection_reasons",
     }
     for excluded in (
-        "reference_id",
         "poi_id",
-        "address",
         "location",
         "candidate_score",
-        "transport_evidence",
-        "hotel_evidence",
-        "weather_evidence",
-        "capability_plan",
         "opaque",
         "hotel-secret",
-        "CA1234",
+        "失败状态下不应暴露",
+        "provider.example",
     ):
         assert excluded not in serialized
+
+
+def test_generation_prompt_compacts_route_legs_without_navigation_steps() -> None:
+    evidence = joined()
+    map_evidence = evidence.map_weather.map
+    assert map_evidence is not None
+    day = map_evidence.days[0]
+    second = day.attractions[0].model_copy(
+        update={
+            "reference_id": "poi_a2",
+            "poi_id": "a2",
+            "name": "地点 a2",
+        }
+    )
+    day.attractions.append(second)
+    day.route_legs.append(
+        RouteLegEvidence(
+            origin_ref="poi_a1",
+            destination_ref="poi_a2",
+            mode="transit",
+            distance_meters=2_578,
+            duration_seconds=1_261,
+            transfer_count=0,
+            route_summary="不应进入模型的逐步导航内容",
+            is_fallback=False,
+        )
+    )
+
+    prompt = json.loads(build_trip_generation_prompt(evidence))
+
+    assert prompt["days"][0]["route_legs"] == [
+        {
+            "origin_ref": "poi_a1",
+            "origin_name": "地点 a1",
+            "destination_ref": "poi_a2",
+            "destination_name": "地点 a2",
+            "mode": "transit",
+            "distance_meters": 2_578,
+            "duration_minutes": 21,
+            "transfer_count": 0,
+            "is_fallback": False,
+        }
+    ]
+    assert "逐步导航" not in json.dumps(prompt, ensure_ascii=False)
 
 
 class FakeModel:

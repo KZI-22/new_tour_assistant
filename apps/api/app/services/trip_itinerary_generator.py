@@ -22,18 +22,26 @@ from app.services.structured_output_service import (
     StructuredOutputError,
     StructuredOutputService,
 )
+from app.services.trip_presentation_context import build_trip_presentation_context
 from app.services.weather_advice_service import build_weather_advice
 
 TRIP_GENERATION_SYSTEM_PROMPT = """你是受外部证据约束的旅行文案编辑器。
 
 严格规则：
-1. 后端已经确定行程天数、日期、地点、地点顺序、路线、天气、交通与酒店；你只生成文案。
-2. days 必须按输入 days 的顺序返回；recommendation_reasons 必须按对应 places 的顺序返回。
-3. 不得新增地点、具体餐厅、路线、距离、天气、班次、酒店、价格、库存或预订事实。
-4. 推荐理由只能依据地点名称、类型、用户偏好、匹配偏好和后端筛选理由整理。
-5. 文案保持简洁：summary 不超过 300 字，每条推荐理由不超过 120 字，每天 tips 不超过 3 条。
-6. 不得声称已完成预订、支付、出票、锁价、占座或库存确认。
-7. 只输出符合指定 JSON Schema 的结构化结果。"""
+1. 输入是后端精简并核实过的展示上下文；
+   日期、地点、顺序、路线、天气、交通与酒店均已确定，你只组织和润色文案。
+2. title 应在信息充足时体现出发地、目的地、天数或日期；
+   summary 应自然串联天气、交通、住宿和每日行程，但不得替用户选择某个班次或酒店。
+3. days 必须按输入 days 的顺序返回；recommendation_reasons 的数量和顺序必须与对应 places 完全一致。
+4. 不得新增、删除或改写地点、日期、路线、距离、天气、班次、酒店、价格、库存或预订事实。
+5. 推荐理由只能依据地点名称、地址、类型、用户偏好、匹配偏好和后端筛选理由整理。
+6. tips 只能依据输入中的天气建议、路段耗时、降级标记和 warnings 整理。
+7. 输入没有提供景点简介、开放时间、门票、预约规则、历史背景、具体餐厅、美食、
+   地铁线路或营业状态时，禁止补写这些事实；可保守提醒用户出发前确认。
+8. 交通和酒店 options 仅供概括本次查询范围；
+   不得声称已经替用户选择、预订、支付、出票、锁价、占座或确认库存。
+9. 文案保持简洁：summary 不超过 300 字，每条推荐理由不超过 120 字，每天 tips 不超过 3 条。
+10. 只输出符合指定 JSON Schema 的结构化结果。"""
 
 
 class TripItineraryGenerationError(RuntimeError):
@@ -87,38 +95,12 @@ def build_trip_narrative_skeleton(
 
 
 def build_trip_generation_prompt(evidence: JoinedTripEvidence) -> str:
-    map_evidence = evidence.map_weather.map
-    core = evidence.request.core
-    days = (
-        [
-            {
-                "day_index": day.day_index,
-                "places": [
-                    {
-                        "name": place.name,
-                        "poi_type": place.poi_type,
-                        "estimated_visit_minutes": place.estimated_visit_minutes,
-                        "matched_preferences": place.matched_preferences,
-                        "selection_reasons": place.selection_reasons,
-                    }
-                    for place in day.ordered_places()
-                ],
-            }
-            for day in map_evidence.days
-        ]
-        if map_evidence is not None
-        else []
+    context = build_trip_presentation_context(evidence)
+    return json.dumps(
+        context.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
-    payload = {
-        "request": {
-            "destination_city": core.destination_city,
-            "duration_days": core.duration_days,
-            "interests": core.interests,
-            "food_preferences": core.food_preferences,
-        },
-        "days": days,
-    }
-    return json.dumps(payload, ensure_ascii=False)
 
 
 def compose_trip_narrative(
