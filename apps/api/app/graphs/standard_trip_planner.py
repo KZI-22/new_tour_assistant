@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
@@ -50,6 +51,8 @@ from app.services.trip_itinerary_generator import (
 )
 from app.services.trip_itinerary_renderer import split_trip_itinerary_sections
 from app.services.weather_evidence_service import WeatherEvidenceService
+
+logger = logging.getLogger(__name__)
 
 
 class FlyAITripClient(Protocol):
@@ -124,6 +127,10 @@ class _StandardTripPlanningRun:
         self._execution_context = execution_context
         self._planning_run_id = str(uuid4())
         self._trace_sequence = 0
+        self._itinerary_generator = TripItineraryGenerator(
+            self._model,
+            timeout_seconds=self._settings.trip_planner_model_timeout_seconds,
+        )
 
     async def stream(self) -> AsyncIterator[ChatStreamEvent]:
         yield self._trace(
@@ -165,6 +172,15 @@ class _StandardTripPlanningRun:
                 for event in self._events_for_update(node, state, result):
                     yield event
 
+        if (
+            state.get("joined_evidence") is not None
+            and state.get("skeleton_answer")
+            and not state.get("skeleton_validation_issues")
+            and not state.get("final_answer")
+        ):
+            async for event in self._stream_itinerary_markdown(state):
+                yield event
+
     def _build_graph(self) -> TripPlannerGraph:
         return TripPlannerGraph(
             TripPlannerNodeSet(
@@ -182,15 +198,105 @@ class _StandardTripPlanningRun:
                 collect_hotels=HotelNode(HotelSearchService(self._flyai_client)),
                 join_evidence=EvidenceJoinNode(),
                 build_itinerary_skeleton=BuildItinerarySkeletonNode(),
-                generate_itinerary=GenerateItineraryNode(
-                    TripItineraryGenerator(
-                        self._model,
-                        timeout_seconds=(self._settings.trip_planner_model_timeout_seconds),
-                    )
-                ),
+                generate_itinerary=GenerateItineraryNode(self._itinerary_generator),
                 validate_itinerary=ValidateItineraryNode(),
                 render_response=RenderResponseNode(),
+            ),
+            finish_after_skeleton=True,
+        )
+
+    async def _stream_itinerary_markdown(
+        self,
+        state: TripPlanningState,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        output_chars = 0
+        output_chunks = 0
+        yield _stage(
+            "finalizing",
+            "正在流式生成最终旅行方案",
+            "running",
+            detail="模型生成的文本会实时展示。",
+        )
+        try:
+            async for text in self._itinerary_generator.stream_markdown(state["joined_evidence"]):
+                output_chars += len(text)
+                output_chunks += 1
+                yield MessageDeltaEvent(delta=text)
+        except TripItineraryGenerationError as exc:
+            logger.warning(
+                "event=trip_markdown_stream_fallback planning_run_id=%s "
+                "error_code=%s streamed_chars=%d streamed_chunks=%d",
+                self._planning_run_id,
+                exc.code,
+                output_chars,
+                output_chunks,
             )
+            fallback = cast(str, state["skeleton_answer"])
+            if output_chars:
+                fallback = (
+                    "\n\n---\n\n"
+                    "> 文案生成中断，下面补充根据已校验信息生成的完整行程。\n\n"
+                    f"{fallback}"
+                )
+            fallback_chunks = split_trip_itinerary_sections(fallback)
+            for chunk in fallback_chunks:
+                output_chars += len(chunk)
+                output_chunks += 1
+                yield MessageDeltaEvent(delta=chunk)
+            yield _stage(
+                "generating_itinerary",
+                "旅行文案生成未完整结束",
+                "partial",
+                detail="已返回确定性行程作为兜底。",
+            )
+            yield self._trace(
+                "itinerary_generated",
+                "模型文案未完整生成，已使用确定性行程兜底",
+                status="partial",
+                data={"fallback": "deterministic_skeleton", "error_code": exc.code},
+            )
+            yield self._trace(
+                "response_completed",
+                "最终统一旅行方案已返回",
+                status="partial",
+                data={
+                    "output_chars": output_chars,
+                    "output_chunks": output_chunks,
+                    "streamed": True,
+                    "fallback": "deterministic_skeleton",
+                },
+            )
+            yield _stage(
+                "finalizing",
+                "正在流式生成最终旅行方案",
+                "partial",
+                detail="模型文案生成中断，已补充确定性行程。",
+            )
+            return
+
+        yield _stage(
+            "generating_itinerary",
+            "旅行文案流式生成完成",
+            "success",
+        )
+        yield self._trace(
+            "itinerary_generated",
+            "统一旅行方案文案流式生成完成",
+            data={"output_chars": output_chars, "output_chunks": output_chunks},
+        )
+        yield self._trace(
+            "response_completed",
+            "最终统一旅行方案已流式返回",
+            data={
+                "output_chars": output_chars,
+                "output_chunks": output_chunks,
+                "streamed": True,
+            },
+        )
+        yield _stage(
+            "finalizing",
+            "正在流式生成最终旅行方案",
+            "success",
         )
 
     def _events_for_update(
@@ -445,11 +551,16 @@ class _StandardTripPlanningRun:
                                 "output_chars": len(state["skeleton_answer"]),
                             },
                         ),
+                        self._trace(
+                            "validation_completed",
+                            "确定性旅行骨架校验通过",
+                            data={"scope": "deterministic_skeleton"},
+                        ),
                         _stage(
                             "generating_itinerary",
                             "确定性旅行骨架已就绪，正在生成文案",
                             "running",
-                            detail="完整方案将在文案生成、后端合并并校验后开始展示。",
+                            detail="模型输出将从首个文本片段开始实时展示。",
                         ),
                     ]
                 )

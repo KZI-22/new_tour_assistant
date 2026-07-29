@@ -91,7 +91,7 @@ class Settings:
     trusted_proxy_cidrs: tuple[str, ...] = ()
     trip_planner_enabled: bool = True
     trip_planner_max_days: int = 5
-    trip_planner_model_timeout_seconds: float = 45
+    trip_planner_model_timeout_seconds: float = 90
     trip_planner_request_extraction_timeout_seconds: float = 30
     xhs_mcp_transport: Literal["streamable-http", "stdio"] = "streamable-http"
     xhs_mcp_url: str = "http://127.0.0.1:8765/mcp"
@@ -268,7 +268,7 @@ def get_settings() -> Settings:
         trip_planner_enabled=_environment_bool("TRIP_PLANNER_ENABLED", True),
         trip_planner_max_days=int(os.getenv("TRIP_PLANNER_MAX_DAYS", "5")),
         trip_planner_model_timeout_seconds=float(
-            os.getenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "45")
+            os.getenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "90")
         ),
         trip_planner_request_extraction_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")

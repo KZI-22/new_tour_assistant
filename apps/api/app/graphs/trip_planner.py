@@ -30,8 +30,14 @@ class TripPlannerNodeSet:
 
 
 class TripPlannerGraph:
-    def __init__(self, nodes: TripPlannerNodeSet) -> None:
+    def __init__(
+        self,
+        nodes: TripPlannerNodeSet,
+        *,
+        finish_after_skeleton: bool = False,
+    ) -> None:
         self._nodes = nodes
+        self._finish_after_skeleton = finish_after_skeleton
         self._graph = self._build_graph()
 
     def _build_graph(self) -> Any:
@@ -163,14 +169,24 @@ class TripPlannerGraph:
                 "fail": "controlled_failure",
             },
         )
-        workflow.add_conditional_edges(
-            "build_itinerary_skeleton",
-            _route_after_skeleton_validation,
-            {
-                "generate": "generate_itinerary",
-                "fail": "controlled_failure",
-            },
-        )
+        if self._finish_after_skeleton:
+            workflow.add_conditional_edges(
+                "build_itinerary_skeleton",
+                _route_after_skeleton_validation,
+                {
+                    "generate": END,
+                    "fail": "controlled_failure",
+                },
+            )
+        else:
+            workflow.add_conditional_edges(
+                "build_itinerary_skeleton",
+                _route_after_skeleton_validation,
+                {
+                    "generate": "generate_itinerary",
+                    "fail": "controlled_failure",
+                },
+            )
         workflow.add_edge("generate_itinerary", "validate_itinerary")
         workflow.add_conditional_edges(
             "validate_itinerary",

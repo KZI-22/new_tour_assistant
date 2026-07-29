@@ -54,7 +54,7 @@ from app.services.weather_advice_service import (
     UNAVAILABLE_WEATHER_ADVICE,
     build_weather_advice,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 QUERY_TIME = datetime(2026, 7, 20, tzinfo=UTC)
 
@@ -411,6 +411,20 @@ class FakeModel:
         return AIMessage(content=self.value.model_dump_json())
 
 
+class FakeStreamingModel:
+    def __init__(self, chunks: list[str]) -> None:
+        self.chunks = chunks
+        self.calls: list[object] = []
+        self.options: list[dict[str, object]] = []
+        self.model_name = "qwen3.7-flash"
+
+    async def astream(self, messages: object, **kwargs: object):
+        self.calls.append(messages)
+        self.options.append(kwargs)
+        for chunk in self.chunks:
+            yield AIMessageChunk(content=chunk)
+
+
 @pytest.mark.asyncio
 async def test_skeleton_is_deterministic_valid_and_renderable_before_model_generation() -> None:
     evidence = joined()
@@ -423,7 +437,38 @@ async def test_skeleton_is_deterministic_valid_and_renderable_before_model_gener
     assert update["narrative_skeleton"].title == "成都1日旅行方案"
     assert update["narrative_skeleton"].days[0].date == date(2026, 7, 25)
     assert "地点 a1" in update["skeleton_answer"]
-    assert "旅行文案正在生成" in update["skeleton_answer"]
+    assert "已根据本次查询结果整理" in update["skeleton_answer"]
+
+
+@pytest.mark.asyncio
+async def test_markdown_generation_yields_provider_chunks_without_waiting_for_full_output() -> None:
+    evidence = joined()
+    model = FakeStreamingModel(
+        [
+            "# 成都一日攻略\n\n",
+            "## Day 1\n\n",
+            "地点 a1。",
+        ]
+    )
+    generator = TripItineraryGenerator(
+        model,  # type: ignore[arg-type]
+        timeout_seconds=1,
+    )
+
+    chunks = [chunk async for chunk in generator.stream_markdown(evidence)]
+
+    assert chunks == ["# 成都一日攻略\n\n", "## Day 1\n\n", "地点 a1。"]
+    assert len(model.calls) == 1
+    messages = model.calls[0]
+    assert isinstance(messages, list)
+    assert "直接写成一份用户可以阅读的完整 Markdown" in messages[0].content
+    assert '"destination_city":"成都"' in messages[1].content
+    assert model.options == [
+        {
+            "temperature": 0,
+            "extra_body": {"enable_thinking": False},
+        }
+    ]
 
 
 @pytest.mark.asyncio

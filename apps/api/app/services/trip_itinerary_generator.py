@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator, Mapping
+from contextlib import suppress
 from datetime import date
+from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from app.schemas.map_planning import (
     MapDayEvidence,
@@ -43,9 +48,35 @@ TRIP_GENERATION_SYSTEM_PROMPT = """你是受外部证据约束的旅行文案编
 9. 文案保持简洁：summary 不超过 300 字，每条推荐理由不超过 120 字，每天 tips 不超过 3 条。
 10. 只输出符合指定 JSON Schema 的结构化结果。"""
 
+TRIP_MARKDOWN_SYSTEM_PROMPT = """你是受外部证据约束的旅行规划文案撰写器。
+
+请根据输入中的已编排行程事实，直接写成一份用户可以阅读的完整 Markdown 旅行攻略。
+从 Markdown 标题立即开始输出，不要解释思考过程，不要输出 JSON，也不要使用 Markdown 代码块包裹正文。
+
+严格规则：
+1. 日期、地点、景点顺序、路线、天气、交通和酒店候选均已由后端确定；
+   你负责把它们组织成连贯、舒适、实用的旅行计划，不得重新排序、删除或新增景点。
+2. 推荐结构为：一级标题、行程概览、交通参考、酒店参考、逐日详细行程、重要出行贴士。
+   未启用或没有可用结果的交通、酒店能力不必强行生成候选列表。
+3. 交通和酒店 options 必须作为供用户自行选择的参考信息展示；
+   不得替用户选择，也不得声称已经预订、支付、出票、锁价、占座或确认库存。
+4. 每天必须严格按照 places 顺序介绍全部景点，并保留输入提供的日期、天气、地址、
+   建议游玩时长、路段距离和路段耗时。可以增加自然的过渡语，但不得改变这些事实。
+5. 输入没有提供开放时间、门票、预约规则、历史背景、具体餐厅、美食、地铁线路、
+   营业状态或精确到访时刻时，禁止补写这些事实；可以保守提醒用户出发前确认。
+6. 天气和出行提醒只能依据 weather.advice、route_legs、warnings 和已给出的行程事实整理。
+7. 不要向用户展示 reference_id、error_code、status 等内部字段名。
+8. 不要推断输入未给出的住宿晚数、交通目的地、车站归属或景点属性；
+   只启用了火车时不得提及机场，只给出温度时不得升级为“极端天气”，不得推荐药品。
+9. 逐个景点使用“安排说明”而不是“简介”；安排说明只能复述名称、地址、类型、
+   建议时长、偏好匹配、筛选理由和其在既定顺序中的位置，不得补充常识性介绍。
+10. 文案避免重复和空泛套话；信息完整优先，不要为了篇幅省略候选项或景点。"""
+
 
 class TripItineraryGenerationError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "MODEL_GENERATION_FAILED") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class TripItineraryGenerator:
@@ -54,9 +85,12 @@ class TripItineraryGenerator:
         model: BaseChatModel,
         *,
         timeout_seconds: float,
+        idle_timeout_seconds: float = 20,
     ) -> None:
+        self._model = model
         self._structured = StructuredOutputService(model)
         self._timeout_seconds = timeout_seconds
+        self._idle_timeout_seconds = min(idle_timeout_seconds, timeout_seconds)
 
     async def generate(
         self,
@@ -74,6 +108,67 @@ class TripItineraryGenerator:
         except StructuredOutputError as exc:
             raise TripItineraryGenerationError("模型没有生成有效的统一旅行方案。") from exc
 
+    async def stream_markdown(
+        self,
+        evidence: JoinedTripEvidence,
+    ) -> AsyncIterator[str]:
+        prompt = build_trip_generation_prompt(evidence)
+        messages = [
+            SystemMessage(content=TRIP_MARKDOWN_SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+        ]
+        stream = self._model.astream(messages, **_stream_options(self._model))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout_seconds
+        emitted_text = False
+        try:
+            while True:
+                remaining_seconds = deadline - loop.time()
+                if remaining_seconds <= 0:
+                    raise TripItineraryGenerationError(
+                        "模型流式生成超过整体时限。",
+                        code="MODEL_STREAM_TOTAL_TIMEOUT",
+                    )
+                chunk_timeout = min(self._idle_timeout_seconds, remaining_seconds)
+                try:
+                    chunk = await asyncio.wait_for(anext(stream), timeout=chunk_timeout)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as exc:
+                    code = (
+                        "MODEL_STREAM_TOTAL_TIMEOUT"
+                        if remaining_seconds <= self._idle_timeout_seconds
+                        else "MODEL_STREAM_IDLE_TIMEOUT"
+                    )
+                    raise TripItineraryGenerationError(
+                        "模型流式生成等待超时。",
+                        code=code,
+                    ) from exc
+                text = _message_text(chunk)
+                if text:
+                    emitted_text = True
+                    yield text
+        except asyncio.CancelledError:
+            raise
+        except TripItineraryGenerationError:
+            raise
+        except Exception as exc:
+            raise TripItineraryGenerationError(
+                "模型流式生成旅行方案失败。",
+                code="MODEL_STREAM_FAILED",
+            ) from exc
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                with suppress(Exception):
+                    await aclose()
+
+        if not emitted_text:
+            raise TripItineraryGenerationError(
+                "模型没有生成旅行方案正文。",
+                code="MODEL_STREAM_EMPTY",
+            )
+
 
 def build_trip_narrative_skeleton(
     evidence: JoinedTripEvidence,
@@ -85,10 +180,7 @@ def build_trip_narrative_skeleton(
     )
     draft = TripNarrativeDraft(
         title=f"{city}{duration_days}日旅行方案",
-        summary=(
-            "日期、地点、顺序、路线、天气、交通与酒店信息已由后端根据查询证据确定，"
-            "旅行文案正在生成。"
-        ),
+        summary=("日期、地点、顺序、路线、天气、交通与酒店信息已根据本次查询结果整理。"),
         days=[],
     )
     return compose_trip_narrative(evidence, draft)
@@ -202,8 +294,33 @@ def _evidence_options(enabled: bool, evidence: object) -> list[str]:
     return list(getattr(evidence, "display_options", []))
 
 
+def _message_text(message: BaseMessage) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, Mapping) and isinstance(block.get("text"), str):
+            parts.append(cast(str, block["text"]))
+    return "".join(parts)
+
+
+def _stream_options(model: BaseChatModel) -> dict[str, Any]:
+    model_name = str(getattr(model, "model_name", None) or getattr(model, "model", "")).casefold()
+    options: dict[str, Any] = {"temperature": 0}
+    if model_name.startswith("qwen"):
+        options["extra_body"] = {"enable_thinking": False}
+    return options
+
+
 __all__ = [
     "TRIP_GENERATION_SYSTEM_PROMPT",
+    "TRIP_MARKDOWN_SYSTEM_PROMPT",
     "TripItineraryGenerationError",
     "TripItineraryGenerator",
     "build_trip_narrative_skeleton",
