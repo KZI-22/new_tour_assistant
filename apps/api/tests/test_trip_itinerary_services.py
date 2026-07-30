@@ -44,6 +44,7 @@ from app.services.trip_itinerary_renderer import (
     render_trip_itinerary,
     split_trip_itinerary_sections,
 )
+from app.services.trip_plan_snapshot_builder import build_trip_plan_snapshot
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.weather_advice_service import (
     UNAVAILABLE_WEATHER_ADVICE,
@@ -242,7 +243,11 @@ def test_generation_prompt_exposes_compact_verified_presentation_context() -> No
         ),
     )
 
-    prompt = json.loads(build_trip_generation_prompt(evidence))
+    snapshot = build_trip_plan_snapshot(
+        evidence,
+        request_field_sources={"core.destination_city": "conversation_context"},
+    )
+    prompt = json.loads(build_trip_generation_prompt(snapshot))
     serialized = json.dumps(prompt, ensure_ascii=False)
 
     assert set(prompt) == {"trip", "transport", "hotel", "days", "warnings"}
@@ -326,6 +331,30 @@ def test_generation_prompt_exposes_compact_verified_presentation_context() -> No
         assert excluded not in serialized
 
 
+def test_snapshot_retains_editable_facts_that_presentation_omits() -> None:
+    evidence = joined()
+
+    snapshot = build_trip_plan_snapshot(
+        evidence,
+        request_field_sources={"core.destination_city": "explicit_rule"},
+    )
+    serialized = snapshot.model_dump(mode="json")
+    place = snapshot.days[0].places[0]
+
+    assert snapshot.schema_version == "trip_plan.v1"
+    assert snapshot.request_field_sources == {
+        "core.destination_city": "explicit_rule",
+    }
+    assert snapshot.source_metadata.planning_run_id == "test-run"
+    assert place.provider_place_id == "a1"
+    assert place.location.longitude == 104.0
+    assert place.source_query == "景点"
+    assert place.source_rank == 1
+    assert place.candidate_score == 42
+    assert "data" not in serialized["transport"]
+    assert "data" not in serialized["hotel"]
+
+
 def test_generation_prompt_compacts_route_legs_without_navigation_steps() -> None:
     evidence = joined()
     map_evidence = evidence.map_weather.map
@@ -352,7 +381,7 @@ def test_generation_prompt_compacts_route_legs_without_navigation_steps() -> Non
         )
     )
 
-    prompt = json.loads(build_trip_generation_prompt(evidence))
+    prompt = json.loads(build_trip_generation_prompt(build_trip_plan_snapshot(evidence)))
 
     assert prompt["days"][0]["route_legs"] == [
         {
@@ -393,6 +422,7 @@ async def test_skeleton_is_deterministic_valid_and_renderable_before_model_gener
     )
 
     assert update["skeleton_validation_issues"] == []
+    assert update["plan_snapshot"].schema_version == "trip_plan.v1"
     assert update["narrative_skeleton"].title == "成都1日旅行方案"
     assert update["narrative_skeleton"].days[0].date == date(2026, 7, 25)
     assert "地点 a1" in update["skeleton_answer"]
@@ -414,7 +444,8 @@ async def test_markdown_generation_yields_provider_chunks_without_waiting_for_fu
         timeout_seconds=1,
     )
 
-    chunks = [chunk async for chunk in generator.stream_markdown(evidence)]
+    snapshot = build_trip_plan_snapshot(evidence)
+    chunks = [chunk async for chunk in generator.stream_markdown(snapshot)]
 
     assert chunks == ["# 成都一日攻略\n\n", "## Day 1\n\n", "地点 a1。"]
     assert len(model.calls) == 1

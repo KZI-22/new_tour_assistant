@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Literal
+
+from app.schemas.trip_options import (
+    HotelOptionSnapshot,
+    TransportOptionSnapshot,
+    TripOptionSnapshot,
+)
 
 _MAX_TRANSPORT_OPTIONS_PER_QUERY = 5
 _MAX_HOTEL_OPTIONS = 10
@@ -14,6 +23,7 @@ class OptionNormalization:
     provider_item_count: int
     rejected_item_count: int
     schema_valid: bool
+    normalized_options: tuple[TripOptionSnapshot, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -34,23 +44,24 @@ def normalize_transport_options(
     if items is None:
         return _invalid_normalization()
 
-    options: list[str] = []
+    options: list[TransportOptionSnapshot] = []
     rejected = 0
     for item in items:
         if not isinstance(item, Mapping):
             rejected += 1
             continue
-        option = _format_transport_item(item, mode=mode, direction=direction)
+        option = _normalize_transport_item(item, mode=mode, direction=direction)
         if option is None:
             rejected += 1
             continue
         if len(options) < _MAX_TRANSPORT_OPTIONS_PER_QUERY:
             options.append(option)
     return OptionNormalization(
-        options=tuple(options),
+        options=tuple(item.display_text for item in options),
         provider_item_count=len(items),
         rejected_item_count=rejected,
         schema_valid=True,
+        normalized_options=tuple(options),
     )
 
 
@@ -59,23 +70,24 @@ def normalize_hotel_options(payload: object) -> OptionNormalization:
     if items is None:
         return _invalid_normalization()
 
-    options: list[str] = []
+    options: list[HotelOptionSnapshot] = []
     rejected = 0
     for item in items:
         if not isinstance(item, Mapping):
             rejected += 1
             continue
-        option = _format_hotel_item(item)
+        option = _normalize_hotel_item(item)
         if option is None:
             rejected += 1
             continue
         if len(options) < _MAX_HOTEL_OPTIONS:
             options.append(option)
     return OptionNormalization(
-        options=tuple(options),
+        options=tuple(item.display_text for item in options),
         provider_item_count=len(items),
         rejected_item_count=rejected,
         schema_valid=True,
+        normalized_options=tuple(options),
     )
 
 
@@ -94,12 +106,12 @@ def _provider_items(payload: object) -> list[object] | None:
     return list(raw_items)
 
 
-def _format_transport_item(
+def _normalize_transport_item(
     item: Mapping[str, object],
     *,
     mode: Literal["flight", "train"],
     direction: str,
-) -> str | None:
+) -> TransportOptionSnapshot | None:
     journeys = item.get("journeys")
     if not _is_sequence(journeys):
         return None
@@ -146,7 +158,9 @@ def _format_transport_item(
         f"｜{departure_station} {departure_time} → {arrival_station} {arrival_time}"
     )
 
-    if duration := _duration_text(item.get("totalDuration") or journey.get("totalDuration")):
+    duration_value = item.get("totalDuration") or journey.get("totalDuration")
+    duration_minutes = _duration_minutes(duration_value)
+    if duration := _duration_text(duration_value):
         line += f"｜{duration}"
     seat_classes = _unique_texts(_text(segment.get("seatClassName")) for segment in segments)
     if seat_classes:
@@ -154,28 +168,69 @@ def _format_transport_item(
     price = item.get("ticketPrice") if mode == "flight" else item.get("price")
     if price_text := _price_text(price):
         line += f"｜参考价 {price_text}"
-    if detail_url := _safe_url(item.get("jumpUrl")):
+    detail_url = _safe_url(item.get("jumpUrl"))
+    if detail_url:
         line += f"｜[查看详情]({detail_url})"
-    return line
+    price_amount = _price_amount(price)
+    return TransportOptionSnapshot(
+        option_id=_option_id("transport", item, mode, direction),
+        mode=mode,
+        direction="return" if direction == "return" else "outbound",
+        journey_type=journey_type,
+        transport_names=transport_names,
+        transport_numbers=transport_numbers,
+        departure_station=departure_station,
+        departure_at=departure_time,
+        arrival_station=arrival_station,
+        arrival_at=arrival_time,
+        duration_minutes=duration_minutes,
+        seat_classes=seat_classes,
+        price_amount=price_amount,
+        currency="CNY" if price_amount is not None else None,
+        detail_url=detail_url or None,
+        display_text=line,
+    )
 
 
-def _format_hotel_item(item: Mapping[str, object]) -> str | None:
+def _normalize_hotel_item(item: Mapping[str, object]) -> HotelOptionSnapshot | None:
     name = _text(item.get("name"))
     if not name:
         return None
 
     parts = [name]
-    if star := _text(item.get("star")):
+    star = _text(item.get("star"))
+    if star:
         parts.append(star)
-    if price := _price_text(item.get("price")):
-        parts.append(f"参考价 {price}")
-    if nearby := _text(item.get("interestsPoi")):
+    raw_price = item.get("price")
+    if price_text := _price_text(raw_price):
+        parts.append(f"参考价 {price_text}")
+    nearby = _text(item.get("interestsPoi"))
+    if nearby:
         parts.append(nearby)
-    if address := _text(item.get("address")):
+    address = _text(item.get("address"))
+    if address:
         parts.append(f"地址：{address}")
-    if detail_url := _safe_url(item.get("detailUrl")):
+    detail_url = _safe_url(item.get("detailUrl"))
+    if detail_url:
         parts.append(f"[查看详情]({detail_url})")
-    return "｜".join(parts)
+    price_amount = _price_amount(raw_price)
+    return HotelOptionSnapshot(
+        option_id=_option_id("hotel", item),
+        provider_hotel_id=(
+            _text(item.get("hotelId"))
+            or _text(item.get("id"))
+            or _text(item.get("itemId"))
+            or None
+        ),
+        name=name,
+        star=star or None,
+        price_amount=price_amount,
+        currency="CNY" if price_amount is not None else None,
+        nearby_poi=nearby or None,
+        address=address or None,
+        detail_url=detail_url or None,
+        display_text="｜".join(parts),
+    )
 
 
 def _station_label(segment: Mapping[str, object], *, prefix: Literal["dep", "arr"]) -> str:
@@ -187,14 +242,8 @@ def _station_label(segment: Mapping[str, object], *, prefix: Literal["dep", "arr
 
 
 def _duration_text(value: object) -> str:
-    raw = _text(value)
-    if not raw:
-        return ""
-    try:
-        minutes = int(float(raw))
-    except ValueError:
-        return ""
-    if minutes <= 0:
+    minutes = _duration_minutes(value)
+    if minutes is None:
         return ""
     hours, remaining = divmod(minutes, 60)
     if hours and remaining:
@@ -204,11 +253,33 @@ def _duration_text(value: object) -> str:
     return f"{remaining}分"
 
 
+def _duration_minutes(value: object) -> int | None:
+    raw = _scalar_text(value)
+    if not raw:
+        return None
+    try:
+        minutes = int(float(raw))
+    except ValueError:
+        return None
+    return minutes if minutes > 0 else None
+
+
 def _price_text(value: object) -> str:
-    raw = _text(value)
+    raw = _scalar_text(value)
     if not raw:
         return ""
     return raw if raw.startswith(("¥", "￥")) else f"¥{raw}"
+
+
+def _price_amount(value: object) -> Decimal | None:
+    raw = _scalar_text(value).replace(",", "").lstrip("¥￥")
+    if not raw:
+        return None
+    try:
+        amount = Decimal(raw)
+    except InvalidOperation:
+        return None
+    return amount if amount >= 0 else None
 
 
 def _format_datetime(value: str) -> str:
@@ -232,6 +303,26 @@ def _unique_texts(values: Iterable[str]) -> list[str]:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _scalar_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, Decimal)):
+        return str(value)
+    return ""
+
+
+def _option_id(kind: str, item: Mapping[str, object], *scope: str) -> str:
+    serialized = json.dumps(
+        item,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256("|".join((kind, *scope, serialized)).encode()).hexdigest()[:24]
+    return f"{kind}_{digest}"
 
 
 def _is_sequence(value: object) -> bool:

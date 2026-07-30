@@ -82,6 +82,7 @@ class HotelSearchService:
                 started=started,
                 query=summary,
                 data=result.data,
+                normalized_options=list(normalization.normalized_options),
                 display_options=list(normalization.options),
             )
         if normalization is not None and normalization.empty:
@@ -119,6 +120,7 @@ def _hotel_evidence(
     started: float,
     query: dict[str, object],
     data: object | None = None,
+    normalized_options: list[object] | None = None,
     display_options: list[str] | None = None,
     warnings: list[str] | None = None,
     error_code: str | None = None,
@@ -130,6 +132,7 @@ def _hotel_evidence(
         queried_at=queried_at,
         duration_ms=max(0, round((perf_counter() - started) * 1_000)),
         data=data,
+        normalized_options=normalized_options or [],
         display_options=display_options or [],
         warnings=warnings or [],
         error_code=error_code,

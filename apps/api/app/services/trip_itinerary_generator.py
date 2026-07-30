@@ -22,6 +22,7 @@ from app.schemas.trip_itinerary import (
     TripNarrativeDraft,
     TripNarrativePlan,
 )
+from app.schemas.trip_plan_snapshot import TripPlanSnapshot
 from app.schemas.trip_planning import DailyWeatherEvidence
 from app.services.trip_presentation_context import build_trip_presentation_context
 from app.services.weather_advice_service import build_weather_advice
@@ -120,9 +121,9 @@ class TripItineraryGenerator:
 
     async def stream_markdown(
         self,
-        evidence: JoinedTripEvidence,
+        snapshot: TripPlanSnapshot,
     ) -> AsyncIterator[str]:
-        prompt = build_trip_generation_prompt(evidence)
+        prompt = build_trip_generation_prompt(snapshot)
         messages = [
             SystemMessage(content=TRIP_MARKDOWN_SYSTEM_PROMPT),
             HumanMessage(content=prompt),
@@ -196,8 +197,8 @@ def build_trip_narrative_skeleton(
     return compose_trip_narrative(evidence, draft)
 
 
-def build_trip_generation_prompt(evidence: JoinedTripEvidence) -> str:
-    context = build_trip_presentation_context(evidence)
+def build_trip_generation_prompt(snapshot: TripPlanSnapshot) -> str:
+    context = build_trip_presentation_context(snapshot)
     return json.dumps(
         context.model_dump(mode="json"),
         ensure_ascii=False,

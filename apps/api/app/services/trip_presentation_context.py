@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import UUID
 
-from app.schemas.map_planning import (
-    MapDayEvidence,
-    MapPlaceEvidence,
-    RouteLegEvidence,
+from app.schemas.trip_evidence import EvidenceStatus
+from app.schemas.trip_plan_snapshot import (
+    TripHotelSnapshot,
+    TripPlanDaySnapshot,
+    TripPlanPlaceSnapshot,
+    TripPlanRouteLegSnapshot,
+    TripPlanSnapshot,
+    TripPlanWeatherSnapshot,
+    TripTransportSnapshot,
 )
-from app.schemas.trip_evidence import (
-    EvidenceStatus,
-    JoinedTripEvidence,
-    RawCapabilityEvidence,
-)
-from app.schemas.trip_planning import DailyWeatherEvidence
 from app.schemas.trip_presentation import (
     DayPresentationContext,
     HotelPresentationContext,
@@ -23,19 +23,15 @@ from app.schemas.trip_presentation import (
     TripSummaryContext,
     WeatherPresentationContext,
 )
-from app.services.weather_advice_service import build_weather_advice
 
 _WEEKDAYS = "一二三四五六日"
 _DETAIL_LINK_MARKER = "｜[查看详情]"
 
 
 def build_trip_presentation_context(
-    evidence: JoinedTripEvidence,
+    snapshot: TripPlanSnapshot,
 ) -> TripPresentationContext:
-    core = evidence.request.core
-    map_evidence = evidence.map_weather.map
-    weather = evidence.map_weather.weather
-    weather_by_date = {day.date: day for day in weather.days} if weather is not None else {}
+    core = snapshot.request.core
     duration_days = core.duration_days
     end_date = (
         core.start_date + timedelta(days=duration_days - 1)
@@ -45,7 +41,7 @@ def build_trip_presentation_context(
 
     return TripPresentationContext(
         trip=TripSummaryContext(
-            origin_city=evidence.capabilities.transport.origin,
+            origin_city=snapshot.capabilities.transport.origin,
             destination_city=core.destination_city,
             start_date=core.start_date,
             end_date=end_date,
@@ -54,69 +50,68 @@ def build_trip_presentation_context(
             food_preferences=list(core.food_preferences),
             assumptions=[
                 f"{item.explanation}：{item.value}"
-                for item in evidence.capabilities.derivations
+                for item in snapshot.capabilities.derivations
                 if item.source in {"derived_from_trip_dates", "default_policy"}
             ],
         ),
-        transport=_transport_context(evidence),
-        hotel=_hotel_context(evidence),
-        days=[
-            _day_context(day, weather_by_date.get(day.date))
-            for day in (map_evidence.days if map_evidence is not None else [])
-        ],
-        warnings=list(evidence.warnings),
+        transport=_transport_context(snapshot.transport),
+        hotel=_hotel_context(snapshot.hotel),
+        days=[_day_context(day) for day in snapshot.days],
+        warnings=list(snapshot.warnings),
     )
 
 
 def _transport_context(
-    evidence: JoinedTripEvidence,
+    transport: TripTransportSnapshot,
 ) -> TransportPresentationContext:
-    plan = evidence.capabilities.transport
-    raw = evidence.transport
     return TransportPresentationContext(
-        enabled=plan.enabled,
-        status=raw.status.value,
-        modes=[mode.value for mode in plan.modes],
-        journey_scope=plan.journey_scope.value,
-        origin=plan.origin,
-        destination=plan.destination,
-        outbound_date=plan.outbound_date,
-        return_date=plan.return_date,
-        options=_readable_options(plan.enabled, raw),
-        warnings=list(raw.warnings),
-        error_code=raw.error_code,
+        enabled=transport.enabled,
+        status=transport.status.value,
+        modes=[mode.value for mode in transport.modes],
+        journey_scope=transport.journey_scope.value,
+        origin=transport.origin,
+        destination=transport.destination,
+        outbound_date=transport.outbound_date,
+        return_date=transport.return_date,
+        options=_readable_options(
+            transport.enabled,
+            transport.status,
+            transport.display_options,
+        ),
+        warnings=list(transport.warnings),
+        error_code=transport.error_code,
     )
 
 
 def _hotel_context(
-    evidence: JoinedTripEvidence,
+    hotel: TripHotelSnapshot,
 ) -> HotelPresentationContext:
-    plan = evidence.capabilities.hotel
-    raw = evidence.hotel
     return HotelPresentationContext(
-        enabled=plan.enabled,
-        status=raw.status.value,
-        destination=plan.destination,
-        check_in_date=plan.check_in_date,
-        check_out_date=plan.check_out_date,
-        nearby_poi=plan.nearby_poi,
-        options=_readable_options(plan.enabled, raw),
-        warnings=list(raw.warnings),
-        error_code=raw.error_code,
+        enabled=hotel.enabled,
+        status=hotel.status.value,
+        destination=hotel.destination,
+        check_in_date=hotel.check_in_date,
+        check_out_date=hotel.check_out_date,
+        nearby_poi=hotel.nearby_poi,
+        options=_readable_options(
+            hotel.enabled,
+            hotel.status,
+            hotel.display_options,
+        ),
+        warnings=list(hotel.warnings),
+        error_code=hotel.error_code,
     )
 
 
 def _day_context(
-    day: MapDayEvidence,
-    weather: DailyWeatherEvidence | None,
+    day: TripPlanDaySnapshot,
 ) -> DayPresentationContext:
-    places = day.ordered_places()
-    places_by_ref = {place.reference_id: place for place in places}
+    places_by_id = {place.plan_item_id: place for place in day.places}
     return DayPresentationContext(
         day_index=day.day_index,
         date=day.date,
         weekday=f"周{_WEEKDAYS[day.date.weekday()]}",
-        weather=_weather_context(weather),
+        weather=_weather_context(day.weather),
         estimated_visit_minutes=day.estimated_visit_minutes,
         estimated_transport_minutes=day.estimated_transport_minutes,
         places=[
@@ -129,45 +124,41 @@ def _day_context(
                 matched_preferences=list(place.matched_preferences),
                 selection_reasons=list(place.selection_reasons),
             )
-            for place in places
+            for place in day.places
         ],
         route_legs=[
-            _route_leg_context(leg, places_by_ref)
+            _route_leg_context(leg, places_by_id)
             for leg in day.route_legs
-            if leg.origin_ref in places_by_ref and leg.destination_ref in places_by_ref
+            if leg.origin_plan_item_id in places_by_id
+            and leg.destination_plan_item_id in places_by_id
         ],
         warnings=list(day.warnings),
     )
 
 
 def _weather_context(
-    weather: DailyWeatherEvidence | None,
+    weather: TripPlanWeatherSnapshot,
 ) -> WeatherPresentationContext:
-    if weather is None:
-        return WeatherPresentationContext(
-            coverage="unavailable",
-            advice=["该日期暂无对应天气预报，出发前请再次确认。"],
-        )
     return WeatherPresentationContext(
         coverage=weather.coverage,
         day_weather=weather.day_weather,
         night_weather=weather.night_weather,
         day_temperature=weather.day_temperature,
         night_temperature=weather.night_temperature,
-        advice=build_weather_advice(weather),
+        advice=list(weather.advice),
     )
 
 
 def _route_leg_context(
-    leg: RouteLegEvidence,
-    places_by_ref: dict[str, MapPlaceEvidence],
+    leg: TripPlanRouteLegSnapshot,
+    places_by_id: dict[UUID, TripPlanPlaceSnapshot],
 ) -> RouteLegPresentationContext:
-    origin = places_by_ref[leg.origin_ref]
-    destination = places_by_ref[leg.destination_ref]
+    origin = places_by_id[leg.origin_plan_item_id]
+    destination = places_by_id[leg.destination_plan_item_id]
     return RouteLegPresentationContext(
-        origin_ref=leg.origin_ref,
+        origin_ref=origin.reference_id,
         origin_name=origin.name,
-        destination_ref=leg.destination_ref,
+        destination_ref=destination.reference_id,
         destination_name=destination.name,
         mode=leg.mode,
         distance_meters=leg.distance_meters,
@@ -181,11 +172,12 @@ def _route_leg_context(
 
 def _readable_options(
     enabled: bool,
-    evidence: RawCapabilityEvidence,
+    status: EvidenceStatus,
+    display_options: list[str],
 ) -> list[str]:
-    if not enabled or evidence.status is not EvidenceStatus.USABLE:
+    if not enabled or status is not EvidenceStatus.USABLE:
         return []
-    return [item.partition(_DETAIL_LINK_MARKER)[0].strip() for item in evidence.display_options]
+    return [item.partition(_DETAIL_LINK_MARKER)[0].strip() for item in display_options]
 
 
 __all__ = ["build_trip_presentation_context"]

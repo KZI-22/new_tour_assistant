@@ -24,6 +24,7 @@ from app.services.rule_first_trip_requirement_extractor import (
 from app.services.trip_evidence_joiner import join_trip_evidence
 from app.services.trip_itinerary_generator import build_trip_narrative_skeleton
 from app.services.trip_itinerary_renderer import render_trip_itinerary
+from app.services.trip_plan_snapshot_builder import build_trip_plan_snapshot
 from app.services.trip_plan_validator import TripPlanValidator
 from app.services.trip_planner_logging import safe_log_value
 
@@ -184,8 +185,21 @@ class BuildItinerarySkeletonNode:
         evidence = state["joined_evidence"]
         narrative = build_trip_narrative_skeleton(evidence)
         issues = self._validator.validate(evidence, narrative)
+        extraction_details = state.get("extraction_details", {})
+        raw_field_sources = (
+            extraction_details.get("field_sources")
+            if isinstance(extraction_details, dict)
+            else None
+        )
+        field_sources = raw_field_sources if isinstance(raw_field_sources, dict) else None
+        snapshot = build_trip_plan_snapshot(
+            evidence,
+            request_field_sources=field_sources,
+            planning_run_id=state.get("planning_run_id"),
+        )
         _log_validation_issues(state, issues, node="build_itinerary_skeleton")
         return {
+            "plan_snapshot": snapshot,
             "narrative_skeleton": narrative,
             "skeleton_validation_issues": issues,
             "skeleton_answer": (render_trip_itinerary(evidence, narrative) if not issues else ""),

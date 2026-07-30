@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.schemas.map_planning import MapTripEvidence
 from app.schemas.trip_capabilities import CapabilityPlan, TripPlanningRequest
+from app.schemas.trip_options import TripOptionSnapshot
 from app.schemas.trip_planning import TripPlanningModel, TripWeatherEvidence
 
 
@@ -26,6 +27,7 @@ class RawCapabilityEvidence(TripPlanningModel):
     queried_at: datetime
     duration_ms: int = Field(ge=0)
     data: object | None = None
+    normalized_options: list[TripOptionSnapshot] = Field(default_factory=list, max_length=20)
     display_options: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list)
     error_code: str | None = None

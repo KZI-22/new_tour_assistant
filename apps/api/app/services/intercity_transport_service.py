@@ -95,6 +95,11 @@ class IntercityTransportService:
             display_options = [
                 option for item in usable for option in item["normalization"].options
             ]
+            normalized_options = [
+                option
+                for item in usable
+                for option in item["normalization"].normalized_options
+            ]
             return _transport_evidence(
                 status=EvidenceStatus.USABLE,
                 queried_at=queried_at,
@@ -110,6 +115,7 @@ class IntercityTransportService:
                         for item in usable
                     ]
                 },
+                normalized_options=normalized_options,
                 display_options=display_options,
                 warnings=[
                     f"{item['mode']} {item['direction']} 查询失败（{item['error_code']}）。"
@@ -260,6 +266,7 @@ def _transport_evidence(
     started: float,
     query: dict[str, object],
     data: object | None = None,
+    normalized_options: list[object] | None = None,
     display_options: list[str] | None = None,
     warnings: list[str] | None = None,
     error_code: str | None = None,
@@ -271,6 +278,7 @@ def _transport_evidence(
         queried_at=queried_at,
         duration_ms=max(0, round((perf_counter() - started) * 1_000)),
         data=data,
+        normalized_options=normalized_options or [],
         display_options=display_options or [],
         warnings=warnings or [],
         error_code=error_code,

@@ -171,6 +171,7 @@ class _StandardTripPlanningRun:
 
         if (
             state.get("joined_evidence") is not None
+            and state.get("plan_snapshot") is not None
             and state.get("skeleton_answer")
             and not state.get("skeleton_validation_issues")
             and not state.get("final_answer")
@@ -211,7 +212,7 @@ class _StandardTripPlanningRun:
             detail="模型生成的文本会实时展示。",
         )
         try:
-            async for text in self._itinerary_generator.stream_markdown(state["joined_evidence"]):
+            async for text in self._itinerary_generator.stream_markdown(state["plan_snapshot"]):
                 output_chars += len(text)
                 output_chunks += 1
                 yield MessageDeltaEvent(delta=text)

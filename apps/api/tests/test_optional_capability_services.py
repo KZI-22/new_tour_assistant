@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from app.schemas.travel import (
@@ -19,6 +20,7 @@ from app.schemas.trip_capabilities import (
     TransportMode,
 )
 from app.schemas.trip_evidence import EvidenceStatus
+from app.schemas.trip_options import HotelOptionSnapshot, TransportOptionSnapshot
 from app.services.hotel_search_service import HotelSearchService
 from app.services.intercity_transport_service import IntercityTransportService
 
@@ -226,6 +228,14 @@ async def test_one_way_transport_does_not_query_return() -> None:
         "天府机场 T2 2026-08-01 10:30｜2小时30分｜经济舱｜参考价 ¥680.00"
         "｜[查看详情](https://a.feizhu.com/example)"
     ]
+    assert len(evidence.normalized_options) == 1
+    option = evidence.normalized_options[0]
+    assert isinstance(option, TransportOptionSnapshot)
+    assert option.transport_numbers == ["CA1234"]
+    assert option.departure_station == "首都国际机场 T2"
+    assert option.arrival_station == "天府机场 T2"
+    assert option.duration_minutes == 150
+    assert option.price_amount == Decimal("680.00")
 
 
 @pytest.mark.asyncio
@@ -303,8 +313,15 @@ async def test_hotel_results_are_normalized_for_display(
             "酒店 A｜高档型｜参考价 ¥399｜近春熙路｜地址：锦江区测试路 1 号"
             "｜[查看详情](https://a.feizhu.com/hotel-a)"
         ]
+        assert len(evidence.normalized_options) == 1
+        option = evidence.normalized_options[0]
+        assert isinstance(option, HotelOptionSnapshot)
+        assert option.name == "酒店 A"
+        assert option.price_amount == Decimal("399")
+        assert option.address == "锦江区测试路 1 号"
     else:
         assert evidence.data is None
+        assert evidence.normalized_options == []
         assert evidence.display_options == []
     if result.error_message:
         assert result.error_message not in " ".join(evidence.warnings)

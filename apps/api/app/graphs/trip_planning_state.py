@@ -10,6 +10,7 @@ from app.schemas.trip_evidence import (
     RawCapabilityEvidence,
 )
 from app.schemas.trip_itinerary import TripNarrativePlan
+from app.schemas.trip_plan_snapshot import TripPlanSnapshot
 from app.schemas.trip_validation import ValidationIssue
 
 
@@ -30,6 +31,7 @@ class TripPlanningState(TypedDict, total=False):
     transport_evidence: RawCapabilityEvidence
     hotel_evidence: RawCapabilityEvidence
     joined_evidence: JoinedTripEvidence
+    plan_snapshot: TripPlanSnapshot
 
     narrative_skeleton: TripNarrativePlan
     skeleton_validation_issues: list[ValidationIssue]
