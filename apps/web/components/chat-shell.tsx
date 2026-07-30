@@ -25,8 +25,11 @@ import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { useAuth } from "@/components/auth-gate";
 import { PlanningTracePanel } from "@/components/planning-trace-panel";
 import {
+  AgentStatusUpdate,
+  AgentTraceUpdate,
   ApiChatMessage,
   ConversationSummary,
+  DebugTraceUpdate,
   deleteConversation,
   fetchConversation,
   fetchConversations,
@@ -51,8 +54,9 @@ type ToolStatus = {
 
 type ChatMessage = ApiChatMessage & {
   tools?: ToolStatus[];
+  agents?: AgentStatusUpdate[];
   planningStages?: PlanningStageUpdate[];
-  debugTrace?: PlanningTraceUpdate[];
+  debugTrace?: Array<PlanningTraceUpdate | AgentTraceUpdate>;
   xhsLogin?: XhsLoginRequiredUpdate & { status: "pending" | "failed" | "skipped" };
 };
 
@@ -79,6 +83,19 @@ function maskedPhone(phone: string): string {
   if (localNumber.length < 7) return phone;
   const prefix = phone.startsWith("+86") ? "+86 " : "";
   return `${prefix}${localNumber.slice(0, 3)}****${localNumber.slice(-4)}`;
+}
+
+function agentStatusKey(status: AgentStatusUpdate): string {
+  return status.task_id ?? status.agent;
+}
+
+function latestAgentStatuses(events: DebugTraceUpdate[]): AgentStatusUpdate[] {
+  const latest = new Map<string, AgentStatusUpdate>();
+  events
+    .filter((event): event is AgentStatusUpdate => event.type === "agent_status")
+    .sort((left, right) => left.sequence - right.sequence)
+    .forEach((event) => latest.set(agentStatusKey(event), event));
+  return [...latest.values()];
 }
 
 export function ChatShell() {
@@ -195,27 +212,36 @@ export function ChatShell() {
               message.status === "completed" ||
               Boolean(message.content && message.status === "interrupted"),
           )
-          .map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            debugTrace: message.debug_trace ?? [],
-            tools: (conversation.tool_calls ?? [])
-              .filter((tool) => tool.assistant_message_id === message.id)
-              .map((tool) => ({
-                id: tool.tool_call_id,
-                toolName: tool.tool_name,
-                label: tool.tool_name,
-                state:
-                  tool.data_status === "partial"
-                    ? "partial"
-                    : tool.data_status === "usable" ||
-                        (tool.data_status === null && tool.status === "success")
-                      ? "success"
-                      : "failed",
-                summary: tool.result_summary,
-              })),
-          })),
+          .map((message) => {
+            const trace = message.debug_trace ?? [];
+            return {
+              id: message.id,
+              role: message.role,
+              content: message.content,
+              agents: latestAgentStatuses(trace),
+              debugTrace: trace.filter(
+                (
+                  event,
+                ): event is PlanningTraceUpdate | AgentTraceUpdate =>
+                  event.type !== "agent_status",
+              ),
+              tools: (conversation.tool_calls ?? [])
+                .filter((tool) => tool.assistant_message_id === message.id)
+                .map((tool) => ({
+                  id: tool.tool_call_id,
+                  toolName: tool.tool_name,
+                  label: tool.tool_name,
+                  state:
+                    tool.data_status === "partial"
+                      ? "partial"
+                      : tool.data_status === "usable" ||
+                          (tool.data_status === null && tool.status === "success")
+                        ? "success"
+                        : "failed",
+                  summary: tool.result_summary,
+                })),
+            };
+          }),
       );
       setSidebarOpen(false);
     } catch (reason: unknown) {
@@ -379,6 +405,46 @@ export function ChatShell() {
                   debugTrace: traces.some((trace) => trace.sequence === update.sequence)
                     ? traces.map((trace) =>
                         trace.sequence === update.sequence ? update : trace,
+                      )
+                    : [...traces, update],
+                };
+              }),
+            );
+          },
+          onAgentStatus: (update: AgentStatusUpdate) => {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== assistantId) return message;
+                const agents = message.agents ?? [];
+                const key = agentStatusKey(update);
+                return {
+                  ...message,
+                  agents: agents.some((status) => agentStatusKey(status) === key)
+                    ? agents.map((status) =>
+                        agentStatusKey(status) === key ? update : status,
+                      )
+                    : [...agents, update],
+                };
+              }),
+            );
+          },
+          onAgentTrace: (update: AgentTraceUpdate) => {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== assistantId) return message;
+                const traces = message.debugTrace ?? [];
+                return {
+                  ...message,
+                  debugTrace: traces.some(
+                    (trace) =>
+                      trace.type === update.type &&
+                      trace.sequence === update.sequence,
+                  )
+                    ? traces.map((trace) =>
+                        trace.type === update.type &&
+                        trace.sequence === update.sequence
+                          ? update
+                          : trace,
                       )
                     : [...traces, update],
                 };
@@ -696,6 +762,59 @@ export function ChatShell() {
                         <div>
                           {Boolean(message.debugTrace?.length) && (
                             <PlanningTracePanel traces={message.debugTrace ?? []} />
+                          )}
+                          {Boolean(message.agents?.length) && (
+                            <div
+                              className="mb-3 rounded-xl border border-black/[0.06] bg-black/[0.025] px-3 py-2.5"
+                              aria-label="Agent 运行状态"
+                            >
+                              <div className="space-y-1.5">
+                                {message.agents?.map((agent) => (
+                                  <div
+                                    key={agentStatusKey(agent)}
+                                    className={`flex items-start gap-2 text-xs ${
+                                      agent.status === "failed"
+                                        ? "text-red-700"
+                                        : agent.status === "partial" ||
+                                            agent.status === "needs_input"
+                                          ? "text-amber-700"
+                                          : agent.status === "cancelled"
+                                            ? "text-[var(--muted-light)]"
+                                            : "text-[var(--muted)]"
+                                    }`}
+                                    title={agent.detail ?? undefined}
+                                  >
+                                    {agent.status === "running" ||
+                                    agent.status === "queued" ||
+                                    agent.status === "waiting" ? (
+                                      <LoaderCircle
+                                        size={13}
+                                        className="mt-0.5 shrink-0 animate-spin"
+                                      />
+                                    ) : agent.status === "failed" ? (
+                                      <X size={13} className="mt-0.5 shrink-0" />
+                                    ) : agent.status === "partial" ||
+                                      agent.status === "needs_input" ? (
+                                      <TriangleAlert
+                                        size={13}
+                                        className="mt-0.5 shrink-0"
+                                      />
+                                    ) : (
+                                      <Check
+                                        size={13}
+                                        className="mt-0.5 shrink-0 text-emerald-600"
+                                      />
+                                    )}
+                                    <span>
+                                      <span className="font-medium">
+                                        {agent.display_name}
+                                      </span>
+                                      {agent.detail ? `：${agent.detail}` : ""}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
                           )}
                           {Boolean(message.planningStages?.length) && (
                             <div

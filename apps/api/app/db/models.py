@@ -77,9 +77,7 @@ class UserSession(Base):
 
     user: Mapped[User] = relationship(back_populates="sessions")
 
-    __table_args__ = (
-        Index("ix_user_sessions_user_state", "user_id", "revoked_at", "expires_at"),
-    )
+    __table_args__ = (Index("ix_user_sessions_user_state", "user_id", "revoked_at", "expires_at"),)
 
 
 class Conversation(Base):
@@ -110,6 +108,11 @@ class Conversation(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         uselist=False,
+    )
+    agent_runs: Mapped[list[AgentRun]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     __table_args__ = (
@@ -165,6 +168,18 @@ class ToolCallLog(Base):
     assistant_message_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
     )
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL")
+    )
+    agent_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_task_runs.id", ondelete="SET NULL")
+    )
+    agent_name: Mapped[str | None] = mapped_column(String(30))
+    process_status: Mapped[str | None] = mapped_column(String(20))
+    process_return_code: Mapped[int | None] = mapped_column(Integer)
+    provider_status: Mapped[str | None] = mapped_column(String(20))
+    parse_status: Mapped[str | None] = mapped_column(String(20))
+    business_status: Mapped[str | None] = mapped_column(String(20))
     tool_call_id: Mapped[str] = mapped_column(String(200), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -194,6 +209,137 @@ class ToolCallLog(Base):
         ),
         Index("ix_tool_call_logs_conversation_created", "conversation_id", "created_at"),
         Index("ix_tool_call_logs_assistant_message", "assistant_message_id"),
+        Index("ix_tool_call_logs_agent_run", "agent_run_id"),
+        Index("ix_tool_call_logs_agent_task", "agent_task_id"),
+    )
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    assistant_message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    user_request: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    conversation: Mapped[Conversation] = relationship(back_populates="agent_runs")
+    tasks: Mapped[list[AgentTaskRun]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AgentTaskRun.created_at",
+    )
+    events: Mapped[list[AgentRuntimeEvent]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AgentRuntimeEvent.sequence",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'needs_input', 'completed', 'partial', 'failed', 'cancelled')",
+            name="ck_agent_runs_status",
+        ),
+        Index("ix_agent_runs_conversation_updated", "conversation_id", "updated_at"),
+        Index("ix_agent_runs_conversation_status", "conversation_id", "status"),
+    )
+
+
+class AgentTaskRun(Base):
+    __tablename__ = "agent_task_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_name: Mapped[str] = mapped_column(String(30), nullable=False)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    missing_fields_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        _JSON_DOCUMENT,
+        nullable=False,
+        default=list,
+    )
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOCUMENT)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="tasks")
+    events: Mapped[list[AgentRuntimeEvent]] = relationship(
+        back_populates="task",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "agent_name IN ('itinerary', 'transport', 'hotel')",
+            name="ck_agent_task_runs_agent_name",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'waiting', 'needs_input', "
+            "'success', 'partial', 'failed', 'cancelled')",
+            name="ck_agent_task_runs_status",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_agent_task_runs_attempt_count"),
+        UniqueConstraint("run_id", "agent_name", name="uq_agent_task_runs_run_agent"),
+        Index("ix_agent_task_runs_run_status", "run_id", "status"),
+    )
+
+
+class AgentRuntimeEvent(Base):
+    __tablename__ = "agent_runtime_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_task_runs.id", ondelete="CASCADE")
+    )
+    assistant_message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(30), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    detail: Mapped[str | None] = mapped_column(String(500))
+    data_json: Mapped[dict[str, Any]] = mapped_column(
+        _JSON_DOCUMENT,
+        nullable=False,
+        default=dict,
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="events")
+    task: Mapped[AgentTaskRun | None] = relationship(back_populates="events")
+
+    __table_args__ = (
+        CheckConstraint("sequence >= 1", name="ck_agent_runtime_events_sequence"),
+        UniqueConstraint("run_id", "sequence", name="uq_agent_runtime_events_run_sequence"),
+        Index("ix_agent_runtime_events_run_sequence", "run_id", "sequence"),
+        Index("ix_agent_runtime_events_task", "task_id"),
     )
 
 

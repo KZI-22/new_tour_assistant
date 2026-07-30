@@ -19,6 +19,7 @@ from typing import Any
 from app.schemas.travel import (
     FlightSearchInput,
     FlyAIErrorCode,
+    FlyAIExecutionDiagnostics,
     FlyAIResult,
     HotelSearchInput,
     PoiSearchInput,
@@ -337,6 +338,11 @@ class FlyAIClient:
                     f"FlyAI CLI timed out after {timeout_seconds:g} seconds.",
                     self._safe_command(command),
                     started,
+                    diagnostics=FlyAIExecutionDiagnostics(
+                        process_status="timeout",
+                        parse_status="not_attempted",
+                        business_status="unknown",
+                    ),
                 )
                 self._log_execution(command, None, result, "")
                 return result
@@ -360,26 +366,31 @@ class FlyAIClient:
             return result
 
         returncode = process.returncode if process.returncode is not None else -1
-        if returncode != 0:
-            error_code = self._classify_exit_error(stdout, stderr)
-            detail = self._safe_excerpt(stderr.strip() or stdout.strip())
-            message = detail or f"FlyAI CLI exited with status {returncode}."
-            result = self._failure(
-                error_code,
-                message,
-                self._safe_command(command),
-                started,
-            )
-            self._log_execution(command, returncode, result, stderr)
-            return result
-
         normalized_stdout = stdout.lstrip("\ufeff").strip()
         if not normalized_stdout:
+            diagnostics = FlyAIExecutionDiagnostics(
+                process_status="success" if returncode == 0 else "failed",
+                process_return_code=returncode,
+                parse_status="empty",
+                business_status="empty",
+            )
             result = self._failure(
-                FlyAIErrorCode.EMPTY_RESULT,
-                "FlyAI CLI returned an empty stdout response.",
+                (
+                    FlyAIErrorCode.EMPTY_RESULT
+                    if returncode == 0
+                    else self._classify_exit_error(stdout, stderr)
+                ),
+                (
+                    "FlyAI CLI returned an empty stdout response."
+                    if returncode == 0
+                    else (
+                        self._safe_excerpt(stderr)
+                        or f"FlyAI CLI exited with status {returncode}."
+                    )
+                ),
                 self._safe_command(command),
                 started,
+                diagnostics=diagnostics,
             )
             self._log_execution(command, returncode, result, stderr)
             return result
@@ -387,21 +398,80 @@ class FlyAIClient:
         try:
             data = json.loads(normalized_stdout)
         except json.JSONDecodeError:
+            diagnostics = FlyAIExecutionDiagnostics(
+                process_status="success" if returncode == 0 else "failed",
+                process_return_code=returncode,
+                parse_status="invalid",
+                business_status="invalid",
+            )
             result = self._failure(
-                FlyAIErrorCode.INVALID_JSON,
-                "FlyAI CLI stdout was not valid JSON.",
+                (
+                    FlyAIErrorCode.INVALID_JSON
+                    if returncode == 0
+                    else self._classify_exit_error(stdout, stderr)
+                ),
+                (
+                    "FlyAI CLI stdout was not valid JSON."
+                    if returncode == 0
+                    else (
+                        self._safe_excerpt(stderr)
+                        or f"FlyAI CLI exited with status {returncode}."
+                    )
+                ),
                 self._safe_command(command),
                 started,
+                diagnostics=diagnostics,
             )
             self._log_execution(command, returncode, result, stderr)
             return result
 
         if data is None:
+            diagnostics = FlyAIExecutionDiagnostics(
+                process_status="success" if returncode == 0 else "failed",
+                process_return_code=returncode,
+                parse_status="empty",
+                business_status="empty",
+            )
             result = self._failure(
                 FlyAIErrorCode.EMPTY_RESULT,
                 "FlyAI CLI returned a null JSON result.",
                 self._safe_command(command),
                 started,
+                diagnostics=diagnostics,
+            )
+            self._log_execution(command, returncode, result, stderr)
+            return result
+
+        provider_status = self._provider_status(data)
+        business_status = "usable" if self._has_usable_data(data) else "empty"
+        diagnostics = FlyAIExecutionDiagnostics(
+            process_status="success" if returncode == 0 else "failed",
+            process_return_code=returncode,
+            provider_status=provider_status,
+            parse_status="success",
+            business_status=business_status,
+        )
+        if provider_status == "failed":
+            result = self._failure(
+                FlyAIErrorCode.REMOTE_SERVICE_ERROR,
+                "FlyAI provider returned an unsuccessful response.",
+                self._safe_command(command),
+                started,
+                diagnostics=diagnostics,
+            )
+            self._log_execution(command, returncode, result, stderr)
+            return result
+
+        # Some FlyAI commands write usable JSON and still return a non-zero process code.
+        # Preserve that business result while retaining the failed process verdict.
+        if returncode != 0 and business_status != "usable":
+            result = self._failure(
+                self._classify_exit_error(stdout, stderr),
+                self._safe_excerpt(stderr)
+                or f"FlyAI CLI exited with status {returncode}.",
+                self._safe_command(command),
+                started,
+                diagnostics=diagnostics,
             )
             self._log_execution(command, returncode, result, stderr)
             return result
@@ -411,6 +481,7 @@ class FlyAIClient:
             command=self._safe_command(command),
             data=self._sanitize_json(data),
             duration_ms=self._duration_ms(started),
+            diagnostics=diagnostics,
         )
         self._log_execution(command, returncode, result, stderr)
         return result
@@ -457,6 +528,42 @@ class FlyAIClient:
         if any(marker in combined for marker in _REMOTE_ERROR_MARKERS):
             return FlyAIErrorCode.REMOTE_SERVICE_ERROR
         return FlyAIErrorCode.CLI_EXIT_ERROR
+
+    @staticmethod
+    def _provider_status(data: Any) -> str:
+        if not isinstance(data, dict):
+            return "unknown"
+        success = data.get("success")
+        if success is True:
+            return "success"
+        if success is False:
+            return "failed"
+        status = data.get("status")
+        if isinstance(status, str):
+            normalized = status.strip().casefold()
+            if normalized in {"success", "succeeded", "ok", "completed"}:
+                return "success"
+            if normalized in {"failed", "failure", "error", "rejected"}:
+                return "failed"
+        return "unknown"
+
+    @classmethod
+    def _has_usable_data(cls, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple)):
+            return any(cls._has_usable_data(item) for item in value)
+        if isinstance(value, dict):
+            business_values = [
+                item
+                for key, item in value.items()
+                if str(key).casefold()
+                not in {"success", "status", "code", "message", "error", "errorcode"}
+            ]
+            return any(cls._has_usable_data(item) for item in business_values)
+        return True
 
     @classmethod
     def _safe_command(cls, command: Sequence[str]) -> list[str]:
@@ -506,6 +613,8 @@ class FlyAIClient:
         message: str,
         command: list[str],
         started: float,
+        *,
+        diagnostics: FlyAIExecutionDiagnostics | None = None,
     ) -> FlyAIResult:
         return FlyAIResult(
             success=False,
@@ -513,6 +622,7 @@ class FlyAIClient:
             error_code=error_code,
             error_message=cls._safe_excerpt(message),
             duration_ms=cls._duration_ms(started),
+            diagnostics=diagnostics or FlyAIExecutionDiagnostics(),
         )
 
     @staticmethod
@@ -547,10 +657,16 @@ class FlyAIClient:
     ) -> None:
         flags = [part for part in command[2:] if part.startswith("--")]
         logger.info(
-            "flyai_cli command=%s flags=%s returncode=%s duration_ms=%s error_code=%s stderr=%s",
+            "flyai_cli command=%s flags=%s returncode=%s process_status=%s "
+            "provider_status=%s parse_status=%s business_status=%s duration_ms=%s "
+            "error_code=%s stderr=%s",
             command[1] if len(command) > 1 else "unknown",
             ",".join(flags),
             returncode,
+            result.diagnostics.process_status,
+            result.diagnostics.provider_status,
+            result.diagnostics.parse_status,
+            result.diagnostics.business_status,
             result.duration_ms,
             result.error_code.value if result.error_code else None,
             cls._safe_excerpt(stderr),

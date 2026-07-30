@@ -19,6 +19,7 @@ from app.core.request_context import RequestContextMiddleware
 from app.core.security import JwtCodec
 from app.core.settings import Settings, get_settings
 from app.db.session import create_database
+from app.services.agent_state_service import AgentStateService
 from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
@@ -42,11 +43,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     conversation_service = None
     tool_call_log_service = None
     trip_plan_persistence_service = None
+    agent_state_service = None
     if current_settings.database_url:
         database_engine, session_factory = create_database(current_settings.database_url)
         conversation_service = ConversationService(session_factory)
         tool_call_log_service = ToolCallLogService(session_factory)
         trip_plan_persistence_service = TripPlanPersistenceService(session_factory)
+        agent_state_service = AgentStateService(session_factory)
 
     # Created independently of authentication: the shared Amap cache needs it too.
     redis_client = (
@@ -178,10 +181,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         flyai_client=flyai_client,
         trip_planner_settings=current_settings,
         trip_plan_version_writer=trip_plan_persistence_service,
+        agent_state_store=agent_state_service,
     )
     application.state.conversation_service = conversation_service
     application.state.tool_call_log_service = tool_call_log_service
     application.state.trip_plan_persistence_service = trip_plan_persistence_service
+    application.state.agent_state_service = agent_state_service
     application.state.xhs_mcp_client = xhs_mcp_client
     application.state.xhs_research_service = xhs_research_service
     application.state.flyai_client = flyai_client

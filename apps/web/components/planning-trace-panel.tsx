@@ -13,7 +13,9 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { PlanningTraceUpdate } from "@/lib/api";
+import { AgentTraceUpdate, PlanningTraceUpdate } from "@/lib/api";
+
+type TraceUpdate = PlanningTraceUpdate | AgentTraceUpdate;
 
 type TracePost = {
   search_rank?: number;
@@ -98,7 +100,7 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
-function statusIcon(status: PlanningTraceUpdate["status"]) {
+function statusIcon(status: TraceUpdate["status"]) {
   if (status === "running") return <LoaderCircle size={13} className="animate-spin" />;
   if (status === "failed") return <X size={13} />;
   if (status === "partial") return <TriangleAlert size={13} />;
@@ -116,7 +118,7 @@ function postStatus(post: TracePost): { label: string; className: string } {
   return { label: post.reason ?? "未采用", className: "text-[var(--muted)]" };
 }
 
-function TraceData({ trace }: { trace: PlanningTraceUpdate }) {
+function TraceData({ trace }: { trace: TraceUpdate }) {
   const data = trace.data;
   const tracePosts = posts(data.posts);
   const preview = text(data.content_preview);
@@ -179,7 +181,11 @@ function TraceData({ trace }: { trace: PlanningTraceUpdate }) {
   );
 }
 
-export function PlanningTracePanel({ traces }: { traces: PlanningTraceUpdate[] }) {
+function traceStep(trace: TraceUpdate): string {
+  return trace.type === "planning_trace" ? trace.step : trace.action;
+}
+
+export function PlanningTracePanel({ traces }: { traces: TraceUpdate[] }) {
   const [open, setOpen] = useState(false);
   const ordered = useMemo(
     () => [...traces].sort((left, right) => left.sequence - right.sequence),
@@ -187,7 +193,12 @@ export function PlanningTracePanel({ traces }: { traces: PlanningTraceUpdate[] }
   );
   const searchTrace = [...ordered]
     .reverse()
-    .find((trace) => trace.step === "search_results" && number(trace.data.total_count) !== null);
+    .find(
+      (trace) =>
+        trace.type === "planning_trace" &&
+        trace.step === "search_results" &&
+        number(trace.data.total_count) !== null,
+    );
   const totalPosts = number(searchTrace?.data.total_count) ?? 0;
 
   if (ordered.length === 0) return null;
@@ -201,7 +212,7 @@ export function PlanningTracePanel({ traces }: { traces: PlanningTraceUpdate[] }
       >
         <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
           <Bug size={14} className="text-[var(--brand)]" />
-          规划调试视图
+          Agent 调试视图
           <span className="font-normal text-[var(--muted-light)]">
             {ordered.length} 个事件{totalPosts ? ` · ${totalPosts} 篇搜索结果` : ""}
           </span>
@@ -220,7 +231,7 @@ export function PlanningTracePanel({ traces }: { traces: PlanningTraceUpdate[] }
           <div className="space-y-2.5">
             {ordered.map((trace) => (
               <section
-                key={`${trace.sequence}-${trace.step}`}
+                key={`${trace.sequence}-${traceStep(trace)}`}
                 className="rounded-lg border border-black/[0.05] bg-black/[0.018] px-2.5 py-2"
               >
                 <div className="flex items-start justify-between gap-3">

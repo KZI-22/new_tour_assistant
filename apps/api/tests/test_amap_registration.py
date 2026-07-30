@@ -44,12 +44,15 @@ def test_without_redis_the_amap_cache_stays_process_local(tmp_path: Path) -> Non
     assert isinstance(application.state.amap_cache, InMemoryAmapCache)
 
 
-def test_missing_amap_key_keeps_the_existing_three_flyai_tools(tmp_path: Path) -> None:
+def test_missing_amap_key_keeps_all_flyai_specialist_tools(tmp_path: Path) -> None:
     application = create_app(settings(tmp_path, api_key=None))
 
     assert application.state.amap_client is None
     assert not hasattr(application.state, "trip_plan_service")
     assert {tool.name for tool in application.state.travel_tools} == {
+        "ai_search",
+        "search_poi",
+        "keyword_search",
         "search_flight",
         "search_train",
         "search_hotel",
@@ -60,8 +63,11 @@ def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: 
     application = create_app(settings(tmp_path, api_key="test-key"))
     names = [tool.name for tool in application.state.travel_tools]
 
-    assert len(names) == len(set(names)) == 8
+    assert len(names) == len(set(names)) == 11
     assert set(names) == {
+        "ai_search",
+        "search_poi",
+        "keyword_search",
         "search_flight",
         "search_train",
         "search_hotel",

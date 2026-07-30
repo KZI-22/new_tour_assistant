@@ -158,6 +158,32 @@ async def test_nonzero_exit_and_authentication_errors_are_classified_and_redacte
 
 
 @pytest.mark.asyncio
+async def test_nonzero_exit_preserves_usable_json_business_result(tmp_path: Any) -> None:
+    client = make_client(
+        tmp_path,
+        RecordingFactory(
+            FakeProcess(
+                stdout='{"items":[{"name":"西湖"}]}',
+                stderr="wrapper exited after writing data",
+                returncode=1,
+            )
+        ),
+    )
+
+    result = await client.execute(
+        "search-poi",
+        ["--city-name", "杭州", "--keyword", "西湖"],
+    )
+
+    assert result.success is True
+    assert result.data == {"items": [{"name": "西湖"}]}
+    assert result.diagnostics.process_status == "failed"
+    assert result.diagnostics.process_return_code == 1
+    assert result.diagnostics.parse_status == "success"
+    assert result.diagnostics.business_status == "usable"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_is_retried_only_once(tmp_path: Any) -> None:
     factory = RecordingFactory(
         FakeProcess(stderr="429 Too Many Requests", returncode=1),

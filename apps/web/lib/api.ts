@@ -56,7 +56,7 @@ export type ConversationSummary = {
 export type PersistedMessage = ApiChatMessage & {
   sequence: number;
   status: "streaming" | "completed" | "failed" | "interrupted";
-  debug_trace: PlanningTraceUpdate[];
+  debug_trace: DebugTraceUpdate[];
   created_at: string;
 };
 
@@ -68,6 +68,14 @@ export type ConversationDetail = ConversationSummary & {
 export type PersistedToolCall = {
   id: string;
   assistant_message_id: string;
+  agent_run_id: string | null;
+  agent_task_id: string | null;
+  agent_name: string | null;
+  process_status: "not_started" | "success" | "failed" | "timeout" | null;
+  process_return_code: number | null;
+  provider_status: "unknown" | "success" | "failed" | null;
+  parse_status: "not_attempted" | "success" | "invalid" | "empty" | null;
+  business_status: "unknown" | "usable" | "empty" | "invalid" | null;
   tool_call_id: string;
   tool_name: string;
   provider: string;
@@ -88,6 +96,9 @@ export type ToolCallUpdate = {
   tool_call_id: string;
   tool_name: string;
   display_name: string;
+  agent_run_id?: string | null;
+  agent_task_id?: string | null;
+  agent?: "itinerary" | "transport" | "hotel" | null;
 };
 
 export type ToolResultUpdate = {
@@ -103,6 +114,14 @@ export type ToolResultUpdate = {
   normalized_item_count: number | null;
   rejected_item_count: number | null;
   schema_version: string | null;
+  agent_run_id?: string | null;
+  agent_task_id?: string | null;
+  agent?: "itinerary" | "transport" | "hotel" | null;
+  process_status: "not_started" | "success" | "failed" | "timeout" | null;
+  process_return_code: number | null;
+  provider_status: "unknown" | "success" | "failed" | null;
+  parse_status: "not_attempted" | "success" | "invalid" | "empty" | null;
+  business_status: "unknown" | "usable" | "empty" | "invalid" | null;
 };
 
 export type PlanningStageUpdate = {
@@ -138,6 +157,45 @@ export type PlanningTraceUpdate = {
   occurred_at: string;
 };
 
+export type AgentRuntimeStatus =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "needs_input"
+  | "success"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
+export type AgentStatusUpdate = {
+  type: "agent_status";
+  sequence: number;
+  run_id: string;
+  task_id: string | null;
+  agent: "supervisor" | "itinerary" | "transport" | "hotel" | "answer";
+  display_name: string;
+  status: AgentRuntimeStatus;
+  detail: string | null;
+  occurred_at: string;
+};
+
+export type AgentTraceUpdate = {
+  type: "agent_trace";
+  sequence: number;
+  run_id: string;
+  task_id: string | null;
+  agent: AgentStatusUpdate["agent"];
+  action: string;
+  status: "running" | "success" | "partial" | "failed" | "skipped";
+  title: string;
+  detail: string | null;
+  duration_ms: number | null;
+  data: Record<string, unknown>;
+  occurred_at: string;
+};
+
+export type DebugTraceUpdate = PlanningTraceUpdate | AgentTraceUpdate | AgentStatusUpdate;
+
 export type XhsLoginRequiredUpdate = {
   login_id: string;
   expires_at: string;
@@ -157,6 +215,8 @@ type StreamCallbacks = {
   onToolResult?: (update: ToolResultUpdate) => void;
   onPlanningStage?: (update: PlanningStageUpdate) => void;
   onPlanningTrace?: (update: PlanningTraceUpdate) => void;
+  onAgentStatus?: (update: AgentStatusUpdate) => void;
+  onAgentTrace?: (update: AgentTraceUpdate) => void;
   onXhsLoginRequired?: (update: XhsLoginRequiredUpdate) => void;
   onDone?: () => void;
 };
@@ -431,6 +491,11 @@ export async function streamChat(
           normalized_item_count: data.normalized_item_count ?? null,
           rejected_item_count: data.rejected_item_count ?? null,
           schema_version: data.schema_version ?? null,
+          process_status: data.process_status ?? null,
+          process_return_code: data.process_return_code ?? null,
+          provider_status: data.provider_status ?? null,
+          parse_status: data.parse_status ?? null,
+          business_status: data.business_status ?? null,
         });
       }
     } else if (parsed.event === "planning_stage") {
@@ -463,6 +528,43 @@ export async function streamChat(
         data.occurred_at
       ) {
         callbacks.onPlanningTrace?.(data as PlanningTraceUpdate);
+      }
+    } else if (parsed.event === "agent_status") {
+      const data = parsed.data as Partial<AgentStatusUpdate>;
+      if (
+        data.type === "agent_status" &&
+        typeof data.sequence === "number" &&
+        data.run_id &&
+        data.agent &&
+        data.display_name &&
+        data.status &&
+        data.occurred_at
+      ) {
+        callbacks.onAgentStatus?.({
+          ...(data as AgentStatusUpdate),
+          task_id: data.task_id ?? null,
+          detail: data.detail ?? null,
+        });
+      }
+    } else if (parsed.event === "agent_trace") {
+      const data = parsed.data as Partial<AgentTraceUpdate>;
+      if (
+        data.type === "agent_trace" &&
+        typeof data.sequence === "number" &&
+        data.run_id &&
+        data.agent &&
+        data.action &&
+        data.title &&
+        data.status &&
+        data.data &&
+        data.occurred_at
+      ) {
+        callbacks.onAgentTrace?.({
+          ...(data as AgentTraceUpdate),
+          task_id: data.task_id ?? null,
+          detail: data.detail ?? null,
+          duration_ms: data.duration_ms ?? null,
+        });
       }
     } else if (parsed.event === "xhs_login_required") {
       const data = parsed.data as Partial<XhsLoginRequiredUpdate>;

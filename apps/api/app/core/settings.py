@@ -72,6 +72,9 @@ class Settings:
     flyai_max_concurrency: int = 3
     max_tool_rounds: int = 5
     tool_execution_timeout_seconds: float = 130
+    multi_agent_enabled: bool = False
+    multi_agent_supervisor_timeout_seconds: float = 30
+    multi_agent_agent_timeout_seconds: float = 90
     amap_api_key: str | None = None
     amap_base_url: str = "https://restapi.amap.com"
     amap_timeout_seconds: float = 15
@@ -125,6 +128,8 @@ class Settings:
             "max_walk_distance_meters": self.max_walk_distance_meters,
             "max_transit_duration_minutes": self.max_transit_duration_minutes,
             "trip_planning_data_timeout_seconds": self.trip_planning_data_timeout_seconds,
+            "multi_agent_supervisor_timeout_seconds": (self.multi_agent_supervisor_timeout_seconds),
+            "multi_agent_agent_timeout_seconds": self.multi_agent_agent_timeout_seconds,
             "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
             "xhs_min_post_content_chars": self.xhs_min_post_content_chars,
             "xhs_detail_candidate_limit": self.xhs_detail_candidate_limit,
@@ -230,9 +235,7 @@ def get_settings() -> Settings:
         auth_otp_max_attempts=int(os.getenv("AUTH_OTP_MAX_ATTEMPTS", "5")),
         auth_otp_phone_limit=int(os.getenv("AUTH_OTP_PHONE_LIMIT", "5")),
         auth_otp_ip_limit=int(os.getenv("AUTH_OTP_IP_LIMIT", "20")),
-        auth_otp_rate_window_seconds=int(
-            os.getenv("AUTH_OTP_RATE_WINDOW_SECONDS", "600")
-        ),
+        auth_otp_rate_window_seconds=int(os.getenv("AUTH_OTP_RATE_WINDOW_SECONDS", "600")),
         auth_jwt_issuer=os.getenv("AUTH_JWT_ISSUER", "tour-assistant-api"),
         auth_jwt_audience=os.getenv("AUTH_JWT_AUDIENCE", "tour-assistant-web"),
         flyai_cli_path=os.getenv("FLYAI_CLI_PATH") or None,
@@ -240,6 +243,13 @@ def get_settings() -> Settings:
         flyai_max_concurrency=int(os.getenv("FLYAI_MAX_CONCURRENCY", "3")),
         max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "5")),
         tool_execution_timeout_seconds=float(os.getenv("TOOL_EXECUTION_TIMEOUT_SECONDS", "130")),
+        multi_agent_enabled=_environment_bool("MULTI_AGENT_ENABLED", False),
+        multi_agent_supervisor_timeout_seconds=float(
+            os.getenv("MULTI_AGENT_SUPERVISOR_TIMEOUT_SECONDS", "30")
+        ),
+        multi_agent_agent_timeout_seconds=float(
+            os.getenv("MULTI_AGENT_AGENT_TIMEOUT_SECONDS", "90")
+        ),
         amap_api_key=os.getenv("AMAP_API_KEY") or None,
         amap_base_url=os.getenv("AMAP_BASE_URL", "https://restapi.amap.com").rstrip("/"),
         amap_timeout_seconds=float(os.getenv("AMAP_TIMEOUT_SECONDS", "15")),
@@ -254,9 +264,7 @@ def get_settings() -> Settings:
         max_raw_poi_candidates=int(os.getenv("MAX_RAW_POI_CANDIDATES", "60")),
         max_walk_distance_meters=int(os.getenv("MAX_WALK_DISTANCE_METERS", "1800")),
         max_transit_transfers=int(os.getenv("MAX_TRANSIT_TRANSFERS", "1")),
-        max_transit_duration_minutes=int(
-            os.getenv("MAX_TRANSIT_DURATION_MINUTES", "90")
-        ),
+        max_transit_duration_minutes=int(os.getenv("MAX_TRANSIT_DURATION_MINUTES", "90")),
         trip_planning_cluster_max_iterations=int(
             os.getenv("TRIP_PLANNING_CLUSTER_MAX_ITERATIONS", "20")
         ),

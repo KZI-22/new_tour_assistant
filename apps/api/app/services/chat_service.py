@@ -23,7 +23,9 @@ from app.services.agent_executor import (
     AgentExecutor,
     ToolEnabledModel,
 )
+from app.services.agent_state_service import AgentStateStore
 from app.services.map_trip_collection_service import MapTripCollectionService
+from app.services.multi_agent_orchestrator import MultiAgentOrchestrator
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
 from app.services.trip_plan_persistence_service import TripPlanVersionWriter
@@ -92,6 +94,7 @@ class ChatService:
         flyai_client: FlyAIClient | None = None,
         trip_planner_settings: Settings | None = None,
         trip_plan_version_writer: TripPlanVersionWriter | None = None,
+        agent_state_store: AgentStateStore | None = None,
     ) -> None:
         self._registry = registry
         self._trip_request_router = TripRequestRouter(registry)
@@ -102,6 +105,20 @@ class ChatService:
             timeout_seconds=tool_timeout_seconds,
             log_writer=tool_call_log_writer,
         )
+        self._multi_agent = None
+        if trip_planner_settings and trip_planner_settings.multi_agent_enabled:
+            self._multi_agent = MultiAgentOrchestrator(
+                registry.create_model,
+                self._tools,
+                max_tool_rounds=max_tool_rounds,
+                supervisor_timeout_seconds=(
+                    trip_planner_settings.multi_agent_supervisor_timeout_seconds
+                ),
+                agent_timeout_seconds=trip_planner_settings.multi_agent_agent_timeout_seconds,
+                tool_timeout_seconds=tool_timeout_seconds,
+                log_writer=tool_call_log_writer,
+                state_store=agent_state_store,
+            )
         self._trip_planner = None
         self._standard_trip_planner = None
         weather_service = WeatherEvidenceService(amap_client)
@@ -159,6 +176,15 @@ class ChatService:
             async for event in self._trip_planner.stream(
                 messages,
                 route_source="explicit",
+            ):
+                yield event
+            return
+
+        if self._multi_agent is not None:
+            async for event in self._multi_agent.stream(
+                model_id,
+                messages,
+                execution_context=execution_context,
             ):
                 yield event
             return

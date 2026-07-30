@@ -65,6 +65,10 @@ class TravelSearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class TextSearchInput(TravelSearchInput):
+    query: NonEmptyString = Field(description="Natural-language FlyAI search query.")
+
+
 class TransportSearchInput(TravelSearchInput):
     origin: NonEmptyString = Field(description="Origin city, station, or airport name/ID.")
     destination: NonEmptyString = Field(description="Destination city, station, or airport.")
@@ -162,6 +166,18 @@ class FlyAIErrorCode(StrEnum):
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 
+class FlyAIExecutionDiagnostics(BaseModel):
+    """Independent process, provider, parse, and business-availability verdicts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    process_status: Literal["not_started", "success", "failed", "timeout"] = "not_started"
+    process_return_code: int | None = None
+    provider_status: Literal["unknown", "success", "failed"] = "unknown"
+    parse_status: Literal["not_attempted", "success", "invalid", "empty"] = "not_attempted"
+    business_status: Literal["unknown", "usable", "empty", "invalid"] = "unknown"
+
+
 class FlyAIResult(BaseModel):
     """Provider-independent envelope returned to tools and future graph nodes."""
 
@@ -175,6 +191,9 @@ class FlyAIResult(BaseModel):
     error_message: str | None = None
     duration_ms: int = Field(ge=0)
     finished_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    diagnostics: FlyAIExecutionDiagnostics = Field(
+        default_factory=FlyAIExecutionDiagnostics
+    )
 
     @model_validator(mode="after")
     def validate_outcome(self) -> Self:

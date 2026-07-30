@@ -69,6 +69,9 @@ _CANONICAL_ERROR_CODES = {
 class ToolExecutionContext:
     conversation_id: uuid.UUID
     assistant_message_id: uuid.UUID
+    agent_run_id: uuid.UUID | None = None
+    agent_task_id: uuid.UUID | None = None
+    agent_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,6 +380,11 @@ class ToolExecutor:
                 "provider": provider,
                 "duration_ms": duration_ms,
                 "queried_at": queried_at,
+                **(
+                    dict(payload["diagnostics"])
+                    if isinstance(payload.get("diagnostics"), Mapping)
+                    else {}
+                ),
             }
         )
 
@@ -473,6 +481,11 @@ class ToolExecutor:
                 duration_ms=result.metadata.duration_ms,
                 error_code=error_code,
                 provider_error_code=provider_error_code,
+                process_status=result.metadata.process_status,
+                process_return_code=result.metadata.process_return_code,
+                provider_status=result.metadata.provider_status,
+                parse_status=result.metadata.parse_status,
+                business_status=result.metadata.business_status,
             ),
         )
 
@@ -490,6 +503,9 @@ class ToolExecutor:
                 ToolCallLogEntry(
                     conversation_id=context.conversation_id,
                     assistant_message_id=context.assistant_message_id,
+                    agent_run_id=context.agent_run_id,
+                    agent_task_id=context.agent_task_id,
+                    agent_name=context.agent_name,
                     tool_call_id=call.tool_call_id,
                     tool_name=call.tool_name,
                     provider=result.metadata.provider,
@@ -501,6 +517,11 @@ class ToolExecutor:
                     provider_error_code=(
                         result.error.provider_error_code if result.error else None
                     ),
+                    process_status=result.metadata.process_status,
+                    process_return_code=result.metadata.process_return_code,
+                    provider_status=result.metadata.provider_status,
+                    parse_status=result.metadata.parse_status,
+                    business_status=result.metadata.business_status,
                 )
             )
         except asyncio.CancelledError:

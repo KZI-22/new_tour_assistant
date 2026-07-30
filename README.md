@@ -6,10 +6,11 @@
 - OpenAI、Anthropic、Google GenAI 及 OpenAI-compatible 接口接入方式。
 - FastAPI + LangChain 的 SSE 流式聊天接口，普通聊天与单项查询按模型生成节奏逐段下发，
   包含工具调用轮次中的模型说明文本。
-- Python FlyAI CLI 客户端，以及航班、火车、酒店三个结构化 LangChain Tool。
+- Python FlyAI CLI 客户端，以及攻略、景点、门票商品、航班、火车、酒店六个结构化 Tool。
 - 高德 Web Service 异步客户端，以及 IP 城市推测、POI、路线、距离矩阵、天气五个结构化 Tool。
-- 单 Agent 工具调用闭环，支持多轮决策、同轮并发、统一错误和最大轮数限制。
-- SSE 工具调用状态与前端进度展示，以及脱敏的 PostgreSQL 工具调用审计日志。
+- 可由开关启用的一主多从链路：主 Agent 动态拆分任务，行程、交通、酒店 Agent 在独立工具白名单
+  Runtime 中并行运行，再由无工具的回答 Agent 汇总。
+- SSE Agent/工具运行状态与前端进度展示，以及可关联请求、Runtime、子任务的脱敏 PostgreSQL Trace。
 - 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
 - 独立的小红书规划链路，要求目标城市、游玩天数和开始日期，最多结合两篇笔记正文与逐日天气生成攻略。
 - 小红书未登录时可显式切换到高德地图与天气方案，按真实 POI、距离矩阵和路线证据编排逐日五点行程。
@@ -19,11 +20,10 @@
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
-系统先区分普通聊天/单项查询和城市旅游规划。前两类继续使用原有 `AgentExecutor` 工具循环；
-城市规划和基于最近对话的攻略调整默认进入地图与天气规划链路。用户只有显式开启会话级的
-“小红书灵感”开关后，规划请求才会进入小红书 MCP 链路；这个开关不会改变普通聊天和单项查询的
-执行方式。小红书登录卡片仍可选择“跳过登录，使用地图与天气生成”。混合请求只要核心交付物是
-攻略，就进入所选规划链路；附带的实时机票、火车票或酒店查询不会在该轮执行。
+`MULTI_AGENT_ENABLED=true` 时，标准会话先进入主 Agent：闲聊由主 Agent 直接回复；行程、交通和
+酒店请求被拆成自然语言子任务并行执行，缺失字段统一追问，已经完成的结果会保留，用户补充后只恢复
+等待中的任务。`planning_source=xhs` 仍是显式的小红书原帖链路，不经过多 Agent 主从编排。
+开关关闭时保留原有 `general_agent` 与 `trip_planner` 路由，便于逐步迁移和回滚。
 
 
 ## 项目展示
@@ -146,6 +146,9 @@ TRIP_PLANNER_ENABLED=true
 TRIP_PLANNER_MAX_DAYS=5
 TRIP_PLANNER_MODEL_TIMEOUT_SECONDS=90
 TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS=30
+MULTI_AGENT_ENABLED=false
+MULTI_AGENT_SUPERVISOR_TIMEOUT_SECONDS=30
+MULTI_AGENT_AGENT_TIMEOUT_SECONDS=90
 XHS_MCP_TRANSPORT=stdio
 XHS_MCP_STDIO_COMMAND=
 XHS_MCP_STDIO_ARGS=["-m","xhs_read_mcp","--transport","stdio","--headed"]
@@ -171,16 +174,19 @@ XHS_SSE_HEARTBEAT_SECONDS=15
 手机号、短信验证码或其他安全验证，登录成功后自动继续同一请求。用户也可在卡片中跳过登录：
 前端会中止旧 SSE 登录等待，并在同一会话启动标准地图与天气方案。
 
-`planning_source=standard` 仍使用原有城市行程规划：要求目标城市、1–5 天时长和开始日期，POI/路线
-证据与天气并行收集。天气只按高德实际返回的自然日期映射，超出预报范围或查询失败的日期会明确
-标记不可用，不用当前天气冒充未来
+关闭多 Agent 开关时，`planning_source=standard` 仍使用原有城市行程规划：要求目标城市、1–5 天
+时长和开始日期，POI/路线证据与天气并行收集。开启后，标准请求改由专业 Agent 按用户意图组合
+`ai_search`、景点、门票和天气能力；日期缺失不会阻止攻略草案生成，补充日期后只恢复天气。
+天气只按高德实际返回的自然日期映射，超出预报范围或查询失败的日期会明确标记不可用，不用当前天气冒充未来
 预报。地图方案每天最多两个景点，固定按“早餐 → 上午景点 → 午餐 → 下午景点 → 晚餐”输出；
 所有具体地点都必须带高德 POI ID，步行距离或公交路线也必须有高德证据。模型只能整理推荐理由和
 天气建议，不能新增地点、改变顺序或补造供应商事实。
 
 完整规划架构、降级算法与事实边界见
 [`docs/architecture/xhs_map_weather_fallback.md`](docs/architecture/xhs_map_weather_fallback.md)；小红书
-原帖检索详情见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
+原帖检索详情见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)；
+多 Agent Runtime 与恢复语义见
+[`docs/architecture/multi_agent_runtime.md`](docs/architecture/multi_agent_runtime.md)。
 
 项目支持 `stdio` 和 `streamable-http` 两种 MCP 传输。需要在本机有界面 Chrome 中完成短信验证码时，
 推荐使用 `stdio`：先把约定的小红书 MCP 源码安装到后端所在的 `py312` 环境中：
@@ -269,6 +275,10 @@ alembic upgrade head
 新小红书规划链路只依赖现有会话消息持久化，不再写入这两张表；旧表和已有数据暂时保留，
 不会在本次链路切换中删除。
 
+迁移 `20260730_0011` 新增 `agent_runs`、`agent_task_runs`、`agent_runtime_events`，并给
+`tool_call_logs` 增加 Runtime/子任务关联和 FlyAI 四层执行诊断字段。部署启用
+`MULTI_AGENT_ENABLED` 前必须先执行该迁移。
+
 数据库使用 Docker named volume `postgres_data` 持久保存。普通的 `docker compose down`
 不会删除数据；除非确定要清空所有本地会话，否则不要使用 `docker compose down -v`。
 
@@ -312,7 +322,8 @@ python -m ruff check .
 python -m ruff format --check .
 ```
 
-规划测试覆盖请求路由、城市/天数/日期追问、本机 Chrome 登录与跳过、固定小红书搜索协议、
+规划测试覆盖多 Agent 拆分、专业工具白名单、并行执行、部分结果保留与恢复，以及原有请求路由、
+城市/天数/日期追问、本机 Chrome 登录与跳过、固定小红书搜索协议、
 点赞量标准化、主辅帖选择、Token 隔离、天气日期映射、地图 POI 筛选、餐饮组合优化、步行/公交
 阈值、来源白名单、结构化生成校验和 SSE 阶段事件。MCP 与高德单元测试使用 Fake Client，不访问
 真实供应商；数据库、FlyAI、高德及真实模型测试仍按对应环境变量显式启用，避免默认消耗外部配额。

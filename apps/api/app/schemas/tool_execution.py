@@ -5,6 +5,12 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.agent_runtime import (
+    AgentStatusEvent,
+    AgentTraceEvent,
+    SpecialistAgent,
+)
+
 
 class ToolError(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -21,6 +27,11 @@ class ToolResultMetadata(BaseModel):
     provider: str
     duration_ms: int = Field(ge=0)
     queried_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    process_status: Literal["not_started", "success", "failed", "timeout"] | None = None
+    process_return_code: int | None = None
+    provider_status: Literal["unknown", "success", "failed"] | None = None
+    parse_status: Literal["not_attempted", "success", "invalid", "empty"] | None = None
+    business_status: Literal["unknown", "usable", "empty", "invalid"] | None = None
 
 
 class ToolResult(BaseModel):
@@ -62,6 +73,9 @@ class ToolCallEvent(BaseModel):
     tool_name: str
     display_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    agent_run_id: str | None = None
+    agent_task_id: str | None = None
+    agent: SpecialistAgent | None = None
 
 
 class ToolResultEvent(BaseModel):
@@ -80,6 +94,14 @@ class ToolResultEvent(BaseModel):
     normalized_item_count: int | None = Field(default=None, ge=0)
     rejected_item_count: int | None = Field(default=None, ge=0)
     schema_version: str | None = None
+    agent_run_id: str | None = None
+    agent_task_id: str | None = None
+    agent: SpecialistAgent | None = None
+    process_status: Literal["not_started", "success", "failed", "timeout"] | None = None
+    process_return_code: int | None = None
+    provider_status: Literal["unknown", "success", "failed"] | None = None
+    parse_status: Literal["not_attempted", "success", "invalid", "empty"] | None = None
+    business_status: Literal["unknown", "usable", "empty", "invalid"] | None = None
 
 
 class PlanningStageEvent(BaseModel):
@@ -155,12 +177,16 @@ type ChatStreamEvent = (
     | ToolResultEvent
     | PlanningStageEvent
     | PlanningTraceEvent
+    | AgentStatusEvent
+    | AgentTraceEvent
     | XhsLoginRequiredEvent
 )
 
 
 __all__ = [
     "ChatStreamEvent",
+    "AgentStatusEvent",
+    "AgentTraceEvent",
     "MessageDeltaEvent",
     "PlanningStageEvent",
     "PlanningTraceEvent",
