@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from app.core.settings import Settings
@@ -25,6 +26,11 @@ from app.schemas.trip_planning import (
     CityTripRequest,
     DailyWeatherEvidence,
     TripWeatherEvidence,
+)
+from app.services.tool_execution import ToolExecutionContext
+from app.services.trip_plan_persistence_service import (
+    SavedTripPlanVersion,
+    TripPlanVersionArtifact,
 )
 from langchain_core.messages import AIMessageChunk
 
@@ -84,6 +90,22 @@ class FailingTripModel(FakeTripModel):
         self.calls.append("stream:TripMarkdown")
         raise RuntimeError("provider failed")
         yield AIMessageChunk(content="")  # pragma: no cover
+
+
+class RecordingVersionWriter:
+    def __init__(self) -> None:
+        self.artifacts: list[TripPlanVersionArtifact] = []
+
+    async def save_completed_version(
+        self,
+        artifact: TripPlanVersionArtifact,
+    ) -> SavedTripPlanVersion:
+        self.artifacts.append(artifact)
+        return SavedTripPlanVersion(
+            plan_id=uuid4(),
+            version_id=uuid4(),
+            version=len(self.artifacts),
+        )
 
 
 class FakeMapCollection:
@@ -226,7 +248,7 @@ def settings() -> Settings:
     )
 
 
-def planner():
+def planner(version_writer: RecordingVersionWriter | None = None):
     collection = FakeMapCollection()
     weather = FakeWeatherService()
     flyai = FakeFlyAIClient()
@@ -236,6 +258,7 @@ def planner():
             weather,  # type: ignore[arg-type]
             flyai,  # type: ignore[arg-type]
             settings(),
+            version_writer=version_writer,
         ),
         collection,
         weather,
@@ -299,6 +322,49 @@ async def test_standard_graph_keeps_map_weather_fixed_and_skips_optional_queries
     capability_trace = next(trace for trace in traces if trace.title == "已解析本轮能力执行计划")
     assert capability_trace.data["transport_enabled"] is False
     assert capability_trace.data["hotel_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_completed_standard_plan_is_persisted_as_a_version() -> None:
+    writer = RecordingVersionWriter()
+    trip_planner, _, _, _ = planner(writer)
+    model = FakeTripModel({})
+    context = ToolExecutionContext(
+        conversation_id=uuid4(),
+        assistant_message_id=uuid4(),
+    )
+
+    events = [
+        event
+        async for event in trip_planner.stream(
+            model,  # type: ignore[arg-type]
+            [
+                ChatMessage(
+                    role="user",
+                    content="帮我规划成都一日游，2027-07-25 开始",
+                )
+            ],
+            execution_context=context,
+        )
+    ]
+
+    assert len(writer.artifacts) == 1
+    artifact = writer.artifacts[0]
+    assert artifact.conversation_id == context.conversation_id
+    assert artifact.assistant_message_id == context.assistant_message_id
+    assert artifact.snapshot.schema_version == "trip_plan.v1"
+    assert artifact.presentation_context.trip.destination_city == "成都"
+    assert artifact.user_instruction == "帮我规划成都一日游，2027-07-25 开始"
+    assert artifact.rendered_markdown.startswith("# 成都一日攻略")
+    saving_stages = [
+        (event.status, event.detail)
+        for event in events
+        if isinstance(event, PlanningStageEvent) and event.stage == "saving_itinerary"
+    ]
+    assert saving_stages == [
+        ("running", None),
+        ("success", "版本 1"),
+    ]
 
 
 @pytest.mark.asyncio

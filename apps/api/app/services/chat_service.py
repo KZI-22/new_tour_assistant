@@ -27,6 +27,7 @@ from app.services.agent_executor import (
 from app.services.map_trip_collection_service import MapTripCollectionService
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
+from app.services.trip_plan_persistence_service import TripPlanVersionWriter
 from app.services.trip_request_router import TripRequestRouter
 from app.services.weather_evidence_service import WeatherEvidenceService
 from app.services.xhs_research_service import XhsResearchService
@@ -91,6 +92,7 @@ class ChatService:
         amap_client: AmapClient | None = None,
         flyai_client: FlyAIClient | None = None,
         trip_planner_settings: Settings | None = None,
+        trip_plan_version_writer: TripPlanVersionWriter | None = None,
     ) -> None:
         self._registry = registry
         self._trip_request_router = TripRequestRouter(registry)
@@ -125,6 +127,7 @@ class ChatService:
                 weather_service=weather_service,
                 flyai_client=flyai_client,
                 settings=trip_planner_settings,
+                version_writer=trip_plan_version_writer,
             )
         if (
             trip_planner_settings

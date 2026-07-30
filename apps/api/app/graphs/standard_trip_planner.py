@@ -47,6 +47,11 @@ from app.services.trip_itinerary_generator import (
     TripItineraryGenerator,
 )
 from app.services.trip_itinerary_renderer import split_trip_itinerary_sections
+from app.services.trip_plan_persistence_service import (
+    TripPlanVersionArtifact,
+    TripPlanVersionWriter,
+)
+from app.services.trip_presentation_context import build_trip_presentation_context
 from app.services.weather_evidence_service import WeatherEvidenceService
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,8 @@ class StandardTripPlanner:
         weather_service: WeatherEvidenceService,
         flyai_client: FlyAITripClient | None,
         settings: Settings,
+        *,
+        version_writer: TripPlanVersionWriter | None = None,
     ) -> None:
         self._map_weather_service = MapWeatherCollectionService(
             collection_service,
@@ -75,6 +82,7 @@ class StandardTripPlanner:
         )
         self._flyai_client = flyai_client or _UnavailableFlyAIClient()
         self._settings = settings
+        self._version_writer = version_writer
 
     async def stream(
         self,
@@ -92,6 +100,7 @@ class StandardTripPlanner:
             settings=self._settings,
             route_source=route_source,
             execution_context=execution_context,
+            version_writer=self._version_writer,
         )
         try:
             async for event in run.stream():
@@ -114,6 +123,7 @@ class _StandardTripPlanningRun:
         settings: Settings,
         route_source: Literal["llm_router", "fallback", "explicit"],
         execution_context: ToolExecutionContext | None,
+        version_writer: TripPlanVersionWriter | None,
     ) -> None:
         self._model = model
         self._messages = messages
@@ -122,6 +132,7 @@ class _StandardTripPlanningRun:
         self._settings = settings
         self._route_source = route_source
         self._execution_context = execution_context
+        self._version_writer = version_writer
         self._planning_run_id = str(uuid4())
         self._trace_sequence = 0
         self._itinerary_generator = TripItineraryGenerator(
@@ -205,6 +216,7 @@ class _StandardTripPlanningRun:
     ) -> AsyncIterator[ChatStreamEvent]:
         output_chars = 0
         output_chunks = 0
+        output_parts: list[str] = []
         yield _stage(
             "finalizing",
             "正在流式生成最终旅行方案",
@@ -215,6 +227,7 @@ class _StandardTripPlanningRun:
             async for text in self._itinerary_generator.stream_markdown(state["plan_snapshot"]):
                 output_chars += len(text)
                 output_chunks += 1
+                output_parts.append(text)
                 yield MessageDeltaEvent(delta=text)
         except TripItineraryGenerationError as exc:
             logger.warning(
@@ -236,7 +249,13 @@ class _StandardTripPlanningRun:
             for chunk in fallback_chunks:
                 output_chars += len(chunk)
                 output_chunks += 1
+                output_parts.append(chunk)
                 yield MessageDeltaEvent(delta=chunk)
+            async for event in self._persist_completed_plan(
+                state,
+                rendered_markdown="".join(output_parts),
+            ):
+                yield event
             yield _stage(
                 "generating_itinerary",
                 "旅行文案生成未完整结束",
@@ -268,6 +287,11 @@ class _StandardTripPlanningRun:
             )
             return
 
+        async for event in self._persist_completed_plan(
+            state,
+            rendered_markdown="".join(output_parts),
+        ):
+            yield event
         yield _stage(
             "generating_itinerary",
             "旅行文案流式生成完成",
@@ -291,6 +315,57 @@ class _StandardTripPlanningRun:
             "finalizing",
             "正在流式生成最终旅行方案",
             "success",
+        )
+
+    async def _persist_completed_plan(
+        self,
+        state: TripPlanningState,
+        *,
+        rendered_markdown: str,
+    ) -> AsyncIterator[PlanningStageEvent]:
+        if self._version_writer is None or self._execution_context is None:
+            return
+
+        yield _stage(
+            "saving_itinerary",
+            "正在保存旅行规划版本",
+            "running",
+        )
+        latest_user_message = next(
+            (message.content for message in reversed(self._messages) if message.role == "user"),
+            "",
+        )
+        snapshot = state["plan_snapshot"]
+        try:
+            saved = await self._version_writer.save_completed_version(
+                TripPlanVersionArtifact(
+                    conversation_id=self._execution_context.conversation_id,
+                    assistant_message_id=self._execution_context.assistant_message_id,
+                    snapshot=snapshot,
+                    presentation_context=build_trip_presentation_context(snapshot),
+                    narrative=state["narrative_skeleton"],
+                    rendered_markdown=rendered_markdown,
+                    user_instruction=latest_user_message,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "event=trip_plan_version_save_failed planning_run_id=%s",
+                self._planning_run_id,
+            )
+            yield _stage(
+                "saving_itinerary",
+                "旅行规划版本保存失败",
+                "failed",
+                detail="本次规划已生成，但暂时无法用于后续版本编辑。",
+            )
+            return
+
+        yield _stage(
+            "saving_itinerary",
+            "旅行规划版本已保存",
+            "success",
+            detail=f"版本 {saved.version}",
         )
 
     def _events_for_update(

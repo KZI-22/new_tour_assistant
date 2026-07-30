@@ -25,6 +25,7 @@ from app.services.conversation_service import ConversationService
 from app.services.otp_service import OtpService
 from app.services.otp_store import RedisOtpChallengeStore
 from app.services.tool_call_log_service import ToolCallLogService
+from app.services.trip_plan_persistence_service import TripPlanPersistenceService
 from app.services.xhs_research_service import XhsResearchService
 from app.tools import build_travel_tools
 
@@ -40,10 +41,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     session_factory = None
     conversation_service = None
     tool_call_log_service = None
+    trip_plan_persistence_service = None
     if current_settings.database_url:
         database_engine, session_factory = create_database(current_settings.database_url)
         conversation_service = ConversationService(session_factory)
         tool_call_log_service = ToolCallLogService(session_factory)
+        trip_plan_persistence_service = TripPlanPersistenceService(session_factory)
 
     # Created independently of authentication: the shared Amap cache needs it too.
     redis_client = (
@@ -174,9 +177,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         amap_client=amap_client,
         flyai_client=flyai_client,
         trip_planner_settings=current_settings,
+        trip_plan_version_writer=trip_plan_persistence_service,
     )
     application.state.conversation_service = conversation_service
     application.state.tool_call_log_service = tool_call_log_service
+    application.state.trip_plan_persistence_service = trip_plan_persistence_service
     application.state.xhs_mcp_client = xhs_mcp_client
     application.state.xhs_research_service = xhs_research_service
     application.state.flyai_client = flyai_client

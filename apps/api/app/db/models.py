@@ -241,9 +241,40 @@ class TravelPlanVersion(Base):
     plan_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("travel_plans.id", ondelete="CASCADE"), nullable=False
     )
+    parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("travel_plan_versions.id", ondelete="SET NULL")
+    )
+    assistant_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL")
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="trip_plan.v1",
+    )
     request_json: Mapped[dict[str, Any]] = mapped_column(_JSON_DOCUMENT, nullable=False)
     plan_json: Mapped[dict[str, Any]] = mapped_column(_JSON_DOCUMENT, nullable=False)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(_JSON_DOCUMENT, nullable=False)
+    presentation_context_json: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOCUMENT)
+    narrative_json: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOCUMENT)
+    rendered_markdown: Mapped[str | None] = mapped_column(Text)
+    user_instruction: Mapped[str | None] = mapped_column(Text)
+    edit_operations_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        _JSON_DOCUMENT,
+        nullable=False,
+        default=list,
+    )
+    invalidation_scope_json: Mapped[dict[str, Any]] = mapped_column(
+        _JSON_DOCUMENT,
+        nullable=False,
+        default=dict,
+    )
+    validation_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="valid",
+    )
     change_summary: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -253,6 +284,15 @@ class TravelPlanVersion(Base):
 
     __table_args__ = (
         CheckConstraint("version >= 1", name="ck_travel_plan_versions_version"),
+        CheckConstraint(
+            "validation_status IN ('valid', 'invalid', 'legacy')",
+            name="ck_travel_plan_versions_validation_status",
+        ),
         UniqueConstraint("plan_id", "version", name="uq_travel_plan_versions_plan_version"),
+        UniqueConstraint(
+            "assistant_message_id",
+            name="uq_travel_plan_versions_assistant_message",
+        ),
         Index("ix_travel_plan_versions_plan_version", "plan_id", "version"),
+        Index("ix_travel_plan_versions_parent", "parent_version_id"),
     )
