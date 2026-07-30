@@ -12,7 +12,6 @@ from app.clients.flyai_client import FlyAIClient
 from app.core.model_registry import ModelRegistry, UnavailableModelError
 from app.core.request_context import get_request_context
 from app.core.settings import Settings
-from app.graphs.map_trip_planner import MapTripPlanningError
 from app.graphs.standard_trip_planner import StandardTripPlanner
 from app.graphs.xhs_trip_planner import XhsTripPlanner
 from app.schemas.chat import ChatMessage
@@ -169,7 +168,7 @@ class ChatService:
             route = await self._trip_request_router.route(messages)
             if route.route == "trip_planner":
                 if self._standard_trip_planner is None:
-                    raise MapTripPlanningError(
+                    raise AgentExecutionError(
                         "MAP_PLANNING_DISABLED",
                         "标准地图与天气规划功能当前未启用。",
                     )

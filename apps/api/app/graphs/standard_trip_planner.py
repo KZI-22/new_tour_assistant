@@ -633,82 +633,9 @@ class _StandardTripPlanningRun:
                         ),
                     ]
                 )
-        elif node == "generate_itinerary":
-            events.extend(
-                [
-                    _stage(
-                        "generating_itinerary",
-                        "旅行文案生成完成",
-                        "success",
-                    ),
-                    self._trace(
-                        "itinerary_generated",
-                        "统一旅行方案文案生成完成",
-                    ),
-                    _stage(
-                        "validating_itinerary",
-                        "正在校验日期、引用与能力输出",
-                        "running",
-                    ),
-                ]
-            )
-        elif node == "validate_itinerary":
-            issues = state.get("validation_issues", [])
-            if issues:
-                events.append(
-                    _stage(
-                        "validating_itinerary",
-                        "正在校验日期、引用与能力输出",
-                        "failed",
-                        detail=f"检测到 {len(issues)} 个确定性校验问题。",
-                    )
-                )
-            else:
-                events.extend(
-                    [
-                        _stage(
-                            "validating_itinerary",
-                            "正在校验日期、引用与能力输出",
-                            "success",
-                        ),
-                        self._trace(
-                            "validation_completed",
-                            "统一旅行方案确定性校验通过",
-                        ),
-                        _stage(
-                            "finalizing",
-                            "正在渲染最终旅行方案",
-                            "running",
-                        ),
-                    ]
-                )
-        elif node == "render_response":
-            answer = cast(str, result["final_answer"])
-            chunks = split_trip_itinerary_sections(answer)
-            events.extend(
-                [
-                    *(MessageDeltaEvent(delta=chunk) for chunk in chunks),
-                    self._trace(
-                        "response_completed",
-                        "最终统一旅行方案已渲染",
-                        data={
-                            "output_chars": len(answer),
-                            "output_chunks": len(chunks),
-                        },
-                    ),
-                    _stage(
-                        "finalizing",
-                        "正在渲染最终旅行方案",
-                        "success",
-                    ),
-                ]
-            )
         elif node == "controlled_failure":
             answer = cast(str, result["final_answer"])
-            issues = state.get("validation_issues") or state.get(
-                "skeleton_validation_issues",
-                [],
-            )
+            issues = state.get("skeleton_validation_issues", [])
             events.extend(
                 [
                     MessageDeltaEvent(delta=answer),

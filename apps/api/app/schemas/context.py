@@ -25,29 +25,7 @@ class TravelRequestContext(ContextModel):
     time: CurrentTimeContext
 
 
-class NormalizedTravelDates(ContextModel):
-    original_expression: str
-    departure_date: date | None = None
-    return_date: date | None = None
-    check_in_date: date | None = None
-    check_out_date: date | None = None
-    nights: int | None = Field(default=None, ge=1)
-    timezone: str
-    is_ambiguous: bool
-    message: str | None = None
-    candidates: list[date] = Field(default_factory=list)
-
-
-class TravelDateValidationResult(ContextModel):
-    is_valid: bool
-    is_ambiguous: bool
-    message: str
-    candidates: list[date] = Field(default_factory=list)
-
-
 __all__ = [
     "CurrentTimeContext",
-    "NormalizedTravelDates",
-    "TravelDateValidationResult",
     "TravelRequestContext",
 ]

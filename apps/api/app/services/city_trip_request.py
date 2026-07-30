@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
 import re
-from collections.abc import Sequence
 from datetime import date, timedelta
 
 from app.core.request_context import get_request_context
-from app.schemas.chat import ChatMessage
 from app.schemas.trip_planning import CityTripRequest
 
 _SMALL_NUMBER_PATTERN = r"(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})"
@@ -45,22 +42,6 @@ _CHINESE_DIGITS = {
 }
 
 
-def apply_explicit_request_overrides(
-    request: CityTripRequest,
-    messages: Sequence[ChatMessage],
-) -> tuple[CityTripRequest, dict[str, bool]]:
-    duration = latest_explicit_duration_days(messages)
-    start_date = latest_explicit_start_date(messages)
-    if duration is not None:
-        request.duration_days = duration
-    if start_date is not None:
-        request.start_date = start_date
-    return request, {
-        "explicit_duration_override": duration is not None,
-        "explicit_start_date_override": start_date is not None,
-    }
-
-
 def validate_city_trip_request(
     request: CityTripRequest | None,
     *,
@@ -83,82 +64,8 @@ def validate_city_trip_request(
     return missing, errors
 
 
-def clarification_question(missing: Sequence[str], errors: Sequence[str]) -> str:
-    parts = list(errors)
-    missing_set = set(missing)
-    labels = {
-        "destination_city": "目标城市",
-        "duration_days": "游玩天数",
-        "start_date": "出行开始日期",
-    }
-    missing_labels = [labels[field] for field in labels if field in missing_set]
-    if missing_labels:
-        if missing_labels == ["目标城市"]:
-            parts.append("请告诉我想去的目标城市。")
-        elif missing_labels == ["游玩天数"]:
-            parts.append("请告诉我准备游玩几天。")
-        elif missing_labels == ["出行开始日期"]:
-            parts.append("请告诉我计划从哪一天开始游玩，例如“7 月 25 日开始”。")
-        else:
-            parts.append(f"请补充{'、'.join(missing_labels)}，例如“成都 3 天，7 月 25 日开始”。")
-    return " ".join(parts) or "请告诉我目标城市、游玩天数和出行开始日期。"
-
-
-def request_extraction_prompt(messages: Sequence[ChatMessage]) -> str:
-    context = get_request_context()
-    current_date = _current_date()
-    timezone = context.time.timezone if context is not None else "system-local"
-    return (
-        "结合最近对话提取目标城市、游玩天数、出行开始日期和兴趣。"
-        "只有用户明确表达或可由上下文直接继承的值才能填写，不能猜测。"
-        "兴趣只能映射到 Schema 中列出的标准标签，不得自由生成标签；"
-        "未提供的必填字段使用 null，未提供的偏好使用空数组，food_preferences 始终使用空数组。"
-        f"当前日期是 {current_date.isoformat()}，时区是 {timezone}；"
-        "无年份的月日按当前年份解释，今天、明天和后天按该日期计算。对话如下：\n"
-        f"{json.dumps(conversation_payload(messages), ensure_ascii=False)}"
-    )
-
-
-def conversation_payload(messages: Sequence[ChatMessage]) -> list[dict[str, str]]:
-    selected = [message for message in messages if message.role in {"user", "assistant"}][-8:]
-    remaining = 12_000
-    payload: list[dict[str, str]] = []
-    for message in reversed(selected):
-        content = message.content.strip()
-        if not content or remaining <= 0:
-            continue
-        normalized = content[: min(4_000, remaining)]
-        remaining -= len(normalized)
-        payload.insert(0, {"role": message.role, "content": normalized})
-    return payload
-
-
-def latest_explicit_start_date(messages: Sequence[ChatMessage]) -> date | None:
-    for message in reversed(messages):
-        if message.role == "user":
-            return explicit_start_date(message.content)
-    return None
-
-
-def explicit_start_date(text: str, *, today: date | None = None) -> date | None:
-    dates = explicit_dates(text, today=today)
-    return dates[0] if dates else None
-
-
 def explicit_dates(text: str, *, today: date | None = None) -> list[date]:
     return [item[2] for item in _explicit_date_mentions(text, today=today)]
-
-
-def latest_explicit_duration_days(messages: Sequence[ChatMessage]) -> int | None:
-    for message in reversed(messages):
-        if message.role == "user":
-            return explicit_duration_days(message.content)
-    return None
-
-
-def explicit_duration_days(text: str) -> int | None:
-    candidates = explicit_duration_candidates(text)
-    return candidates[-1] if candidates else None
 
 
 def explicit_duration_candidates(text: str) -> list[int]:
@@ -273,15 +180,7 @@ def _current_date() -> date:
 
 
 __all__ = [
-    "apply_explicit_request_overrides",
-    "clarification_question",
-    "conversation_payload",
     "explicit_dates",
     "explicit_duration_candidates",
-    "explicit_duration_days",
-    "explicit_start_date",
-    "latest_explicit_duration_days",
-    "latest_explicit_start_date",
-    "request_extraction_prompt",
     "validate_city_trip_request",
 ]

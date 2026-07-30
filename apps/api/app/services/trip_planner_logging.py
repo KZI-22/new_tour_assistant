@@ -175,20 +175,6 @@ def _completion_metrics(
     if node == "build_itinerary_skeleton":
         issues = result.get("skeleton_validation_issues", [])
         return f" issue_count={len(issues)} output_chars={len(result.get('skeleton_answer', ''))}"
-    if node == "generate_itinerary":
-        narrative = result.get("narrative")
-        if narrative is not None:
-            if hasattr(narrative, "model_dump_json"):
-                output_chars = len(narrative.model_dump_json())
-            else:
-                output_chars = len(str(narrative))
-            return f" model_call_count=1 output_chars={output_chars}"
-    if node == "validate_itinerary":
-        issues = result.get("validation_issues", [])
-        codes = ",".join(safe_log_value(issue.code) for issue in issues) or "none"
-        return f" validation_count=1 issue_count={len(issues)} issue_codes={codes}"
-    if node == "render_response":
-        return f" output_chars={len(result.get('final_answer', ''))}"
     return ""
 
 

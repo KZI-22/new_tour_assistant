@@ -81,36 +81,6 @@ class StructuredOutputService:
                 native_error or exc
             )
 
-    async def invoke_prompt_json(
-        self,
-        schema: type[SchemaT],
-        system_prompt: str,
-        user_prompt: str,
-        *,
-        timeout_seconds: float,
-    ) -> SchemaT:
-        """Generate prompt-constrained JSON without provider-native structured output."""
-        fallback_prompt = (
-            f"{user_prompt}\n\n请只输出符合以下 JSON Schema 的 JSON 对象，不要输出 Markdown：\n"
-            f"{json.dumps(schema.model_json_schema(), ensure_ascii=False)}"
-        )
-        try:
-            response = await asyncio.wait_for(
-                self._model.ainvoke(
-                    [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=fallback_prompt),
-                    ]
-                ),
-                timeout=timeout_seconds,
-            )
-            return schema.model_validate_json(_extract_json(_message_text(response)))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            raise StructuredOutputError("model did not return valid prompt JSON output") from exc
-
-
 def _message_text(message: BaseMessage) -> str:
     content = message.content
     if isinstance(content, str):

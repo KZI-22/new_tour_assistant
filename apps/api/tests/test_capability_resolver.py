@@ -17,10 +17,6 @@ from app.services.capability_resolver import (
     render_requirement_clarification,
     resolve_capabilities,
 )
-from app.services.trip_requirement_extractor import (
-    apply_trip_request_overrides,
-    trip_request_extraction_prompt,
-)
 
 START_DATE = date(2026, 8, 1)
 
@@ -248,26 +244,3 @@ def test_requirement_check_rejects_inverted_dates() -> None:
         "返程日期不能早于去程日期。",
         "酒店入住日期必须早于退房日期。",
     ]
-
-
-def test_extraction_prompt_and_core_overrides_keep_optional_intents() -> None:
-    request, messages = _request(
-        text="改成 2026-08-05 开始玩 4 天，酒店继续推荐",
-        hotel=HotelIntent(
-            action=CapabilityAction.ENABLE,
-            evidence_text="酒店继续推荐",
-        ),
-    )
-
-    updated, overrides = apply_trip_request_overrides(request, messages)
-    prompt = trip_request_extraction_prompt(messages)
-
-    assert updated.core.start_date == date(2026, 8, 5)
-    assert updated.core.duration_days == 4
-    assert updated.hotel.action is CapabilityAction.ENABLE
-    assert overrides == {
-        "explicit_duration_override": True,
-        "explicit_start_date_override": True,
-    }
-    assert "evidence_text" in prompt
-    assert "仅说明出发地" in prompt
