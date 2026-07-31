@@ -128,6 +128,7 @@ async def test_search_places_supports_text_and_nearby_results() -> None:
                 pois=[
                     {
                         "id": "B001",
+                        "parent": "P001",
                         "name": "南京博物院",
                         "address": "中山东路321号",
                         "pname": "江苏省",
@@ -137,6 +138,8 @@ async def test_search_places_supports_text_and_nearby_results() -> None:
                         "type": "科教文化服务;博物馆",
                         "distance": "850",
                         "location": "118.815365,32.040384",
+                        "business_area": "明故宫",
+                        "biz_ext": {"rating": "4.8"},
                     }
                 ]
             ),
@@ -158,10 +161,14 @@ async def test_search_places_supports_text_and_nearby_results() -> None:
     )
 
     assert text_result.pois[0].poi_id == "B001"
+    assert text_result.pois[0].parent_poi_id == "P001"
+    assert text_result.pois[0].rating == 4.8
+    assert text_result.pois[0].business_area == "明故宫"
     assert text_result.pois[0].location.coordinate_system == "GCJ02"
     assert nearby_result.pois[0].distance_meters == 850
     assert [item.url.path for item in requests] == ["/v3/place/text", "/v3/place/around"]
     assert requests[0].url.params["city"] == "320100"
+    assert requests[0].url.params["extensions"] == "all"
     assert requests[1].url.params["radius"] == "3000"
 
 

@@ -13,7 +13,11 @@ from app.schemas.amap import (
     SearchPlacesInput,
 )
 from app.schemas.trip_planning import CityTripRequest
-from app.services.map_trip_collection_service import MapTripCollectionService
+from app.services.attraction_planning_service import PoiSearchTask
+from app.services.map_trip_collection_service import (
+    MapTripCollectionService,
+    _fair_limit_search_results,
+)
 
 
 def place(
@@ -99,6 +103,33 @@ def standard_attractions() -> list[AmapPlace]:
     ]
 
 
+def test_raw_candidate_limit_samples_every_recall_lane_before_deeper_ranks() -> None:
+    tasks = [
+        PoiSearchTask(keyword="旅游景点", recall_kind="anchor"),
+        PoiSearchTask(keyword="博物馆", recall_kind="category"),
+        PoiSearchTask(keyword="亲子景点", recall_kind="preference"),
+    ]
+    results = [
+        (
+            task,
+            [
+                place(f"{task.recall_kind}-{index}", task.keyword, index / 1000)
+                for index in range(5)
+            ],
+        )
+        for task in tasks
+    ]
+
+    limited = _fair_limit_search_results(results, 6)
+
+    assert {task.recall_kind for task, _ in limited} == {
+        "anchor",
+        "category",
+        "preference",
+    }
+    assert all(len(places) == 2 for _, places in limited)
+
+
 @pytest.mark.asyncio
 async def test_collection_uses_fixed_poi_recall_and_only_final_adjacent_routes() -> None:
     client = FakeMapClient(attractions=standard_attractions())
@@ -123,7 +154,15 @@ async def test_collection_uses_fixed_poi_recall_and_only_final_adjacent_routes()
         )
     )
     keywords = {str(query.keywords) for query in client.search_queries}
-    assert {"风景名胜", "历史古迹", "博物馆", "公园", "城市地标", "特色街区"} <= keywords
+    assert {
+        "旅游景点",
+        "风景名胜",
+        "历史古迹",
+        "博物馆",
+        "公园",
+        "城市地标",
+        "特色街区",
+    } <= keywords
     assert {"文化遗址", "名人故居", "古建筑"} <= keywords
     assert not any("餐" in keyword for keyword in keywords)
     assert len(client.route_queries) == len(day.route_legs)

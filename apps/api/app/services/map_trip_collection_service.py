@@ -47,6 +47,34 @@ _LOCAL_ROUTE_ABNORMAL_SECONDS = 90 * 60
 _LOCAL_ROUTE_CORRECTION_MAX_NEW_EDGES = 6
 
 
+def _fair_limit_search_results(
+    results: list[tuple[PoiSearchTask, list[AmapPlace]]],
+    limit: int,
+) -> list[tuple[PoiSearchTask, list[AmapPlace]]]:
+    if limit <= 0 or not results:
+        return []
+    priority = {"anchor": 0, "preference": 1, "category": 2}
+    ranked_results = sorted(
+        enumerate(results),
+        key=lambda item: (
+            priority[item[1][0].recall_kind],
+            item[0],
+        ),
+    )
+    selected = {task: [] for task, _ in results}
+    remaining = limit
+    max_rank = max((len(places) for _, places in results), default=0)
+    for rank in range(max_rank):
+        for _, (task, places) in ranked_results:
+            if rank >= len(places):
+                continue
+            selected[task].append(places[rank])
+            remaining -= 1
+            if remaining == 0:
+                return [(task, selected[task]) for task, _ in results if selected[task]]
+    return [(task, selected[task]) for task, _ in results if selected[task]]
+
+
 class MapPlanningClient(Protocol):
     async def search_places(self, query: SearchPlacesInput) -> PlaceSearchResult: ...
 
@@ -183,14 +211,15 @@ class MapTripCollectionService:
         elapsed_ms = round((monotonic() - started_at) * 1_000)
         logger.info(
             "Map trip data planned planning_run_id=%s city=%s raw_poi_count=%s "
-            "invalid_poi_count=%s exact_duplicate_count=%s fuzzy_duplicate_count=%s "
-            "deduplicated_poi_count=%s selected_poi_count=%s route_api_call_count=%s "
-            "route_fallback_count=%s planning_total_latency_ms=%s",
+            "invalid_poi_count=%s exact_duplicate_count=%s parent_duplicate_count=%s "
+            "fuzzy_duplicate_count=%s deduplicated_poi_count=%s selected_poi_count=%s "
+            "route_api_call_count=%s route_fallback_count=%s planning_total_latency_ms=%s",
             planning_run_id,
             request.destination_city,
             stats["raw"],
             stats["invalid"],
             stats["exact_duplicates"],
+            stats["parent_duplicates"],
             stats["fuzzy_duplicates"],
             len(candidates),
             len(selected),
@@ -229,9 +258,7 @@ class MapTripCollectionService:
             await asyncio.gather(*pending, return_exceptions=True)
         responses = {running[future]: future.result() for future in done}
         warnings = [warning for _, warning in responses.values() if warning]
-        warnings.extend(
-            f"景点关键词“{running[future].keyword}”查询超时。" for future in pending
-        )
+        warnings.extend(f"景点关键词“{running[future].keyword}”查询超时。" for future in pending)
         successful_results = [
             (task, places)
             for task in tasks
@@ -239,13 +266,19 @@ class MapTripCollectionService:
             for places, _ in [responses[task]]
             if places
         ]
-        if warnings and sum(len(places) for _, places in successful_results) < (
-            request.duration_days or 1
-        ) * 3:
-            compensation = PoiSearchTask(keyword="旅游景点", is_base=True)
+        if (
+            warnings
+            and sum(len(places) for _, places in successful_results)
+            < (request.duration_days or 1) * 3
+        ):
+            compensation = PoiSearchTask(
+                keyword="景区",
+                is_base=True,
+                recall_kind="anchor",
+            )
             remaining_seconds = deadline - monotonic()
             if remaining_seconds <= 0.05:
-                places, warning = [], "旅游景点补偿查询因数据阶段超时未执行。"
+                places, warning = [], "景区补偿查询因数据阶段超时未执行。"
             else:
                 try:
                     places, warning = await asyncio.wait_for(
@@ -257,20 +290,16 @@ class MapTripCollectionService:
                         timeout=remaining_seconds,
                     )
                 except TimeoutError:
-                    places, warning = [], "旅游景点补偿查询超时。"
+                    places, warning = [], "景区补偿查询超时。"
             if places:
                 successful_results.append((compensation, places))
             if warning:
                 warnings.append(warning)
 
-        limited: list[tuple[PoiSearchTask, list[AmapPlace]]] = []
-        remaining = self._max_raw_candidates
-        for task, places in successful_results:
-            if remaining <= 0:
-                break
-            current = list(places[:remaining])
-            limited.append((task, current))
-            remaining -= len(current)
+        limited = _fair_limit_search_results(
+            successful_results,
+            self._max_raw_candidates,
+        )
         candidates, stats = merge_and_deduplicate_candidates(
             request.destination_city,
             limited,
@@ -351,9 +380,7 @@ class MapTripCollectionService:
             )
         deadline = monotonic() + timeout_seconds
         tasks = {
-            asyncio.create_task(
-                self._route_leg(origin, destination, city, planning_run_id)
-            ): (
+            asyncio.create_task(self._route_leg(origin, destination, city, planning_run_id)): (
                 day_index,
                 origin,
                 destination,
@@ -405,10 +432,10 @@ class MapTripCollectionService:
                         self._correct_abnormal_route(
                             group,
                             legs,
-                city,
-                cache,
-                planning_run_id,
-                max_new_edges=correction_budget,
+                            city,
+                            cache,
+                            planning_run_id,
+                            max_new_edges=correction_budget,
                         ),
                         timeout=remaining_seconds,
                     )

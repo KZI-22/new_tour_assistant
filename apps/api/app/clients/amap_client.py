@@ -165,7 +165,7 @@ class AmapClient:
             "citylimit": "true" if query.adcode or query.city else None,
             "offset": query.limit,
             "page": 1,
-            "extensions": "base",
+            "extensions": "all",
         }
         if query.location is None:
             endpoint = "/v3/place/text"
@@ -760,8 +760,11 @@ class AmapClient:
         location = cls._parse_coordinate(item.get("location"))
         if location is None:
             return None
+        business = cls._dict(item.get("business"))
+        biz_ext = cls._dict(item.get("biz_ext"))
         return AmapPlace(
             poi_id=cls._text(item.get("id")),
+            parent_poi_id=cls._text(item.get("parent")) or None,
             name=cls._text(item.get("name")),
             address=cls._text(item.get("address")),
             province=cls._text(item.get("pname")),
@@ -769,6 +772,12 @@ class AmapClient:
             district=cls._text(item.get("adname")),
             adcode=cls._text(item.get("adcode")),
             poi_type=cls._text(item.get("type")) or cls._text(item.get("typecode")),
+            rating=cls._decimal(business.get("rating") or biz_ext.get("rating")),
+            business_area=(
+                cls._text(business.get("business_area"))
+                or cls._text(item.get("business_area"))
+                or None
+            ),
             distance_meters=cls._number(item.get("distance")),
             location=location,
         )

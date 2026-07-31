@@ -7,19 +7,26 @@ import statistics
 import unicodedata
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from typing import Literal
 
 from app.schemas.amap import AmapPlace
 from app.schemas.map_planning import MapDayEvidence, MapTripEvidence
 from app.schemas.trip_planning import TripPreference, TripWeatherEvidence
 
-BASE_SEARCH_KEYWORDS = (
+ANCHOR_SEARCH_KEYWORDS = (
+    "旅游景点",
     "风景名胜",
+    "城市地标",
+)
+
+CATEGORY_SEARCH_KEYWORDS = (
     "历史古迹",
     "博物馆",
     "公园",
-    "城市地标",
     "特色街区",
 )
+
+BASE_SEARCH_KEYWORDS = ANCHOR_SEARCH_KEYWORDS + CATEGORY_SEARCH_KEYWORDS
 
 PREFERENCE_SEARCH_KEYWORDS: dict[TripPreference, tuple[str, ...]] = {
     TripPreference.HISTORY_CULTURE: ("历史古迹", "文化遗址", "名人故居", "古建筑"),
@@ -93,6 +100,7 @@ class PoiSearchTask:
     keyword: str
     preference: TripPreference | None = None
     is_base: bool = False
+    recall_kind: Literal["anchor", "category", "preference"] = "category"
 
 
 @dataclass(slots=True)
@@ -102,9 +110,15 @@ class AttractionCandidate:
     attraction_type: str
     estimated_visit_minutes: int
     search_ranks: dict[str, int] = field(default_factory=dict)
+    search_kinds: dict[str, Literal["anchor", "category", "preference"]] = field(
+        default_factory=dict
+    )
     matched_preferences: set[TripPreference] = field(default_factory=set)
     base_hits: int = 0
     preference_hits: int = 0
+    fame_score: float = 0.0
+    fame_tier: Literal["S", "A", "B", "C"] = "C"
+    preference_score: float = 0.0
     score: float = 0.0
     selection_reasons: list[str] = field(default_factory=list)
 
@@ -114,7 +128,14 @@ class AttractionCandidate:
 
 
 def build_poi_search_tasks(preferences: list[TripPreference]) -> list[PoiSearchTask]:
-    tasks = [PoiSearchTask(keyword=keyword, is_base=True) for keyword in BASE_SEARCH_KEYWORDS]
+    tasks = [
+        PoiSearchTask(
+            keyword=keyword,
+            is_base=True,
+            recall_kind="anchor" if keyword in ANCHOR_SEARCH_KEYWORDS else "category",
+        )
+        for keyword in BASE_SEARCH_KEYWORDS
+    ]
     seen = set(BASE_SEARCH_KEYWORDS)
     for preference in preferences:
         for keyword in PREFERENCE_SEARCH_KEYWORDS[preference]:
@@ -126,11 +147,19 @@ def build_poi_search_tasks(preferences: list[TripPreference]) -> list[PoiSearchT
                             keyword=task.keyword,
                             preference=preference,
                             is_base=task.is_base,
+                            recall_kind=task.recall_kind,
                         )
                         break
                 continue
             seen.add(keyword)
-            tasks.append(PoiSearchTask(keyword=keyword, preference=preference, is_base=False))
+            tasks.append(
+                PoiSearchTask(
+                    keyword=keyword,
+                    preference=preference,
+                    is_base=False,
+                    recall_kind="preference",
+                )
+            )
     return tasks
 
 
@@ -165,7 +194,13 @@ def merge_and_deduplicate_candidates(
     results: list[tuple[PoiSearchTask, list[AmapPlace]]],
 ) -> tuple[list[AttractionCandidate], dict[str, int]]:
     exact: dict[str, AttractionCandidate] = {}
-    stats = {"raw": 0, "invalid": 0, "exact_duplicates": 0, "fuzzy_duplicates": 0}
+    stats = {
+        "raw": 0,
+        "invalid": 0,
+        "exact_duplicates": 0,
+        "parent_duplicates": 0,
+        "fuzzy_duplicates": 0,
+    }
     for task, places in results:
         for rank, place in enumerate(places, start=1):
             stats["raw"] += 1
@@ -188,20 +223,34 @@ def merge_and_deduplicate_candidates(
                 rank,
                 candidate.search_ranks.get(task.keyword, rank),
             )
+            candidate.search_kinds[task.keyword] = task.recall_kind
             candidate.base_hits += int(task.is_base)
             candidate.preference_hits += int(task.preference is not None)
             if task.preference is not None:
                 candidate.matched_preferences.add(task.preference)
 
+    all_exact = dict(exact)
+    for child in list(all_exact.values()):
+        target = child
+        seen = {child.place.poi_id}
+        while (
+            target.place.parent_poi_id
+            and target.place.parent_poi_id not in seen
+            and target.place.parent_poi_id in all_exact
+        ):
+            seen.add(target.place.parent_poi_id)
+            target = all_exact[target.place.parent_poi_id]
+        if target is child:
+            continue
+        _merge_candidate_evidence(target, child)
+        exact.pop(child.place.poi_id, None)
+        stats["parent_duplicates"] += 1
+
     ordered = sorted(exact.values(), key=_pre_score_key)
     kept: list[AttractionCandidate] = []
     for candidate in ordered:
         duplicate = next(
-            (
-                existing
-                for existing in kept
-                if _is_fuzzy_duplicate(existing, candidate)
-            ),
+            (existing for existing in kept if _is_fuzzy_duplicate(existing, candidate)),
             None,
         )
         if duplicate is None:
@@ -214,13 +263,63 @@ def merge_and_deduplicate_candidates(
 
 def score_candidates(candidates: list[AttractionCandidate]) -> None:
     for candidate in candidates:
-        hit_count = len(candidate.search_ranks)
-        rank_score = sum(max(0, 11 - rank) * 1.2 for rank in candidate.search_ranks.values())
-        recall_score = hit_count * 8 + rank_score
-        preference_score = len(candidate.matched_preferences) * 12
-        representation_score = candidate.base_hits * 6
-        if candidate.base_hits and candidate.preference_hits:
-            representation_score += 5
+        search_kinds = {
+            keyword: candidate.search_kinds.get(
+                keyword,
+                "anchor" if keyword in ANCHOR_SEARCH_KEYWORDS else "category",
+            )
+            for keyword in candidate.search_ranks
+        }
+        provider_ranks = [
+            rank
+            for keyword, rank in candidate.search_ranks.items()
+            if search_kinds[keyword] != "preference"
+        ]
+        anchor_ranks = [
+            rank
+            for keyword, rank in candidate.search_ranks.items()
+            if search_kinds[keyword] == "anchor"
+        ]
+        category_ranks = [
+            rank
+            for keyword, rank in candidate.search_ranks.items()
+            if search_kinds[keyword] == "category"
+        ]
+        best_anchor_score = max(0.0, (11 - min(anchor_ranks)) / 10) * 30 if anchor_ranks else 0.0
+        anchor_coverage_score = min(len(anchor_ranks), 3) / 3 * 20
+        cross_query_score = min(len(provider_ranks), 4) / 4 * 15
+        category_rank_score = (
+            max(0.0, (11 - min(category_ranks)) / 10) * 10 if category_ranks else 0.0
+        )
+        rating_score = (
+            7.5
+            if candidate.place.rating is None
+            else max(0.0, min(1.0, (candidate.place.rating - 3.0) / 2.0)) * 15
+        )
+        hierarchy_score = 2.0 if candidate.place.parent_poi_id else 10.0
+        candidate.fame_score = round(
+            best_anchor_score
+            + anchor_coverage_score
+            + cross_query_score
+            + category_rank_score
+            + rating_score
+            + hierarchy_score,
+            3,
+        )
+        candidate.preference_score = round(
+            min(
+                100.0,
+                len(candidate.matched_preferences) * 35
+                + min(candidate.preference_hits, 3) * 10
+                + (10 if candidate.base_hits and candidate.preference_hits else 0),
+            ),
+            3,
+        )
+        best_rank = min(candidate.search_ranks.values(), default=10)
+        retrieval_quality = min(
+            100.0,
+            min(len(candidate.search_ranks), 5) / 5 * 50 + max(0.0, (11 - best_rank) / 10) * 50,
+        )
 
         distances = sorted(
             haversine_km(candidate.place, other.place)
@@ -229,24 +328,44 @@ def score_candidates(candidates: list[AttractionCandidate]) -> None:
         )
         nearest = distances[0] if distances else 0.0
         spatial_score = 4.0 if nearest <= 8 else 2.0 if nearest <= 20 else 0.0
-        isolation_penalty = 8.0 if nearest > 25 and recall_score < 45 else 0.0
+        isolation_penalty = 10.0 if nearest > 25 and candidate.fame_score < 45 else 0.0
         candidate.score = round(
-            recall_score
-            + preference_score
-            + representation_score
+            candidate.fame_score * 0.65
+            + candidate.preference_score * 0.25
+            + retrieval_quality * 0.1
             + spatial_score
             - isolation_penalty,
             3,
         )
+
+    for candidate in candidates:
+        candidate.fame_tier = (
+            "S"
+            if candidate.fame_score >= 65
+            else "A"
+            if candidate.fame_score >= 45
+            else "B"
+            if candidate.fame_score >= 25
+            else "C"
+        )
+    if candidates and not any(item.fame_tier in {"S", "A"} for item in candidates):
+        max(
+            candidates,
+            key=lambda item: (item.fame_score, item.score, item.place.poi_id),
+        ).fame_tier = "A"
+
+    for candidate in candidates:
         reasons: list[str] = []
-        if hit_count >= 2:
+        if candidate.fame_tier in {"S", "A"}:
+            reasons.append(f"高德通用景点检索知名度为{candidate.fame_tier}级")
+        if len(candidate.search_ranks) >= 2:
             reasons.append("多组关键词检索结果中稳定出现")
         if min(candidate.search_ranks.values(), default=99) <= 5:
             reasons.append("高德关键词检索排名靠前")
+        if candidate.place.rating is not None and candidate.place.rating >= 4.5:
+            reasons.append(f"高德评分较高（{candidate.place.rating:g}分）")
         if candidate.matched_preferences:
             reasons.append("与用户的标准偏好标签匹配")
-        if spatial_score:
-            reasons.append("与其他高分景点的空间衔接较合理")
         candidate.selection_reasons = reasons or ["来自目标城市内的有效高德景点结果"]
 
 
@@ -282,13 +401,19 @@ def select_diverse_candidates(
         return [], []
     target = min(days * 4, MAX_SELECTED_ATTRACTIONS, len(candidates))
     minimum = min(days * MIN_ATTRACTIONS_PER_DAY, len(candidates))
-    selected: list[AttractionCandidate] = []
-    remaining = list(candidates)
+    selected = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.fame_tier in {"S", "A"} and not candidate.place.parent_poi_id
+        ),
+        key=lambda item: (-item.fame_score, -item.score, item.place.poi_id),
+    )[:days]
+    remaining = [candidate for candidate in candidates if candidate not in selected]
     while remaining and len(selected) < target:
+
         def mmr(candidate: AttractionCandidate) -> tuple[float, float, str]:
-            same_type = sum(
-                item.attraction_type == candidate.attraction_type for item in selected
-            )
+            same_type = sum(item.attraction_type == candidate.attraction_type for item in selected)
             name_similarity = max(
                 (
                     SequenceMatcher(
@@ -320,9 +445,10 @@ def select_diverse_candidates(
 
     # Do not reduce below the documented minimum merely because the duration mix is long.
     # Reserve roughly two hours per day for movement between three to five attractions.
-    while len(selected) > minimum and sum(
-        item.estimated_visit_minutes for item in selected
-    ) > days * 360:
+    while (
+        len(selected) > minimum
+        and sum(item.estimated_visit_minutes for item in selected) > days * 360
+    ):
         selected.pop()
     return selected, [item for item in candidates if item not in selected]
 
@@ -343,6 +469,10 @@ class DailyClusterPlanner:
         groups = [[seed] for seed in seeds]
         groups.extend([] for _ in range(days - len(groups)))
         remaining = [item for item in candidates if item not in seeds]
+        balanced_capacity = min(
+            MAX_ATTRACTIONS_PER_DAY,
+            math.ceil(len(candidates) / days),
+        )
 
         # Fill days round-robin so a sparse result degrades evenly instead of starving later days.
         while remaining:
@@ -378,7 +508,7 @@ class DailyClusterPlanner:
                 (
                     index
                     for index in ranked_groups
-                    if len(groups[index]) < MAX_ATTRACTIONS_PER_DAY
+                    if len(groups[index]) < balanced_capacity
                     and _group_budget_minutes([*groups[index], candidate])
                     <= DAY_EFFECTIVE_BUDGET_MINUTES
                 ),
@@ -403,21 +533,53 @@ class DailyClusterPlanner:
         candidates: list[AttractionCandidate],
         count: int,
     ) -> list[AttractionCandidate]:
-        first = max(candidates, key=lambda item: (item.score, item.place.poi_id))
+        top_level = [item for item in candidates if not item.place.parent_poi_id]
+        prominent = [item for item in top_level if item.fame_tier in {"S", "A"}]
+        if len(prominent) >= count:
+            pool = prominent
+        else:
+            pool = [*prominent, *(item for item in top_level if item.fame_tier == "B")]
+            if len(pool) < count:
+                pool.extend(item for item in top_level if item.fame_tier == "C")
+            if len(pool) < count:
+                pool.extend(item for item in candidates if item not in pool)
+
+        first = max(
+            pool,
+            key=lambda item: (item.fame_score, item.score, item.place.poi_id),
+        )
         seeds = [first]
+        local_masses = {item.place.poi_id: self._local_fame_mass(item, candidates) for item in pool}
+        max_local_mass = max(1.0, max(local_masses.values(), default=0.0))
         while len(seeds) < count:
-            choices = [item for item in candidates if item not in seeds]
+            choices = [item for item in pool if item not in seeds]
             chosen = max(
                 choices,
                 key=lambda item: (
-                    min(haversine_km(item.place, seed.place) for seed in seeds)
-                    + item.score / 20,
+                    item.fame_score * 0.5
+                    + min(
+                        min(haversine_km(item.place, seed.place) for seed in seeds),
+                        12.0,
+                    )
+                    / 12.0
+                    * (local_masses[item.place.poi_id] / max_local_mass * 25 + 25),
                     item.score,
                     item.place.poi_id,
                 ),
             )
             seeds.append(chosen)
         return seeds
+
+    @staticmethod
+    def _local_fame_mass(
+        candidate: AttractionCandidate,
+        candidates: list[AttractionCandidate],
+    ) -> float:
+        return candidate.fame_score + sum(
+            other.fame_score * max(0.0, 1 - haversine_km(candidate.place, other.place) / 8)
+            for other in candidates
+            if other is not candidate
+        )
 
     @staticmethod
     def _assignment_cost(
@@ -427,9 +589,9 @@ class DailyClusterPlanner:
         if not group:
             return 0.0
         nearest = min(haversine_km(candidate.place, item.place) for item in group)
-        type_penalty = sum(
-            item.attraction_type == candidate.attraction_type for item in group
-        ) * 1.5
+        type_penalty = (
+            sum(item.attraction_type == candidate.attraction_type for item in group) * 1.5
+        )
         return nearest + type_penalty
 
     def _improve_by_swaps(self, groups: list[list[AttractionCandidate]]) -> None:
@@ -475,6 +637,9 @@ class DailyClusterPlanner:
             for left_index, right_index in itertools.combinations(range(len(groups)), 2):
                 left = groups[left_index]
                 right = groups[right_index]
+                preserve_prominent_anchors = all(
+                    any(item.fame_tier in {"S", "A"} for item in group) for group in (left, right)
+                )
                 for left_item, right_item in itertools.product(range(len(left)), range(len(right))):
                     new_left = list(left)
                     new_right = list(right)
@@ -482,10 +647,18 @@ class DailyClusterPlanner:
                         new_right[right_item],
                         new_left[left_item],
                     )
-                    if max(
-                        sum(item.estimated_visit_minutes for item in new_left),
-                        sum(item.estimated_visit_minutes for item in new_right),
-                    ) > DAY_EFFECTIVE_BUDGET_MINUTES:
+                    if (
+                        max(
+                            sum(item.estimated_visit_minutes for item in new_left),
+                            sum(item.estimated_visit_minutes for item in new_right),
+                        )
+                        > DAY_EFFECTIVE_BUDGET_MINUTES
+                    ):
+                        continue
+                    if preserve_prominent_anchors and not all(
+                        any(item.fame_tier in {"S", "A"} for item in group)
+                        for group in (new_left, new_right)
+                    ):
                         continue
                     candidate_groups = list(groups)
                     candidate_groups[left_index] = new_left
@@ -623,8 +796,7 @@ def _is_fuzzy_duplicate(left: AttractionCandidate, right: AttractionCandidate) -
         return False
     similarity = SequenceMatcher(None, left.normalized_name, right.normalized_name).ratio()
     return (
-        similarity >= 0.88
-        and haversine_km(left.place, right.place) < FUZZY_DUPLICATE_DISTANCE_KM
+        similarity >= 0.88 and haversine_km(left.place, right.place) < FUZZY_DUPLICATE_DISTANCE_KM
     )
 
 
@@ -634,6 +806,7 @@ def _merge_candidate_evidence(
 ) -> None:
     for keyword, rank in duplicate.search_ranks.items():
         target.search_ranks[keyword] = min(rank, target.search_ranks.get(keyword, rank))
+    target.search_kinds.update(duplicate.search_kinds)
     target.matched_preferences.update(duplicate.matched_preferences)
     target.base_hits += duplicate.base_hits
     target.preference_hits += duplicate.preference_hits
@@ -690,9 +863,7 @@ def _weather_mismatch(day: MapDayEvidence, weather: object) -> float:
     try:
         if float(temperature_text) >= 33:
             walking_km = sum(
-                (leg.distance_meters or 0) / 1000
-                for leg in day.route_legs
-                if leg.mode == "walking"
+                (leg.distance_meters or 0) / 1000 for leg in day.route_legs if leg.mode == "walking"
             )
             score += walking_km * 2 + outdoor
     except ValueError:

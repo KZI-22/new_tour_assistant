@@ -94,6 +94,7 @@ class SearchPlacesInput(AmapModel):
 
 class AmapPlace(AmapModel):
     poi_id: str
+    parent_poi_id: str | None = None
     name: str
     address: str
     province: str
@@ -101,6 +102,8 @@ class AmapPlace(AmapModel):
     district: str
     adcode: str
     poi_type: str
+    rating: float | None = Field(default=None, ge=0, le=5)
+    business_area: str | None = None
     distance_meters: int | None = Field(default=None, ge=0)
     location: AmapCoordinate
 

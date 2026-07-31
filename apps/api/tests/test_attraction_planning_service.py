@@ -106,12 +106,16 @@ def test_search_tasks_always_include_base_queries_and_preference_expansions() ->
     )
     keywords = [task.keyword for task in tasks]
 
-    assert {"风景名胜", "历史古迹", "博物馆", "公园", "城市地标", "特色街区"} <= set(
-        keywords
-    )
-    assert {"文化遗址", "名人故居", "古建筑", "纪念馆", "美术馆", "展览馆"} <= set(
-        keywords
-    )
+    assert {
+        "旅游景点",
+        "风景名胜",
+        "历史古迹",
+        "博物馆",
+        "公园",
+        "城市地标",
+        "特色街区",
+    } <= set(keywords)
+    assert {"文化遗址", "名人故居", "古建筑", "纪念馆", "美术馆", "展览馆"} <= set(keywords)
     assert len(keywords) == len(set(keywords))
 
 
@@ -134,7 +138,41 @@ def test_normalization_exact_and_fuzzy_dedup_preserve_recall_evidence() -> None:
     assert len(candidates) == 1
     assert set(candidates[0].search_ranks) == {"公园", "休闲街区"}
     assert candidates[0].matched_preferences == {TripPreference.LEISURE}
-    assert stats == {"raw": 4, "invalid": 1, "exact_duplicates": 1, "fuzzy_duplicates": 1}
+    assert stats == {
+        "raw": 4,
+        "invalid": 1,
+        "exact_duplicates": 1,
+        "parent_duplicates": 0,
+        "fuzzy_duplicates": 1,
+    }
+
+
+def test_parent_poi_absorbs_child_recall_evidence() -> None:
+    parent = place("scenic", "钟山风景区", 118.8000)
+    child = place("ming-tomb", "明孝陵", 118.8005)
+    child = child.model_copy(update={"parent_poi_id": parent.poi_id})
+
+    candidates, stats = merge_and_deduplicate_candidates(
+        "南京",
+        [
+            (
+                PoiSearchTask(
+                    keyword="旅游景点",
+                    is_base=True,
+                    recall_kind="anchor",
+                ),
+                [parent],
+            ),
+            (
+                PoiSearchTask(keyword="文化遗址", recall_kind="preference"),
+                [child],
+            ),
+        ],
+    )
+
+    assert [item.place.poi_id for item in candidates] == ["scenic"]
+    assert set(candidates[0].search_ranks) == {"旅游景点", "文化遗址"}
+    assert stats["parent_duplicates"] == 1
 
 
 def test_large_scenic_area_sub_pois_are_not_spatially_merged() -> None:
@@ -180,6 +218,24 @@ def test_scoring_and_mmr_selection_are_deterministic_and_diverse() -> None:
     assert len({item.attraction_type for item in selected[:3]}) >= 2
 
 
+def test_fame_scoring_prefers_general_anchor_evidence_over_narrow_query_rating() -> None:
+    landmark = candidate("landmark", 118.80, score=0)
+    landmark.place = landmark.place.model_copy(update={"rating": 4.7})
+    landmark.search_ranks = {"旅游景点": 1, "城市地标": 2}
+    landmark.search_kinds = {"旅游景点": "anchor", "城市地标": "anchor"}
+
+    niche = candidate("niche", 118.81, score=0)
+    niche.place = niche.place.model_copy(update={"rating": 4.9})
+    niche.search_ranks = {"亲子景点": 1}
+    niche.search_kinds = {"亲子景点": "preference"}
+
+    score_candidates([landmark, niche])
+
+    assert landmark.fame_tier == "S"
+    assert niche.fame_tier == "C"
+    assert landmark.fame_score > niche.fame_score
+
+
 def test_spread_seeds_and_capacity_assignment_keep_nearby_places_together() -> None:
     candidates = [
         candidate("west-1", 118.70, score=100),
@@ -199,6 +255,24 @@ def test_spread_seeds_and_capacity_assignment_keep_nearby_places_together() -> N
         < 0.01
         for group in groups
     )
+
+
+def test_daily_clusters_never_use_c_tier_outlier_as_seed_when_prominent_pool_is_full() -> None:
+    prominent = [
+        candidate("anchor-1", 118.800, score=90),
+        candidate("anchor-2", 118.810, score=85),
+        candidate("anchor-3", 118.820, score=80),
+    ]
+    for index, item in enumerate(prominent):
+        item.fame_score = 80 - index * 5
+        item.fame_tier = "A"
+    outlier = candidate("cold-outlier", 119.300, score=100)
+    outlier.fame_score = 20
+    outlier.fame_tier = "C"
+
+    groups = DailyClusterPlanner().plan([*prominent, outlier], 3)
+
+    assert all(any(item.fame_tier == "A" for item in group) for group in groups)
 
 
 def test_daily_route_optimizer_enumerates_open_path_order() -> None:
