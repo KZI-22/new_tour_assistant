@@ -356,17 +356,18 @@ def score_candidates(candidates: list[AttractionCandidate]) -> None:
 
     for candidate in candidates:
         reasons: list[str] = []
+        source_label = "FlyAI" if candidate.place.location.source == "flyai" else "高德"
         if candidate.fame_tier in {"S", "A"}:
-            reasons.append(f"高德通用景点检索知名度为{candidate.fame_tier}级")
+            reasons.append(f"{source_label}通用景点检索知名度为{candidate.fame_tier}级")
         if len(candidate.search_ranks) >= 2:
             reasons.append("多组关键词检索结果中稳定出现")
         if min(candidate.search_ranks.values(), default=99) <= 5:
-            reasons.append("高德关键词检索排名靠前")
+            reasons.append(f"{source_label}关键词检索排名靠前")
         if candidate.place.rating is not None and candidate.place.rating >= 4.5:
-            reasons.append(f"高德评分较高（{candidate.place.rating:g}分）")
+            reasons.append(f"{source_label}评分较高（{candidate.place.rating:g}分）")
         if candidate.matched_preferences:
             reasons.append("与用户的标准偏好标签匹配")
-        candidate.selection_reasons = reasons or ["来自目标城市内的有效高德景点结果"]
+        candidate.selection_reasons = reasons or [f"来自目标城市内的有效{source_label}景点结果"]
 
 
 def match_candidate_preferences(

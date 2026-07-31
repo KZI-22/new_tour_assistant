@@ -137,6 +137,7 @@ TRIP_PLANNER_ENABLED=true
 TRIP_PLANNER_MAX_DAYS=5
 TRIP_PLANNER_MODEL_TIMEOUT_SECONDS=90
 TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS=30
+TRIP_PLANNER_POI_PROVIDER=flyai
 XHS_MCP_TRANSPORT=stdio
 XHS_MCP_STDIO_COMMAND=
 XHS_MCP_STDIO_ARGS=["-m","xhs_read_mcp","--transport","stdio","--headed"]
@@ -150,6 +151,9 @@ XHS_DETAIL_CANDIDATE_LIMIT=5
 XHS_LOGIN_POLL_SECONDS=2
 XHS_SSE_HEARTBEAT_SECONDS=15
 ```
+
+`TRIP_PLANNER_POI_PROVIDER` 可设为 `flyai` 或 `amap`，默认使用 FlyAI 搜索候选景点；
+路线规划和天气查询始终继续使用高德。需要快速回退候选景点来源时，将其改为 `amap` 并重启 API。
 
 `planning_source=xhs` 是显式的原帖检索模式：不调用 LLM 路由、字段提取、天气或攻略生成模型，
 也不要求城市、天数和出发日期。系统将最新一条用户消息规范化为空格分隔、最多 200 字符的搜索词，

@@ -47,7 +47,7 @@ class AmapCoordinate(AmapModel):
     longitude: float = Field(ge=-180, le=180)
     latitude: float = Field(ge=-90, le=90)
     coordinate_system: Literal[CoordinateSystem.GCJ02] = CoordinateSystem.GCJ02
-    source: Literal["amap", "amap_conversion"] = "amap"
+    source: Literal["amap", "amap_conversion", "flyai"] = "amap"
 
 
 class CurrentCityInput(AmapModel):

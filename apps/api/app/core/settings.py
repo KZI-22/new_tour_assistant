@@ -93,6 +93,7 @@ class Settings:
     trip_planner_max_days: int = 5
     trip_planner_model_timeout_seconds: float = 90
     trip_planner_request_extraction_timeout_seconds: float = 30
+    trip_planner_poi_provider: Literal["flyai", "amap"] = "flyai"
     xhs_mcp_transport: Literal["streamable-http", "stdio"] = "streamable-http"
     xhs_mcp_url: str = "http://127.0.0.1:8765/mcp"
     xhs_mcp_auth_token: str | None = field(default=None, repr=False)
@@ -141,6 +142,8 @@ class Settings:
             raise ValueError("amap_poi_page_size must be between 1 and 25.")
         if self.xhs_mcp_transport not in {"streamable-http", "stdio"}:
             raise ValueError("xhs_mcp_transport must be 'streamable-http' or 'stdio'.")
+        if self.trip_planner_poi_provider not in {"flyai", "amap"}:
+            raise ValueError("trip_planner_poi_provider must be 'flyai' or 'amap'.")
         auth_positive_values = {
             "auth_access_token_minutes": self.auth_access_token_minutes,
             "auth_refresh_token_days": self.auth_refresh_token_days,
@@ -269,6 +272,9 @@ def get_settings() -> Settings:
         trip_planner_request_extraction_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")
         ),
+        trip_planner_poi_provider=(
+            os.getenv("TRIP_PLANNER_POI_PROVIDER", "flyai").strip().casefold()
+        ),  # type: ignore[arg-type]
         xhs_mcp_transport=(os.getenv("XHS_MCP_TRANSPORT", "streamable-http").strip().casefold()),
         xhs_mcp_url=(os.getenv("XHS_MCP_URL") or "http://127.0.0.1:8765/mcp").rstrip("/"),
         xhs_mcp_auth_token=os.getenv("XHS_MCP_AUTH_TOKEN") or None,

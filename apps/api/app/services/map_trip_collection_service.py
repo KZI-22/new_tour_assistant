@@ -6,10 +6,9 @@ import logging
 import statistics
 from datetime import UTC, datetime, timedelta
 from time import monotonic
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import uuid4
 
-from app.clients.amap_errors import AmapError
 from app.schemas.amap import (
     AmapCoordinateInput,
     AmapPlace,
@@ -75,10 +74,16 @@ def _fair_limit_search_results(
     return [(task, selected[task]) for task, _ in results if selected[task]]
 
 
-class MapPlanningClient(Protocol):
+class PlaceSearchClient(Protocol):
     async def search_places(self, query: SearchPlacesInput) -> PlaceSearchResult: ...
 
+
+class RoutePlanningClient(Protocol):
     async def plan_route(self, query: RoutePlanInput) -> RouteResult: ...
+
+
+class MapPlanningClient(PlaceSearchClient, RoutePlanningClient, Protocol):
+    pass
 
 
 class MapTripCollectionError(RuntimeError):
@@ -93,6 +98,8 @@ class MapTripCollectionService:
         self,
         client: MapPlanningClient | None,
         *,
+        poi_client: PlaceSearchClient | None = None,
+        poi_provider: Literal["amap", "flyai"] = "amap",
         poi_max_concurrency: int = 5,
         route_max_concurrency: int = 5,
         poi_page_size: int = 10,
@@ -116,7 +123,12 @@ class MapTripCollectionService:
             raise ValueError("Map planning limits and timeouts must be positive")
         if max_transit_transfers < 0 or cluster_max_iterations < 0:
             raise ValueError("Map planning limits cannot be negative")
+        if poi_provider not in {"amap", "flyai"}:
+            raise ValueError("poi_provider must be 'amap' or 'flyai'")
         self._client = client
+        self._poi_client = client if poi_client is None else poi_client
+        self._poi_provider = poi_provider
+        self._poi_provider_label = "FlyAI" if poi_provider == "flyai" else "高德"
         self._poi_semaphore = asyncio.Semaphore(poi_max_concurrency)
         self._route_semaphore = asyncio.Semaphore(route_max_concurrency)
         self._poi_page_size = poi_page_size
@@ -130,6 +142,7 @@ class MapTripCollectionService:
     async def collect(self, request: CityTripRequest) -> MapTripEvidence:
         if (
             self._client is None
+            or self._poi_client is None
             or not request.destination_city
             or request.duration_days is None
             or request.start_date is None
@@ -152,9 +165,12 @@ class MapTripCollectionService:
             raise MapTripCollectionError(
                 "MAP_POI_COLLECTION_TIMEOUT" if timed_out else "MAP_ATTRACTIONS_EMPTY",
                 (
-                    "高德景点查询超时，暂时无法形成可靠的候选景点。"
+                    f"{self._poi_provider_label} 景点查询超时，暂时无法形成可靠的候选景点。"
                     if timed_out
-                    else "高德地图没有返回可用于规划的有效景点，请换个城市名称后重试。"
+                    else (
+                        f"{self._poi_provider_label} 没有返回可用于规划的有效景点，"
+                        "请换个城市名称后重试。"
+                    )
                 ),
             )
 
@@ -164,7 +180,10 @@ class MapTripCollectionService:
         if not selected:
             raise MapTripCollectionError(
                 "MAP_ATTRACTIONS_EMPTY",
-                "高德地图没有返回可用于规划的有效景点，请换个城市名称后重试。",
+                (
+                    f"{self._poi_provider_label} 没有返回可用于规划的有效景点，"
+                    "请换个城市名称后重试。"
+                ),
             )
         groups = self._cluster_planner.plan(selected, request.duration_days)
         if len(selected) < request.duration_days * 3:
@@ -312,11 +331,11 @@ class MapTripCollectionService:
         city: str,
         planning_run_id: str,
     ) -> tuple[list[AmapPlace], str | None]:
-        assert self._client is not None
+        assert self._poi_client is not None
         started_at = monotonic()
         try:
             async with self._poi_semaphore:
-                result = await self._client.search_places(
+                result = await self._poi_client.search_places(
                     SearchPlacesInput(
                         city=city,
                         keywords=task.keyword,
@@ -325,8 +344,9 @@ class MapTripCollectionService:
                 )
             places = list(result.pois[: self._poi_page_size])
             logger.info(
-                "Amap POI search completed planning_run_id=%s keyword=%s "
+                "POI search completed provider=%s planning_run_id=%s keyword=%s "
                 "result_count=%s poi_search_latency_ms=%s",
+                self._poi_provider,
                 planning_run_id,
                 task.keyword,
                 len(places),
@@ -335,21 +355,14 @@ class MapTripCollectionService:
             return places, None
         except asyncio.CancelledError:
             raise
-        except AmapError as exc:
-            logger.warning(
-                "Amap place search failed planning_run_id=%s keyword=%s error_code=%s "
-                "poi_search_latency_ms=%s",
-                planning_run_id,
-                task.keyword,
-                exc.error_code,
-                round((monotonic() - started_at) * 1_000),
-            )
         except Exception as exc:
             logger.warning(
-                "Amap place search failed planning_run_id=%s keyword=%s exception_type=%s "
-                "poi_search_latency_ms=%s",
+                "POI search failed provider=%s planning_run_id=%s keyword=%s "
+                "error_code=%s exception_type=%s poi_search_latency_ms=%s",
+                self._poi_provider,
                 planning_run_id,
                 task.keyword,
+                getattr(exc, "error_code", None),
                 type(exc).__name__,
                 round((monotonic() - started_at) * 1_000),
             )
@@ -746,4 +759,6 @@ __all__ = [
     "MapPlanningClient",
     "MapTripCollectionError",
     "MapTripCollectionService",
+    "PlaceSearchClient",
+    "RoutePlanningClient",
 ]

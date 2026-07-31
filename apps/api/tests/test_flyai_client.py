@@ -184,6 +184,31 @@ async def test_nonzero_exit_preserves_usable_json_business_result(tmp_path: Any)
 
 
 @pytest.mark.asyncio
+async def test_nonzero_exit_preserves_provider_confirmed_empty_result(tmp_path: Any) -> None:
+    client = make_client(
+        tmp_path,
+        RecordingFactory(
+            FakeProcess(
+                stdout='{"data":null,"message":"empty","status":0}',
+                stderr="wrapper assertion after writing data",
+                returncode=1,
+            )
+        ),
+    )
+
+    result = await client.execute(
+        "search-poi",
+        ["--city-name", "成都", "--keyword", "城市地标"],
+    )
+
+    assert result.success is True
+    assert result.data == {"data": None, "message": "empty", "status": 0}
+    assert result.diagnostics.process_status == "failed"
+    assert result.diagnostics.provider_status == "success"
+    assert result.diagnostics.business_status == "empty"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_is_retried_only_once(tmp_path: Any) -> None:
     factory = RecordingFactory(
         FakeProcess(stderr="429 Too Many Requests", returncode=1),

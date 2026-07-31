@@ -92,6 +92,7 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("TRIP_PLANNER_MAX_DAYS", "4")
     monkeypatch.setenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "35")
     monkeypatch.setenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "25")
+    monkeypatch.setenv("TRIP_PLANNER_POI_PROVIDER", "AMAP")
     monkeypatch.setenv("AMAP_POI_MAX_CONCURRENCY", "4")
     monkeypatch.setenv("AMAP_ROUTE_MAX_CONCURRENCY", "3")
     monkeypatch.setenv("AMAP_POI_PAGE_SIZE", "9")
@@ -115,6 +116,7 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
     assert settings.trip_planner_max_days == 4
     assert settings.trip_planner_model_timeout_seconds == 35
     assert settings.trip_planner_request_extraction_timeout_seconds == 25
+    assert settings.trip_planner_poi_provider == "amap"
     assert settings.amap_poi_max_concurrency == 4
     assert settings.amap_route_max_concurrency == 3
     assert settings.amap_poi_page_size == 9
@@ -143,6 +145,23 @@ def test_get_settings_reads_trip_planner_limits(monkeypatch: pytest.MonkeyPatch)
         "trip_planner_result_max_length",
     }
     assert legacy_names.isdisjoint(settings.__dataclass_fields__)
+
+
+def test_trip_planner_poi_provider_defaults_to_flyai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRIP_PLANNER_POI_PROVIDER", raising=False)
+
+    assert get_settings().trip_planner_poi_provider == "flyai"
+
+
+def test_invalid_trip_planner_poi_provider_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIP_PLANNER_POI_PROVIDER", "unknown")
+
+    with pytest.raises(ValueError, match="trip_planner_poi_provider"):
+        get_settings()
 
 
 def test_get_settings_parses_stdio_mcp_process_configuration(
