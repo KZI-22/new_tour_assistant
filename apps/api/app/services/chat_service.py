@@ -23,7 +23,6 @@ from app.services.agent_executor import (
     AgentExecutor,
     ToolEnabledModel,
 )
-from app.services.flyai_poi_search_service import FlyAIPoiSearchService
 from app.services.map_trip_collection_service import MapTripCollectionService
 from app.services.tool_call_log_service import ToolCallLogWriter
 from app.services.tool_execution import ToolExecutionContext, ToolExecutor
@@ -107,15 +106,9 @@ class ChatService:
         self._standard_trip_planner = None
         weather_service = WeatherEvidenceService(amap_client)
         if trip_planner_settings and trip_planner_settings.trip_planner_enabled:
-            poi_provider = trip_planner_settings.trip_planner_poi_provider
-            poi_client = (
-                FlyAIPoiSearchService(flyai_client) if poi_provider == "flyai" else amap_client
-            )
             self._standard_trip_planner = StandardTripPlanner(
                 collection_service=MapTripCollectionService(
                     amap_client,
-                    poi_client=poi_client,
-                    poi_provider=poi_provider,
                     poi_max_concurrency=trip_planner_settings.amap_poi_max_concurrency,
                     route_max_concurrency=trip_planner_settings.amap_route_max_concurrency,
                     poi_page_size=trip_planner_settings.amap_poi_page_size,

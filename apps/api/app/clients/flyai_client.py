@@ -384,7 +384,8 @@ class FlyAIClient:
                     "FlyAI CLI returned an empty stdout response."
                     if returncode == 0
                     else (
-                        self._safe_excerpt(stderr) or f"FlyAI CLI exited with status {returncode}."
+                        self._safe_excerpt(stderr)
+                        or f"FlyAI CLI exited with status {returncode}."
                     )
                 ),
                 self._safe_command(command),
@@ -413,7 +414,8 @@ class FlyAIClient:
                     "FlyAI CLI stdout was not valid JSON."
                     if returncode == 0
                     else (
-                        self._safe_excerpt(stderr) or f"FlyAI CLI exited with status {returncode}."
+                        self._safe_excerpt(stderr)
+                        or f"FlyAI CLI exited with status {returncode}."
                     )
                 ),
                 self._safe_command(command),
@@ -463,19 +465,10 @@ class FlyAIClient:
         # Some FlyAI commands write usable JSON and still return a non-zero process code.
         # Preserve that business result while retaining the failed process verdict.
         if returncode != 0 and business_status != "usable":
-            if provider_status == "success":
-                result = FlyAIResult(
-                    success=True,
-                    command=self._safe_command(command),
-                    data=self._sanitize_json(data),
-                    duration_ms=self._duration_ms(started),
-                    diagnostics=diagnostics,
-                )
-                self._log_execution(command, returncode, result, stderr)
-                return result
             result = self._failure(
                 self._classify_exit_error(stdout, stderr),
-                self._safe_excerpt(stderr) or f"FlyAI CLI exited with status {returncode}.",
+                self._safe_excerpt(stderr)
+                or f"FlyAI CLI exited with status {returncode}.",
                 self._safe_command(command),
                 started,
                 diagnostics=diagnostics,
@@ -546,11 +539,9 @@ class FlyAIClient:
         if success is False:
             return "failed"
         status = data.get("status")
-        if isinstance(status, int) and not isinstance(status, bool) and status == 0:
-            return "success"
         if isinstance(status, str):
             normalized = status.strip().casefold()
-            if normalized in {"0", "success", "succeeded", "ok", "completed"}:
+            if normalized in {"success", "succeeded", "ok", "completed"}:
                 return "success"
             if normalized in {"failed", "failure", "error", "rejected"}:
                 return "failed"

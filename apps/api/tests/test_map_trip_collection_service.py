@@ -170,29 +170,6 @@ async def test_collection_uses_fixed_poi_recall_and_only_final_adjacent_routes()
 
 
 @pytest.mark.asyncio
-async def test_collection_can_use_separate_poi_and_amap_route_clients() -> None:
-    poi_client = FakeMapClient(attractions=standard_attractions())
-    route_client = FakeMapClient(attractions=[])
-
-    evidence = await MapTripCollectionService(
-        route_client,
-        poi_client=poi_client,
-        poi_provider="flyai",
-    ).collect(
-        CityTripRequest(
-            destination_city="成都",
-            duration_days=1,
-            start_date=date(2026, 7, 25),
-        )
-    )
-
-    assert poi_client.search_queries
-    assert poi_client.route_queries == []
-    assert route_client.search_queries == []
-    assert len(route_client.route_queries) == len(evidence.days[0].route_legs)
-
-
-@pytest.mark.asyncio
 async def test_collection_filters_facilities_city_mismatches_and_fuzzy_duplicates() -> None:
     client = FakeMapClient(
         attractions=[
