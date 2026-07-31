@@ -69,9 +69,6 @@ _CANONICAL_ERROR_CODES = {
 class ToolExecutionContext:
     conversation_id: uuid.UUID
     assistant_message_id: uuid.UUID
-    agent_run_id: uuid.UUID | None = None
-    agent_task_id: uuid.UUID | None = None
-    agent_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,9 +500,6 @@ class ToolExecutor:
                 ToolCallLogEntry(
                     conversation_id=context.conversation_id,
                     assistant_message_id=context.assistant_message_id,
-                    agent_run_id=context.agent_run_id,
-                    agent_task_id=context.agent_task_id,
-                    agent_name=context.agent_name,
                     tool_call_id=call.tool_call_id,
                     tool_name=call.tool_name,
                     provider=result.metadata.provider,

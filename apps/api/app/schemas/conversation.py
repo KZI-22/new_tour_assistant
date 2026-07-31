@@ -6,7 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.schemas.agent_runtime import AgentDebugEvent
 from app.schemas.tool_execution import PlanningTraceEvent
 from app.schemas.trip_planning import PlanningSource
 
@@ -17,7 +16,7 @@ class ConversationMessageResponse(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
     status: Literal["streaming", "completed", "failed", "interrupted"]
-    debug_trace: list[PlanningTraceEvent | AgentDebugEvent] = Field(default_factory=list)
+    debug_trace: list[PlanningTraceEvent] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -33,9 +32,6 @@ class ConversationSummaryResponse(BaseModel):
 class ConversationToolCallResponse(BaseModel):
     id: UUID
     assistant_message_id: UUID
-    agent_run_id: UUID | None = None
-    agent_task_id: UUID | None = None
-    agent_name: str | None = None
     process_status: str | None = None
     process_return_code: int | None = None
     provider_status: str | None = None

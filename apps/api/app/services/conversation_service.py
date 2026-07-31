@@ -105,9 +105,6 @@ class ConversationService:
                 ConversationToolCallResponse(
                     id=item.id,
                     assistant_message_id=item.assistant_message_id,
-                    agent_run_id=item.agent_run_id,
-                    agent_task_id=item.agent_task_id,
-                    agent_name=item.agent_name,
                     process_status=item.process_status,
                     process_return_code=item.process_return_code,
                     provider_status=item.provider_status,

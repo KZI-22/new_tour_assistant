@@ -18,7 +18,6 @@ from app.core.model_registry import (
     UnavailableModelError,
     UnknownModelError,
 )
-from app.schemas.agent_runtime import AgentStatusEvent, AgentTraceEvent
 from app.schemas.chat import ChatRequest, HealthResponse, ModelListResponse
 from app.schemas.conversation import ConversationDetailResponse, ConversationSummaryResponse
 from app.schemas.tool_execution import (
@@ -54,7 +53,7 @@ def _event_text(event: ChatStreamEvent | str) -> str | None:
 
 
 def _event_trace(event: ChatStreamEvent | str) -> dict[str, object] | None:
-    if isinstance(event, (PlanningTraceEvent, AgentStatusEvent, AgentTraceEvent)):
+    if isinstance(event, PlanningTraceEvent):
         return event.model_dump(mode="json")
     return None
 

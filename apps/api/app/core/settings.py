@@ -72,9 +72,6 @@ class Settings:
     flyai_max_concurrency: int = 3
     max_tool_rounds: int = 5
     tool_execution_timeout_seconds: float = 130
-    multi_agent_enabled: bool = False
-    multi_agent_supervisor_timeout_seconds: float = 30
-    multi_agent_agent_timeout_seconds: float = 90
     amap_api_key: str | None = None
     amap_base_url: str = "https://restapi.amap.com"
     amap_timeout_seconds: float = 15
@@ -128,8 +125,6 @@ class Settings:
             "max_walk_distance_meters": self.max_walk_distance_meters,
             "max_transit_duration_minutes": self.max_transit_duration_minutes,
             "trip_planning_data_timeout_seconds": self.trip_planning_data_timeout_seconds,
-            "multi_agent_supervisor_timeout_seconds": (self.multi_agent_supervisor_timeout_seconds),
-            "multi_agent_agent_timeout_seconds": self.multi_agent_agent_timeout_seconds,
             "xhs_mcp_timeout_seconds": self.xhs_mcp_timeout_seconds,
             "xhs_min_post_content_chars": self.xhs_min_post_content_chars,
             "xhs_detail_candidate_limit": self.xhs_detail_candidate_limit,
@@ -243,13 +238,6 @@ def get_settings() -> Settings:
         flyai_max_concurrency=int(os.getenv("FLYAI_MAX_CONCURRENCY", "3")),
         max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "5")),
         tool_execution_timeout_seconds=float(os.getenv("TOOL_EXECUTION_TIMEOUT_SECONDS", "130")),
-        multi_agent_enabled=_environment_bool("MULTI_AGENT_ENABLED", False),
-        multi_agent_supervisor_timeout_seconds=float(
-            os.getenv("MULTI_AGENT_SUPERVISOR_TIMEOUT_SECONDS", "30")
-        ),
-        multi_agent_agent_timeout_seconds=float(
-            os.getenv("MULTI_AGENT_AGENT_TIMEOUT_SECONDS", "90")
-        ),
         amap_api_key=os.getenv("AMAP_API_KEY") or None,
         amap_base_url=os.getenv("AMAP_BASE_URL", "https://restapi.amap.com").rstrip("/"),
         amap_timeout_seconds=float(os.getenv("AMAP_TIMEOUT_SECONDS", "15")),

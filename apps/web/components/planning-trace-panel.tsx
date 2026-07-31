@@ -13,9 +13,9 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { AgentTraceUpdate, PlanningTraceUpdate } from "@/lib/api";
+import { PlanningTraceUpdate } from "@/lib/api";
 
-type TraceUpdate = PlanningTraceUpdate | AgentTraceUpdate;
+type TraceUpdate = PlanningTraceUpdate;
 
 type TracePost = {
   search_rank?: number;
@@ -182,7 +182,7 @@ function TraceData({ trace }: { trace: TraceUpdate }) {
 }
 
 function traceStep(trace: TraceUpdate): string {
-  return trace.type === "planning_trace" ? trace.step : trace.action;
+  return trace.step;
 }
 
 export function PlanningTracePanel({ traces }: { traces: TraceUpdate[] }) {
@@ -212,7 +212,7 @@ export function PlanningTracePanel({ traces }: { traces: TraceUpdate[] }) {
       >
         <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
           <Bug size={14} className="text-[var(--brand)]" />
-          Agent 调试视图
+          规划调试视图
           <span className="font-normal text-[var(--muted-light)]">
             {ordered.length} 个事件{totalPosts ? ` · ${totalPosts} 篇搜索结果` : ""}
           </span>

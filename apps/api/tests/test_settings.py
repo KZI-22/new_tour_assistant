@@ -65,20 +65,6 @@ def test_get_settings_reads_flyai_runtime_limits(monkeypatch: pytest.MonkeyPatch
     assert settings.tool_execution_timeout_seconds == 95
 
 
-def test_get_settings_reads_multi_agent_rollout_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("MULTI_AGENT_ENABLED", "true")
-    monkeypatch.setenv("MULTI_AGENT_SUPERVISOR_TIMEOUT_SECONDS", "12")
-    monkeypatch.setenv("MULTI_AGENT_AGENT_TIMEOUT_SECONDS", "45")
-
-    settings = get_settings()
-
-    assert settings.multi_agent_enabled is True
-    assert settings.multi_agent_supervisor_timeout_seconds == 12
-    assert settings.multi_agent_agent_timeout_seconds == 45
-
-
 def test_get_settings_reads_amap_and_request_context_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

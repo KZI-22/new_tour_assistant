@@ -25,9 +25,6 @@ class ToolCallLogEntry:
     error_code: str | None
     duration_ms: int
     provider_error_code: str | None = None
-    agent_run_id: uuid.UUID | None = None
-    agent_task_id: uuid.UUID | None = None
-    agent_name: str | None = None
     process_status: str | None = None
     process_return_code: int | None = None
     provider_status: str | None = None
@@ -67,9 +64,6 @@ class ToolCallLogService:
                 ToolCallLog(
                     conversation_id=entry.conversation_id,
                     assistant_message_id=entry.assistant_message_id,
-                    agent_run_id=entry.agent_run_id,
-                    agent_task_id=entry.agent_task_id,
-                    agent_name=entry.agent_name,
                     process_status=entry.process_status,
                     process_return_code=entry.process_return_code,
                     provider_status=entry.provider_status,
