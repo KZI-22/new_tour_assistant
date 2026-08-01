@@ -295,6 +295,13 @@ npm run dev
 
 访问 http://localhost:3000 。前端默认连接 `http://localhost:8000`，也可以在 `.env.local` 中修改 `NEXT_PUBLIC_API_BASE_URL`。
 
+旅行计划页在未配置地图 Key 时仍可展示分日路线并跳转高德。若需要内嵌交互地图，使用高德 Web 端（JS API）Key 配置：
+
+```dotenv
+NEXT_PUBLIC_AMAP_JS_KEY=your-js-api-key
+NEXT_PUBLIC_AMAP_SECURITY_CODE=your-security-js-code
+```
+
 ## 6. 运行检查
 
 后端：

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -159,6 +160,15 @@ class XhsLoginRequiredEvent(BaseModel):
     fallback_mode: Literal["map_weather"] | None = None
 
 
+class TravelPlanReadyEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["travel_plan_ready"] = "travel_plan_ready"
+    plan_id: UUID
+    version_id: UUID
+    version: int = Field(ge=1)
+
+
 type ChatStreamEvent = (
     MessageDeltaEvent
     | ToolCallEvent
@@ -166,6 +176,7 @@ type ChatStreamEvent = (
     | PlanningStageEvent
     | PlanningTraceEvent
     | XhsLoginRequiredEvent
+    | TravelPlanReadyEvent
 )
 
 
@@ -179,5 +190,6 @@ __all__ = [
     "ToolResult",
     "ToolResultEvent",
     "ToolResultMetadata",
+    "TravelPlanReadyEvent",
     "XhsLoginRequiredEvent",
 ]

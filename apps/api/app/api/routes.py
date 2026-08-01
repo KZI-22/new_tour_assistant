@@ -8,7 +8,7 @@ from contextlib import suppress
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from openai import AuthenticationError, RateLimitError
 
@@ -25,10 +25,15 @@ from app.schemas.tool_execution import (
     MessageDeltaEvent,
     PlanningTraceEvent,
 )
+from app.schemas.travel_plan import TravelPlanDetailResponse
 from app.services.agent_executor import AgentExecutionError
 from app.services.auth_service import AuthenticatedUser
 from app.services.conversation_service import ConversationNotFoundError, ConversationService
 from app.services.tool_execution import ToolExecutionContext
+from app.services.trip_plan_persistence_service import (
+    TripPlanNotFoundError,
+    TripPlanPersistenceService,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
@@ -64,6 +69,16 @@ def _conversation_service(request: Request) -> ConversationService:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Conversation storage is not configured.",
+        )
+    return service
+
+
+def _travel_plan_service(request: Request) -> TripPlanPersistenceService:
+    service = request.app.state.trip_plan_persistence_service
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Travel plan storage is not configured.",
         )
     return service
 
@@ -166,6 +181,29 @@ async def delete_conversation(
             detail="Conversation not found.",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/travel-plans/{plan_id}", response_model=TravelPlanDetailResponse)
+async def get_travel_plan(
+    plan_id: UUID,
+    request: Request,
+    response: Response,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    version: Annotated[int | None, Query(ge=1)] = None,
+) -> TravelPlanDetailResponse:
+    try:
+        plan = await _travel_plan_service(request).get_plan(
+            user.id,
+            plan_id,
+            version=version,
+        )
+    except TripPlanNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Travel plan not found.",
+        ) from exc
+    response.headers["Cache-Control"] = "private, no-store"
+    return plan
 
 
 @router.post("/chat/stream")

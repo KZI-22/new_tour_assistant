@@ -16,6 +16,7 @@ from app.schemas.trip_plan_snapshot import (
 )
 from app.schemas.trip_planning import CityTripRequest
 from app.services.trip_plan_persistence_service import (
+    TripPlanNotFoundError,
     TripPlanPersistenceService,
     TripPlanVersionArtifact,
 )
@@ -59,6 +60,18 @@ class FakeTripPlanVersionRepository:
     async def lock_conversation(self, *_: object) -> object:
         return object()
 
+    async def get_owned_plan(
+        self,
+        _: object,
+        *,
+        user_id: object,
+        plan_id: object,
+    ) -> TravelPlan | None:
+        del user_id
+        if self.plan is not None and self.plan.id == plan_id:
+            return self.plan
+        return None
+
     async def assistant_message_belongs_to_conversation(self, *_: object, **__: object) -> bool:
         return True
 
@@ -68,11 +81,7 @@ class FakeTripPlanVersionRepository:
         assistant_message_id: object,
     ) -> TravelPlanVersion | None:
         return next(
-            (
-                item
-                for item in self.versions
-                if item.assistant_message_id == assistant_message_id
-            ),
+            (item for item in self.versions if item.assistant_message_id == assistant_message_id),
             None,
         )
 
@@ -87,11 +96,7 @@ class FakeTripPlanVersionRepository:
         version: int,
     ) -> TravelPlanVersion | None:
         return next(
-            (
-                item
-                for item in self.versions
-                if item.plan_id == plan_id and item.version == version
-            ),
+            (item for item in self.versions if item.plan_id == plan_id and item.version == version),
             None,
         )
 
@@ -211,3 +216,16 @@ async def test_persistence_creates_immutable_parented_versions_and_is_idempotent
     assert second_version.snapshot_json["schema_version"] == "trip_plan.v1"
     assert second_version.presentation_context_json["trip"]["destination_city"] == "成都"
     assert second_version.rendered_markdown == "# 成都一日旅行方案"
+
+    loaded = await service.get_plan(
+        uuid4(),
+        first.plan_id,
+        version=1,
+    )
+    assert loaded.version_id == first.version_id
+    assert loaded.snapshot.request.core.destination_city == "成都"
+    assert loaded.narrative is not None
+    assert loaded.narrative.title == "成都一日旅行方案"
+
+    with pytest.raises(TripPlanNotFoundError):
+        await service.get_plan(uuid4(), uuid4())

@@ -27,6 +27,7 @@ from app.schemas.tool_execution import (
     MessageDeltaEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
+    TravelPlanReadyEvent,
 )
 from app.schemas.travel import (
     FlightSearchInput,
@@ -322,7 +323,7 @@ class _StandardTripPlanningRun:
         state: TripPlanningState,
         *,
         rendered_markdown: str,
-    ) -> AsyncIterator[PlanningStageEvent]:
+    ) -> AsyncIterator[ChatStreamEvent]:
         if self._version_writer is None or self._execution_context is None:
             return
 
@@ -366,6 +367,11 @@ class _StandardTripPlanningRun:
             "旅行规划版本已保存",
             "success",
             detail=f"版本 {saved.version}",
+        )
+        yield TravelPlanReadyEvent(
+            plan_id=saved.plan_id,
+            version_id=saved.version_id,
+            version=saved.version,
         )
 
     def _events_for_update(

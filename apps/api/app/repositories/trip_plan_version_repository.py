@@ -9,6 +9,22 @@ from app.db.models import Conversation, Message, TravelPlan, TravelPlanVersion
 
 
 class TripPlanVersionRepository:
+    async def get_owned_plan(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+    ) -> TravelPlan | None:
+        return await session.scalar(
+            select(TravelPlan)
+            .join(Conversation, TravelPlan.conversation_id == Conversation.id)
+            .where(
+                TravelPlan.id == plan_id,
+                Conversation.user_id == user_id,
+            )
+        )
+
     async def lock_conversation(
         self,
         session: AsyncSession,

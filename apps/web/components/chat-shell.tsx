@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  MapPinned,
   MessageSquareText,
   Plus,
   Sparkles,
@@ -19,6 +20,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
@@ -38,6 +40,7 @@ import {
   ToolResultUpdate,
   PlanningStageUpdate,
   PlanningTraceUpdate,
+  TravelPlanReference,
   XhsLoginRequiredUpdate,
 } from "@/lib/api";
 
@@ -53,6 +56,7 @@ type ChatMessage = ApiChatMessage & {
   tools?: ToolStatus[];
   planningStages?: PlanningStageUpdate[];
   debugTrace?: PlanningTraceUpdate[];
+  travelPlan?: TravelPlanReference;
   xhsLogin?: XhsLoginRequiredUpdate & { status: "pending" | "failed" | "skipped" };
 };
 
@@ -202,6 +206,7 @@ export function ChatShell() {
               role: message.role,
               content: message.content,
               debugTrace: trace,
+              travelPlan: message.travel_plan ?? undefined,
               tools: (conversation.tool_calls ?? [])
                 .filter((tool) => tool.assistant_message_id === message.id)
                 .map((tool) => ({
@@ -394,6 +399,13 @@ export function ChatShell() {
                 message.id === assistantId
                   ? { ...message, xhsLogin: { ...update, status: "pending" } }
                   : message,
+              ),
+            );
+          },
+          onTravelPlanReady: (update: TravelPlanReference) => {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantId ? { ...message, travelPlan: update } : message,
               ),
             );
           },
@@ -814,9 +826,32 @@ export function ChatShell() {
                             </div>
                           )}
                           {message.content ? (
-                            <div className="markdown-body">
-                              <AssistantMarkdown content={message.content} />
-                            </div>
+                            <>
+                              <div className="markdown-body">
+                                <AssistantMarkdown content={message.content} />
+                              </div>
+                              {message.travelPlan && (
+                                <Link
+                                  className="mt-5 flex w-full items-center justify-between gap-4 rounded-2xl border border-[var(--brand)]/15 bg-[var(--brand-soft)] px-4 py-3.5 text-left text-[var(--brand)] transition-colors hover:border-[var(--brand)]/25 hover:bg-[var(--brand-soft)]/70"
+                                  href={`/plans/${message.travelPlan.plan_id}?version=${message.travelPlan.version}`}
+                                >
+                                  <span className="flex min-w-0 items-center gap-3">
+                                    <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--brand)] text-white">
+                                      <MapPinned size={17} />
+                                    </span>
+                                    <span className="min-w-0">
+                                      <span className="block text-sm font-semibold text-[var(--ink)]">
+                                        打开旅行计划
+                                      </span>
+                                      <span className="mt-0.5 block text-xs text-[var(--muted)]">
+                                        地图、分日路线与出行候选 · 版本 {message.travelPlan.version}
+                                      </span>
+                                    </span>
+                                  </span>
+                                  <ArrowUp className="rotate-45" size={16} />
+                                </Link>
+                              )}
+                            </>
                           ) : (
                             <div className="flex h-7 items-center gap-1" aria-label="正在思考">
                               <span className="thinking-dot" />

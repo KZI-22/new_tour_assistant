@@ -57,6 +57,7 @@ export type PersistedMessage = ApiChatMessage & {
   sequence: number;
   status: "streaming" | "completed" | "failed" | "interrupted";
   debug_trace: PlanningTraceUpdate[];
+  travel_plan?: TravelPlanReference | null;
   created_at: string;
 };
 
@@ -156,6 +157,196 @@ export type XhsLoginRequiredUpdate = {
   fallback_mode?: "map_weather" | null;
 };
 
+export type TravelPlanReference = {
+  plan_id: string;
+  version_id: string;
+  version: number;
+};
+
+export type TripPlanCoordinate = {
+  longitude: number;
+  latitude: number;
+  coordinate_system: "GCJ02";
+  source: "amap" | "amap_conversion";
+};
+
+export type TripPlanPlace = {
+  plan_item_id: string;
+  provider: "amap";
+  provider_place_id: string;
+  reference_id: string;
+  name: string;
+  address: string;
+  poi_type: string;
+  location: TripPlanCoordinate;
+  adcode: string | null;
+  city: string | null;
+  source_query: string;
+  source_rank: number;
+  candidate_score: number;
+  estimated_visit_minutes: number;
+  matched_preferences: string[];
+  selection_reasons: string[];
+};
+
+export type TripPlanRouteLeg = {
+  origin_plan_item_id: string;
+  destination_plan_item_id: string;
+  mode: "walking" | "transit" | "driving" | "estimated" | "unverified";
+  distance_meters: number | null;
+  duration_seconds: number | null;
+  transfer_count: number | null;
+  route_summary: string | null;
+  is_fallback: boolean;
+};
+
+export type TripPlanWeather = {
+  provider: "amap";
+  queried_at: string | null;
+  coverage: "available" | "unavailable";
+  day_weather: string | null;
+  night_weather: string | null;
+  day_temperature: string | null;
+  night_temperature: string | null;
+  day_wind_direction: string | null;
+  night_wind_direction: string | null;
+  day_wind_power: string | null;
+  night_wind_power: string | null;
+  advice: string[];
+  unavailable_reason: string | null;
+};
+
+export type TripPlanDay = {
+  day_id: string;
+  day_index: number;
+  date: string;
+  places: TripPlanPlace[];
+  route_legs: TripPlanRouteLeg[];
+  weather: TripPlanWeather;
+  estimated_visit_minutes: number;
+  estimated_transport_minutes: number;
+  warnings: string[];
+};
+
+export type TransportOption = {
+  kind: "transport";
+  option_id: string;
+  provider: "flyai";
+  mode: "flight" | "train";
+  direction: "outbound" | "return";
+  journey_type: string | null;
+  transport_names: string[];
+  transport_numbers: string[];
+  departure_station: string;
+  departure_at: string;
+  arrival_station: string;
+  arrival_at: string;
+  duration_minutes: number | null;
+  seat_classes: string[];
+  price_amount: string | number | null;
+  currency: "CNY" | null;
+  detail_url: string | null;
+  display_text: string;
+};
+
+export type HotelOption = {
+  kind: "hotel";
+  option_id: string;
+  provider: "flyai";
+  provider_hotel_id: string | null;
+  name: string;
+  star: string | null;
+  price_amount: string | number | null;
+  currency: "CNY" | null;
+  nearby_poi: string | null;
+  address: string | null;
+  detail_url: string | null;
+  display_text: string;
+};
+
+type CapabilityStatus = "skipped" | "usable" | "empty" | "failed";
+
+export type TravelPlanSnapshot = {
+  schema_version: "trip_plan.v1";
+  request: {
+    core: {
+      destination_city: string | null;
+      duration_days: number | null;
+      start_date: string | null;
+      interests: string[];
+      food_preferences: string[];
+    };
+  };
+  capabilities: {
+    derivations: Array<{
+      field: string;
+      value: string;
+      source: string;
+      explanation: string;
+    }>;
+  };
+  days: TripPlanDay[];
+  transport: {
+    enabled: boolean;
+    status: CapabilityStatus;
+    queried_at: string | null;
+    modes: Array<"flight" | "train">;
+    journey_scope: string;
+    origin: string | null;
+    destination: string | null;
+    outbound_date: string | null;
+    return_date: string | null;
+    options: TransportOption[];
+    warnings: string[];
+  };
+  hotel: {
+    enabled: boolean;
+    status: CapabilityStatus;
+    queried_at: string | null;
+    destination: string | null;
+    check_in_date: string | null;
+    check_out_date: string | null;
+    nearby_poi: string | null;
+    options: HotelOption[];
+    warnings: string[];
+  };
+  overall_status: "usable" | "partial" | "failed";
+  warnings: string[];
+  source_metadata: {
+    planning_run_id: string;
+    generated_at: string;
+    map_queried_at: string | null;
+    weather_queried_at: string | null;
+    transport_queried_at: string | null;
+    hotel_queried_at: string | null;
+  };
+};
+
+export type TripNarrative = {
+  title: string;
+  summary: string;
+  days: Array<{
+    day_index: number;
+    date: string;
+    theme: string;
+    places: Array<{ reference_id: string; recommendation_reason: string }>;
+    weather_advice: string[];
+    tips: string[];
+  }>;
+  practical_tips: string[];
+  warnings: string[];
+};
+
+export type TravelPlanDetail = TravelPlanReference & {
+  title: string;
+  status: "draft" | "active" | "archived";
+  current_version: number;
+  change_summary: string | null;
+  created_at: string;
+  snapshot: TravelPlanSnapshot;
+  narrative: TripNarrative | null;
+};
+
 type StreamCallbacks = {
   onToken: (delta: string) => void;
   onConversation?: (conversation: {
@@ -168,6 +359,7 @@ type StreamCallbacks = {
   onPlanningStage?: (update: PlanningStageUpdate) => void;
   onPlanningTrace?: (update: PlanningTraceUpdate) => void;
   onXhsLoginRequired?: (update: XhsLoginRequiredUpdate) => void;
+  onTravelPlanReady?: (update: TravelPlanReference) => void;
   onDone?: () => void;
 };
 
@@ -346,6 +538,20 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   }
 }
 
+export async function fetchTravelPlan(
+  planId: string,
+  version?: number,
+  signal?: AbortSignal,
+): Promise<TravelPlanDetail> {
+  const search = version ? `?version=${encodeURIComponent(version)}` : "";
+  const response = await authenticatedFetch(
+    `${API_BASE_URL}/api/v1/travel-plans/${encodeURIComponent(planId)}${search}`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as TravelPlanDetail;
+}
+
 function parseEventFrame(frame: string): { event: string; data: unknown } | null {
   let event = "message";
   const dataLines: string[] = [];
@@ -487,6 +693,11 @@ export async function streamChat(
         data.message
       ) {
         callbacks.onXhsLoginRequired?.(data as XhsLoginRequiredUpdate);
+      }
+    } else if (parsed.event === "travel_plan_ready") {
+      const data = parsed.data as Partial<TravelPlanReference>;
+      if (data.plan_id && data.version_id && typeof data.version === "number") {
+        callbacks.onTravelPlanReady?.(data as TravelPlanReference);
       }
     } else if (parsed.event === "done") {
       callbacks.onDone?.();

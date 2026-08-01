@@ -20,6 +20,7 @@ from app.schemas.tool_execution import (
     MessageDeltaEvent,
     PlanningStageEvent,
     PlanningTraceEvent,
+    TravelPlanReadyEvent,
 )
 from app.schemas.travel import FlyAIResult
 from app.schemas.trip_planning import (
@@ -365,6 +366,9 @@ async def test_completed_standard_plan_is_persisted_as_a_version() -> None:
         ("running", None),
         ("success", "版本 1"),
     ]
+    ready_events = [event for event in events if isinstance(event, TravelPlanReadyEvent)]
+    assert len(ready_events) == 1
+    assert ready_events[0].version == 1
 
 
 @pytest.mark.asyncio

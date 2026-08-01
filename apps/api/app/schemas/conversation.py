@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.schemas.tool_execution import PlanningTraceEvent
+from app.schemas.travel_plan import TravelPlanReference
 from app.schemas.trip_planning import PlanningSource
 
 
@@ -17,6 +18,7 @@ class ConversationMessageResponse(BaseModel):
     content: str
     status: Literal["streaming", "completed", "failed", "interrupted"]
     debug_trace: list[PlanningTraceEvent] = Field(default_factory=list)
+    travel_plan: TravelPlanReference | None = None
     created_at: datetime
 
 

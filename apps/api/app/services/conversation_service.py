@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, Message, ToolCallLog
+from app.db.models import Conversation, Message, ToolCallLog, TravelPlanVersion
 from app.schemas.chat import ChatMessage
 from app.schemas.conversation import (
     ConversationDetailResponse,
@@ -16,6 +16,7 @@ from app.schemas.conversation import (
     ConversationSummaryResponse,
     ConversationToolCallResponse,
 )
+from app.schemas.travel_plan import TravelPlanReference
 from app.schemas.trip_planning import PlanningSource
 
 
@@ -84,6 +85,26 @@ class ConversationService:
                 .where(Message.conversation_id == conversation_id)
                 .order_by(Message.sequence)
             )
+            persisted_messages = list(result)
+            assistant_message_ids = [
+                item.id for item in persisted_messages if item.role == "assistant"
+            ]
+            versions_by_message: dict[uuid.UUID, TravelPlanReference] = {}
+            if assistant_message_ids:
+                version_result = await session.scalars(
+                    select(TravelPlanVersion).where(
+                        TravelPlanVersion.assistant_message_id.in_(assistant_message_ids)
+                    )
+                )
+                versions_by_message = {
+                    item.assistant_message_id: TravelPlanReference(
+                        plan_id=item.plan_id,
+                        version_id=item.id,
+                        version=item.version,
+                    )
+                    for item in version_result
+                    if item.assistant_message_id is not None and item.validation_status == "valid"
+                }
             messages = [
                 ConversationMessageResponse(
                     id=item.id,
@@ -92,9 +113,10 @@ class ConversationService:
                     content=item.content,
                     status=item.status,
                     debug_trace=item.debug_trace_json or [],
+                    travel_plan=versions_by_message.get(item.id),
                     created_at=item.created_at,
                 )
-                for item in result
+                for item in persisted_messages
             ]
             tool_result = await session.scalars(
                 select(ToolCallLog)

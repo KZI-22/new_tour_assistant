@@ -9,12 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import TravelPlanVersion
 from app.repositories.trip_plan_version_repository import TripPlanVersionRepository
+from app.schemas.travel_plan import TravelPlanDetailResponse
 from app.schemas.trip_itinerary import TripNarrativePlan
 from app.schemas.trip_plan_snapshot import TripPlanSnapshot
 from app.schemas.trip_presentation import TripPresentationContext
 
 
 class TripPlanPersistenceError(RuntimeError):
+    pass
+
+
+class TripPlanNotFoundError(LookupError):
     pass
 
 
@@ -28,9 +33,7 @@ class TripPlanVersionArtifact:
     rendered_markdown: str
     user_instruction: str
     edit_operations: list[dict[str, object]] = field(default_factory=list)
-    invalidation_scope: dict[str, object] = field(
-        default_factory=lambda: {"scope": "full_replan"}
-    )
+    invalidation_scope: dict[str, object] = field(default_factory=lambda: {"scope": "full_replan"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,48 @@ class TripPlanPersistenceService:
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository or TripPlanVersionRepository()
+
+    async def get_plan(
+        self,
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        *,
+        version: int | None = None,
+    ) -> TravelPlanDetailResponse:
+        async with self._session_factory() as session:
+            plan = await self._repository.get_owned_plan(
+                session,
+                user_id=user_id,
+                plan_id=plan_id,
+            )
+            if plan is None or plan.current_version < 1:
+                raise TripPlanNotFoundError(str(plan_id))
+
+            selected_version = version or plan.current_version
+            plan_version = await self._repository.get_version(
+                session,
+                plan_id=plan.id,
+                version=selected_version,
+            )
+            if plan_version is None or plan_version.validation_status != "valid":
+                raise TripPlanNotFoundError(f"{plan_id}:v{selected_version}")
+
+            return TravelPlanDetailResponse(
+                plan_id=plan.id,
+                version_id=plan_version.id,
+                version=plan_version.version,
+                title=plan.title,
+                status=plan.status,
+                current_version=plan.current_version,
+                change_summary=plan_version.change_summary,
+                created_at=plan_version.created_at,
+                snapshot=TripPlanSnapshot.model_validate(plan_version.snapshot_json),
+                narrative=(
+                    TripNarrativePlan.model_validate(plan_version.narrative_json)
+                    if plan_version.narrative_json is not None
+                    else None
+                ),
+            )
 
     async def save_completed_version(
         self,
@@ -174,6 +219,7 @@ def _change_summary(user_instruction: str) -> str:
 
 __all__ = [
     "SavedTripPlanVersion",
+    "TripPlanNotFoundError",
     "TripPlanPersistenceError",
     "TripPlanPersistenceService",
     "TripPlanVersionArtifact",

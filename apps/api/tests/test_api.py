@@ -15,6 +15,7 @@ from app.schemas.tool_execution import (
     PlanningTraceEvent,
     ToolCallEvent,
     ToolResultEvent,
+    TravelPlanReadyEvent,
     XhsLoginRequiredEvent,
 )
 from app.services.agent_executor import ToolLoopLimitError
@@ -109,7 +110,9 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
             *,
             planning_source: str,
             execution_context: ToolExecutionContext,
-        ) -> AsyncIterator[MessageDeltaEvent | PlanningStageEvent | PlanningTraceEvent]:
+        ) -> AsyncIterator[
+            MessageDeltaEvent | PlanningStageEvent | PlanningTraceEvent | TravelPlanReadyEvent
+        ]:
             assert model_id == "test-model"
             assert planning_source == "standard"
             assert messages
@@ -129,6 +132,11 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
             )
             yield MessageDeltaEvent(delta="你")
             yield MessageDeltaEvent(delta="好")
+            yield TravelPlanReadyEvent(
+                plan_id=uuid.UUID("30000000-0000-0000-0000-000000000001"),
+                version_id=uuid.UUID("40000000-0000-0000-0000-000000000001"),
+                version=1,
+            )
 
     class FakeConversationService:
         finished: tuple[uuid.UUID, str, str, list[dict[str, object]]] | None = None
@@ -186,11 +194,76 @@ def test_stream_chat_returns_sse_events(tmp_path: Path) -> None:
     assert 'event: planning_trace\ndata: {"type":"planning_trace"' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"你"}' in response.text
     assert 'event: message_delta\ndata: {"type":"message_delta","delta":"好"}' in response.text
+    assert 'event: travel_plan_ready\ndata: {"type":"travel_plan_ready"' in response.text
     assert 'event: message_end\ndata: {"type":"message_end"' in response.text
     assert f'event: done\ndata: {{"conversation_id":"{conversation_id}"}}' in response.text
     assert conversation_service.finished is not None
     assert conversation_service.finished[:3] == (assistant_message_id, "你好", "completed")
     assert conversation_service.finished[3][0]["data"] == {"keyword": "你好 2日游 攻略"}
+
+
+def test_get_travel_plan_returns_owned_version(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    plan_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+
+    class FakeTravelPlanService:
+        async def get_plan(
+            self,
+            user_id: uuid.UUID,
+            requested_plan_id: uuid.UUID,
+            *,
+            version: int | None,
+        ) -> dict[str, object]:
+            assert user_id == _TEST_USER.id
+            assert requested_plan_id == plan_id
+            assert version == 2
+            return {
+                "plan_id": plan_id,
+                "version_id": version_id,
+                "version": 2,
+                "title": "成都3日旅行方案",
+                "status": "active",
+                "current_version": 2,
+                "change_summary": "更新旅游规划",
+                "created_at": "2026-08-01T08:00:00Z",
+                "snapshot": {
+                    "request": {
+                        "core": {
+                            "destination_city": "成都",
+                            "duration_days": 3,
+                            "start_date": "2026-08-03",
+                        }
+                    },
+                    "capabilities": {},
+                    "days": [],
+                    "transport": {
+                        "enabled": False,
+                        "status": "skipped",
+                        "query": {"enabled": False},
+                        "journey_scope": "unspecified",
+                    },
+                    "hotel": {
+                        "enabled": False,
+                        "status": "skipped",
+                        "query": {"enabled": False},
+                    },
+                    "overall_status": "usable",
+                    "source_metadata": {
+                        "planning_run_id": "run-api-test",
+                        "generated_at": "2026-08-01T08:00:00Z",
+                    },
+                },
+                "narrative": None,
+            }
+
+    client.app.state.trip_plan_persistence_service = FakeTravelPlanService()
+    response = client.get(f"/api/v1/travel-plans/{plan_id}?version=2")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json()["plan_id"] == str(plan_id)
+    assert response.json()["snapshot"]["request"]["core"]["destination_city"] == "成都"
 
 
 def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Path) -> None:
@@ -589,6 +662,7 @@ def test_private_routes_reject_missing_authentication(tmp_path: Path) -> None:
     client.app.state.auth_service = RejectingAuthService()
 
     assert client.get("/api/v1/conversations").status_code == 401
+    assert client.get(f"/api/v1/travel-plans/{uuid.uuid4()}").status_code == 401
     assert (
         client.post(
             "/api/v1/chat/stream",
