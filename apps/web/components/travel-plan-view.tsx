@@ -70,6 +70,18 @@ type AmapRouteServiceConstructor = new (options: {
   showTraffic?: boolean;
 }) => AmapRouteService;
 
+type AmapServiceResult = {
+  info?: string;
+  infocode?: string | number;
+};
+
+type AmapDistrictSearchService = {
+  search: (
+    keyword: string,
+    callback: (status: string, result: AmapServiceResult | string) => void,
+  ) => void;
+};
+
 type AmapApi = {
   Map: new (
     container: HTMLElement,
@@ -92,6 +104,7 @@ type AmapApi = {
   plugin: (plugins: string | string[], callback: () => void) => void;
   Walking?: AmapRouteServiceConstructor;
   Driving?: AmapRouteServiceConstructor;
+  DistrictSearch?: new (options: { subdistrict: number; extensions: "base" }) => AmapDistrictSearchService;
 };
 
 declare global {
@@ -102,6 +115,7 @@ declare global {
 }
 
 let amapLoader: Promise<AmapApi> | null = null;
+let amapValidation: { key: string; promise: Promise<void> } | null = null;
 
 function loadAmap(key: string, securityCode?: string): Promise<AmapApi> {
   if (window.AMap) return Promise.resolve(window.AMap);
@@ -141,6 +155,59 @@ function loadAmap(key: string, securityCode?: string): Promise<AmapApi> {
     throw reason;
   });
   return amapLoader;
+}
+
+function amapValidationError(result: AmapServiceResult | string): Error {
+  if (typeof result === "string") return new Error("高德 JS API 鉴权失败，请检查 Key 配置。");
+  const code = result.infocode === undefined ? null : String(result.infocode);
+  if (code === "10009" || result.info === "USERKEY_PLAT_NOMATCH") {
+    return new Error(
+      "高德鉴权失败：NEXT_PUBLIC_AMAP_JS_KEY 不是“Web端（JS API）”Key（10009 USERKEY_PLAT_NOMATCH）。请在高德控制台新建对应平台的 Key，并填写它配套的安全密钥。",
+    );
+  }
+  const providerDetail = [code, result.info].filter(Boolean).join(" / ");
+  return new Error(
+    providerDetail
+      ? `高德 JS API 鉴权失败（${providerDetail}），请检查 Key、安全密钥和域名白名单。`
+      : "高德 JS API 鉴权失败，请检查 Key、安全密钥和域名白名单。",
+  );
+}
+
+function validateAmapKey(AMap: AmapApi, key: string): Promise<void> {
+  if (amapValidation?.key === key) return amapValidation.promise;
+
+  const validation = new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(
+      () => reject(new Error("高德 JS API 鉴权检查超时，请检查网络连接。")),
+      10_000,
+    );
+    try {
+      AMap.plugin("AMap.DistrictSearch", () => {
+        try {
+          const DistrictSearch = AMap.DistrictSearch;
+          if (!DistrictSearch) throw new Error("高德行政区查询插件未加载。");
+          const service = new DistrictSearch({ subdistrict: 0, extensions: "base" });
+          service.search("北京市", (status, result) => {
+            window.clearTimeout(timeoutId);
+            if (status === "complete") resolve();
+            else reject(amapValidationError(result));
+          });
+        } catch (reason) {
+          window.clearTimeout(timeoutId);
+          reject(reason);
+        }
+      });
+    } catch (reason) {
+      window.clearTimeout(timeoutId);
+      reject(reason);
+    }
+  });
+  const checked = validation.catch((reason: unknown) => {
+    amapValidation = null;
+    throw reason;
+  });
+  amapValidation = { key, promise: checked };
+  return checked;
 }
 
 function formatDate(value: string | null): string {
@@ -858,8 +925,13 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
     setMapError(null);
 
     loadAmap(key, securityCode)
+      .then(async (AMap) => {
+        if (!active) return null;
+        await validateAmapKey(AMap, key);
+        return AMap;
+      })
       .then((AMap) => {
-        if (!active || !hostRef.current) return;
+        if (!AMap || !active || !hostRef.current) return;
         map = new AMap.Map(hostRef.current, {
           zoom: 12,
           viewMode: "2D",
