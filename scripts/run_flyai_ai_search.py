@@ -21,6 +21,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 API_SOURCE_ROOT = PROJECT_ROOT / "apps" / "api"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "fliai.md"
 DEFAULT_TIMEOUT_SECONDS = 130.0
+ITINERARY_PROMPT_TEMPLATE = """任务：仅根据用户输入，生成逐日景点安排。
+
+忽略且禁止输出：酒店、航班、火车票、住宿、餐饮、购物、门票、演出、交通、预算、链接、前言、总结、提示和解释。
+
+严格只输出合法 JSON，不能使用 Markdown 代码块，不能输出 JSON 以外的任何文字。
+返回结构必须完全符合：
+
+{
+  "days": [
+    {
+      "day": 1,
+      "attractions": [
+        {"name": "景点名称"},
+        {"name": "景点名称"}
+      ]
+    }
+  ]
+}
+
+要求：
+1. `days` 数量必须等于用户明确提出的游玩天数。
+2. `day` 从 1 连续递增。
+3. 每天只保留 2 至 4 个景点。
+4. 不确定的景点不要编造。
+5. 用户未给出天数时，返回一个空 `days` 数组。
+
+用户输入：
+{user_input}
+"""
 
 if str(API_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(API_SOURCE_ROOT))
@@ -64,6 +93,12 @@ def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+def build_itinerary_prompt(user_input: str) -> str:
+    """Embed the variable user request in the fixed FlyAI itinerary contract."""
+
+    return ITINERARY_PROMPT_TEMPLATE.replace("{user_input}", user_input)
+
+
 def append_result(output_path: Path, query: str, payload: dict[str, Any]) -> None:
     """Append one self-contained record without rewriting prior user results."""
 
@@ -86,13 +121,14 @@ def append_result(output_path: Path, query: str, payload: dict[str, Any]) -> Non
         output_file.write(record)
 
 
-async def run_query(query: str, timeout_seconds: float) -> dict[str, Any]:
+async def run_query(user_input: str, timeout_seconds: float) -> dict[str, Any]:
     cli_path = os.getenv("FLYAI_CLI_PATH") or None
     client = FlyAIClient(
         cli_path=cli_path,
         default_timeout_seconds=timeout_seconds,
     )
-    return (await client.ai_search(query, timeout_seconds=timeout_seconds)).model_dump(mode="json")
+    prompt = build_itinerary_prompt(user_input)
+    return (await client.ai_search(prompt, timeout_seconds=timeout_seconds)).model_dump(mode="json")
 
 
 def print_result(payload: dict[str, Any]) -> None:
@@ -101,6 +137,14 @@ def print_result(payload: dict[str, Any]) -> None:
         return
 
     print(f"FlyAI 查询失败：{payload.get('error_message')}", file=sys.stderr)
+
+
+def configure_utf8_streams() -> None:
+    """Allow Chinese and emoji provider content to print on Windows consoles."""
+
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 async def async_main() -> int:
@@ -118,6 +162,7 @@ async def async_main() -> int:
 
 
 def main() -> None:
+    configure_utf8_streams()
     try:
         raise SystemExit(asyncio.run(async_main()))
     except ValueError as exc:
