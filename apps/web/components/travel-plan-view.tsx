@@ -37,7 +37,7 @@ import {
 
 type AmapMapInstance = {
   add: (overlays: object[]) => void;
-  fitView: (overlays?: object[], immediately?: boolean, padding?: number[]) => void;
+  setFitView: (overlays?: object[], immediately?: boolean, padding?: number[]) => void;
   on: (event: "complete", handler: () => void) => void;
   destroy: () => void;
 };
@@ -906,7 +906,7 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
           );
         }
         map.add(overlays);
-        map.fitView(markers, false, [72, 52, 72, 52]);
+        map.setFitView(markers, false, [72, 52, 72, 52]);
       })
       .catch((reason: unknown) => {
         if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
@@ -950,7 +950,7 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
     if (mapStatus !== "ready" || !map || !AMap) return;
     if (selectedPlaces.length !== 2) {
       const markers = [...markersRef.current.values()];
-      if (markers.length > 0) map.fitView(markers, false, [72, 52, 72, 52]);
+      if (markers.length > 0) map.setFitView(markers, false, [72, 52, 72, 52]);
       return;
     }
 
