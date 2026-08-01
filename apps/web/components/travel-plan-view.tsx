@@ -85,7 +85,7 @@ type AmapDistrictSearchService = {
 type AmapApi = {
   Map: new (
     container: HTMLElement,
-    options: { zoom: number; viewMode: "2D"; mapStyle: string },
+    options: { zoom: number; viewMode: "2D"; mapStyle: string; resizeEnable: boolean },
   ) => AmapMapInstance;
   Marker: new (options: {
     position: [number, number];
@@ -936,6 +936,7 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
           zoom: 12,
           viewMode: "2D",
           mapStyle: "amap://styles/whitesmoke",
+          resizeEnable: true,
         });
         mapRef.current = map;
         amapRef.current = AMap;
@@ -1144,8 +1145,8 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
         <MapPinned className="text-[#0f766e]" size={18} />
       </div>
 
-      <div className="relative h-[340px] sm:h-[420px] lg:h-[520px]">
-        <div aria-label="高德行程地图" className="absolute inset-0" ref={hostRef} />
+      <div className="travel-plan-map-frame">
+        <div aria-label="高德行程地图" className="travel-plan-map-canvas" ref={hostRef} />
         {loadingMap && (
           <div className="absolute inset-0 grid place-items-center bg-[#edf3f1] text-xs text-[#697586]">
             <span className="flex items-center gap-2">
