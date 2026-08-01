@@ -244,24 +244,32 @@ def test_remote_low_confidence_other_poi_is_rejected_before_selection() -> None:
     assert "超过 20 公里" in rejected[0].reason
 
 
-def test_scoring_and_mmr_selection_are_deterministic_and_diverse() -> None:
+def test_selection_keeps_higher_scoring_same_type_attractions() -> None:
     candidates = [
-        candidate("museum-1", 118.80, score=0, poi_type="科教文化服务;博物馆"),
-        candidate("museum-2", 118.81, score=0, poi_type="科教文化服务;博物馆"),
-        candidate("park", 118.82, score=0, poi_type="风景名胜;公园广场"),
-        candidate("street", 118.83, score=0, poi_type="风景名胜;特色街区"),
+        candidate("museum-1", 118.80, score=100, poi_type="科教文化服务;博物馆"),
+        candidate("museum-2", 118.81, score=99, poi_type="科教文化服务;博物馆"),
+        candidate("museum-3", 118.82, score=98, poi_type="科教文化服务;博物馆"),
+        candidate("park", 118.83, score=97, poi_type="风景名胜;公园广场"),
+        candidate("street", 118.84, score=96, poi_type="风景名胜;特色街区"),
     ]
-    for index, item in enumerate(candidates):
-        item.search_ranks = {"景点": index + 1, "城市地标": index + 2}
-        item.base_hits = 2
-    score_candidates(candidates)
+    for item, normalized_name in zip(
+        candidates,
+        ["甲馆", "乙馆", "丙馆", "人民公园", "文化街区"],
+        strict=True,
+    ):
+        item.normalized_name = normalized_name
 
     selected, excluded = select_diverse_candidates(candidates, 1)
 
     assert len(selected) == 4
-    assert not excluded
     assert selected == select_diverse_candidates(candidates, 1)[0]
-    assert len({item.attraction_type for item in selected[:3]}) >= 2
+    assert [item.place.poi_id for item in selected] == [
+        "museum-1",
+        "museum-2",
+        "museum-3",
+        "park",
+    ]
+    assert [item.place.poi_id for item in excluded] == ["street"]
 
 
 def test_fame_scoring_prefers_general_anchor_evidence_over_narrow_query_rating() -> None:

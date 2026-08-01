@@ -484,7 +484,6 @@ def select_diverse_candidates(
     while remaining and len(selected) < target:
 
         def mmr(candidate: AttractionCandidate) -> tuple[float, float, str]:
-            same_type = sum(item.attraction_type == candidate.attraction_type for item in selected)
             name_similarity = max(
                 (
                     SequenceMatcher(
@@ -496,7 +495,6 @@ def select_diverse_candidates(
                 ),
                 default=0.0,
             )
-            type_penalty = same_type * 5.0
             similarity_penalty = max(0.0, name_similarity - 0.65) * 20
             long_visit_penalty = (
                 3.0
@@ -505,7 +503,7 @@ def select_diverse_candidates(
                 else 0.0
             )
             return (
-                candidate.score - type_penalty - similarity_penalty - long_visit_penalty,
+                candidate.score - similarity_penalty - long_visit_penalty,
                 candidate.score,
                 candidate.place.poi_id,
             )
@@ -659,11 +657,7 @@ class DailyClusterPlanner:
     ) -> float:
         if not group:
             return 0.0
-        nearest = min(haversine_km(candidate.place, item.place) for item in group)
-        type_penalty = (
-            sum(item.attraction_type == candidate.attraction_type for item in group) * 1.5
-        )
-        return nearest + type_penalty
+        return min(haversine_km(candidate.place, item.place) for item in group)
 
     def _improve_by_swaps(self, groups: list[list[AttractionCandidate]]) -> None:
         distance_cache: dict[tuple[str, str], float] = {}
@@ -682,7 +676,6 @@ class DailyClusterPlanner:
                     distance(left, right) for left, right in itertools.combinations(group, 2)
                 )
                 compactness = sum(pair_distances) / max(1, len(group) - 1)
-                type_repeats = len(group) - len({item.attraction_type for item in group})
                 visit_minutes = sum(item.estimated_visit_minutes for item in group)
                 transport_minutes = sum(
                     straight_line_transport_minutes(item)
@@ -692,7 +685,7 @@ class DailyClusterPlanner:
                     0,
                     visit_minutes + transport_minutes - DAY_EFFECTIVE_BUDGET_MINUTES,
                 )
-                cost_cache[key] = compactness + type_repeats * 3 + over_budget * 0.2
+                cost_cache[key] = compactness + over_budget * 0.2
             return cost_cache[key]
 
         def total_cost(current_groups: list[list[AttractionCandidate]]) -> float:
