@@ -57,6 +57,11 @@ class ExcludedAttractionEvidence(MapPlanningModel):
     poi_id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
+    stage: Literal["provider_filter", "spatial_guard", "selection"] = "selection"
+    poi_type: str = ""
+    source_queries: list[str] = Field(default_factory=list, max_length=20)
+    best_search_rank: int | None = Field(default=None, ge=1)
+    candidate_score: float | None = None
 
 
 class MapTripEvidence(MapPlanningModel):

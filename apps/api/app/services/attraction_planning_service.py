@@ -75,8 +75,20 @@ _FACILITY_TYPE_MARKERS = (
     "住宿",
     "汽车服务",
 )
+_NON_TOURISM_TYPE_MARKERS = (
+    "公司企业",
+    "产业园区",
+    "商务住宅",
+    "写字楼",
+    "楼宇",
+    "房产",
+    "金融保险",
+    "医疗保健",
+    "政府机构",
+)
 _GENERIC_NAME_SUFFIXES = ("风景名胜区", "旅游景区", "风景区", "旅游区", "景区")
 _LARGE_SCENIC_MARKERS = ("国家公园", "风景名胜区", "旅游度假区", "自然保护区")
+_REMOTE_LOW_CONFIDENCE_DISTANCE_KM = 20
 
 _DURATION_MINUTES = {
     "large_scenic_area": 180,
@@ -125,6 +137,13 @@ class AttractionCandidate:
     @property
     def best_search(self) -> tuple[str, int]:
         return min(self.search_ranks.items(), key=lambda item: (item[1], item[0]))
+
+
+@dataclass(slots=True)
+class RejectedAttraction:
+    place: AmapPlace
+    reason: str
+    search_ranks: dict[str, int] = field(default_factory=dict)
 
 
 def build_poi_search_tasks(preferences: list[TripPreference]) -> list[PoiSearchTask]:
@@ -179,21 +198,30 @@ def normalize_poi_name(name: str, city: str) -> str:
     return value.casefold()
 
 
-def is_valid_attraction(place: AmapPlace, city: str) -> bool:
+def attraction_rejection_reason(place: AmapPlace, city: str) -> str | None:
     if not place.poi_id or not place.name or (place.city and not _same_city(place.city, city)):
-        return False
+        return "POI 缺少必要信息或不属于目标城市"
     name = unicodedata.normalize("NFKC", place.name)
     poi_type = unicodedata.normalize("NFKC", place.poi_type)
     if any(marker in poi_type for marker in _FACILITY_TYPE_MARKERS):
-        return False
-    return not any(marker in name for marker in _FACILITY_NAME_MARKERS)
+        return "POI 类型属于服务设施，非游览景点"
+    if any(marker in poi_type for marker in _NON_TOURISM_TYPE_MARKERS):
+        return "POI 类型属于企业、园区或商务住宅，非游览景点"
+    if any(marker in name for marker in _FACILITY_NAME_MARKERS):
+        return "POI 名称属于服务设施，非游览景点"
+    return None
+
+
+def is_valid_attraction(place: AmapPlace, city: str) -> bool:
+    return attraction_rejection_reason(place, city) is None
 
 
 def merge_and_deduplicate_candidates(
     city: str,
     results: list[tuple[PoiSearchTask, list[AmapPlace]]],
-) -> tuple[list[AttractionCandidate], dict[str, int]]:
+) -> tuple[list[AttractionCandidate], dict[str, int], list[RejectedAttraction]]:
     exact: dict[str, AttractionCandidate] = {}
+    rejected: dict[str, RejectedAttraction] = {}
     stats = {
         "raw": 0,
         "invalid": 0,
@@ -204,8 +232,17 @@ def merge_and_deduplicate_candidates(
     for task, places in results:
         for rank, place in enumerate(places, start=1):
             stats["raw"] += 1
-            if not is_valid_attraction(place, city):
+            rejection_reason = attraction_rejection_reason(place, city)
+            if rejection_reason is not None:
                 stats["invalid"] += 1
+                rejected_item = rejected.get(place.poi_id)
+                if rejected_item is None:
+                    rejected_item = RejectedAttraction(place=place, reason=rejection_reason)
+                    rejected[place.poi_id] = rejected_item
+                rejected_item.search_ranks[task.keyword] = min(
+                    rank,
+                    rejected_item.search_ranks.get(task.keyword, rank),
+                )
                 continue
             candidate = exact.get(place.poi_id)
             if candidate is None:
@@ -258,7 +295,7 @@ def merge_and_deduplicate_candidates(
             continue
         stats["fuzzy_duplicates"] += 1
         _merge_candidate_evidence(duplicate, candidate)
-    return kept, stats
+    return kept, stats, list(rejected.values())
 
 
 def score_candidates(candidates: list[AttractionCandidate]) -> None:
@@ -367,6 +404,40 @@ def score_candidates(candidates: list[AttractionCandidate]) -> None:
         if candidate.matched_preferences:
             reasons.append("与用户的标准偏好标签匹配")
         candidate.selection_reasons = reasons or ["来自目标城市内的有效高德景点结果"]
+
+
+def exclude_remote_low_confidence_candidates(
+    candidates: list[AttractionCandidate],
+) -> tuple[list[AttractionCandidate], list[RejectedAttraction]]:
+    tourism_candidates = [item for item in candidates if item.attraction_type != "other"]
+    if not tourism_candidates:
+        return candidates, []
+    kept: list[AttractionCandidate] = []
+    rejected: list[RejectedAttraction] = []
+    for candidate in candidates:
+        if candidate.attraction_type != "other":
+            kept.append(candidate)
+            continue
+        nearest_tourism_distance = min(
+            haversine_km(candidate.place, item.place) for item in tourism_candidates
+        )
+        if (
+            candidate.fame_tier != "S"
+            and nearest_tourism_distance > _REMOTE_LOW_CONFIDENCE_DISTANCE_KM
+        ):
+            rejected.append(
+                RejectedAttraction(
+                    place=candidate.place,
+                    reason=(
+                        "POI 旅游属性置信度不足，且距已识别旅游景点超过 "
+                        f"{_REMOTE_LOW_CONFIDENCE_DISTANCE_KM} 公里"
+                    ),
+                    search_ranks=dict(candidate.search_ranks),
+                )
+            )
+            continue
+        kept.append(candidate)
+    return kept, rejected
 
 
 def match_candidate_preferences(
@@ -873,12 +944,15 @@ def _weather_mismatch(day: MapDayEvidence, weather: object) -> float:
 
 __all__ = [
     "AttractionCandidate",
+    "RejectedAttraction",
     "BASE_SEARCH_KEYWORDS",
     "DAY_EFFECTIVE_BUDGET_MINUTES",
     "DailyClusterPlanner",
     "PoiSearchTask",
     "build_poi_search_tasks",
     "classify_attraction",
+    "attraction_rejection_reason",
+    "exclude_remote_low_confidence_candidates",
     "haversine_km",
     "is_valid_attraction",
     "match_weather_to_days",

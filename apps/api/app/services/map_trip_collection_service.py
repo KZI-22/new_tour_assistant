@@ -31,7 +31,9 @@ from app.services.attraction_planning_service import (
     AttractionCandidate,
     DailyClusterPlanner,
     PoiSearchTask,
+    RejectedAttraction,
     build_poi_search_tasks,
+    exclude_remote_low_confidence_candidates,
     haversine_km,
     match_candidate_preferences,
     merge_and_deduplicate_candidates,
@@ -142,7 +144,7 @@ class MapTripCollectionService:
         started_at = monotonic()
         planning_run_id = str(uuid4())
         queried_at = datetime.now(UTC)
-        candidates, warnings, stats = await self._collect_attractions(
+        candidates, warnings, stats, provider_rejections = await self._collect_attractions(
             request,
             planning_run_id,
             timeout_seconds=self._data_timeout_seconds,
@@ -160,7 +162,11 @@ class MapTripCollectionService:
 
         match_candidate_preferences(candidates, request.interests)
         score_candidates(candidates)
-        selected, excluded = select_diverse_candidates(candidates, request.duration_days)
+        candidates, spatial_rejections = exclude_remote_low_confidence_candidates(candidates)
+        selected, selection_exclusions = select_diverse_candidates(
+            candidates,
+            request.duration_days,
+        )
         if not selected:
             raise MapTripCollectionError(
                 "MAP_ATTRACTIONS_EMPTY",
@@ -198,14 +204,19 @@ class MapTripCollectionService:
             planning_run_id=planning_run_id,
             queried_at=queried_at,
             days=evidence_days,
-            excluded_attractions=[
-                ExcludedAttractionEvidence(
-                    poi_id=item.place.poi_id,
-                    name=item.place.name,
-                    reason=_exclusion_reason(item, selected),
-                )
-                for item in sorted(excluded, key=lambda candidate: -candidate.score)[:20]
-            ],
+            excluded_attractions=(
+                [
+                    *[_provider_filter_exclusion(item) for item in provider_rejections],
+                    *[_spatial_guard_exclusion(item) for item in spatial_rejections],
+                    *[
+                        _selection_exclusion(item, selected)
+                        for item in sorted(
+                            selection_exclusions,
+                            key=lambda candidate: -candidate.score,
+                        )
+                    ],
+                ][:20]
+            ),
             warnings=list(dict.fromkeys(warnings)),
         )
         elapsed_ms = round((monotonic() - started_at) * 1_000)
@@ -235,7 +246,12 @@ class MapTripCollectionService:
         planning_run_id: str,
         *,
         timeout_seconds: float,
-    ) -> tuple[list[AttractionCandidate], list[str], dict[str, int]]:
+    ) -> tuple[
+        list[AttractionCandidate],
+        list[str],
+        dict[str, int],
+        list[RejectedAttraction],
+    ]:
         assert request.destination_city is not None
         deadline = monotonic() + timeout_seconds
         tasks = build_poi_search_tasks(request.interests)
@@ -300,11 +316,11 @@ class MapTripCollectionService:
             successful_results,
             self._max_raw_candidates,
         )
-        candidates, stats = merge_and_deduplicate_candidates(
+        candidates, stats, rejected = merge_and_deduplicate_candidates(
             request.destination_city,
             limited,
         )
-        return candidates, warnings, stats
+        return candidates, warnings, stats, rejected
 
     async def _safe_search(
         self,
@@ -740,6 +756,46 @@ def _exclusion_reason(
     if same_type >= 2:
         return "为保持景点类型多样性未进入最终行程"
     return "综合评分未进入本次行程的景点数量与时长上限"
+
+
+def _provider_filter_exclusion(item: RejectedAttraction) -> ExcludedAttractionEvidence:
+    return ExcludedAttractionEvidence(
+        poi_id=item.place.poi_id,
+        name=item.place.name,
+        poi_type=item.place.poi_type,
+        stage="provider_filter",
+        reason=item.reason,
+        source_queries=sorted(item.search_ranks),
+        best_search_rank=min(item.search_ranks.values(), default=None),
+    )
+
+
+def _spatial_guard_exclusion(item: RejectedAttraction) -> ExcludedAttractionEvidence:
+    return ExcludedAttractionEvidence(
+        poi_id=item.place.poi_id,
+        name=item.place.name,
+        poi_type=item.place.poi_type,
+        stage="spatial_guard",
+        reason=item.reason,
+        source_queries=sorted(item.search_ranks),
+        best_search_rank=min(item.search_ranks.values(), default=None),
+    )
+
+
+def _selection_exclusion(
+    candidate: AttractionCandidate,
+    selected: list[AttractionCandidate],
+) -> ExcludedAttractionEvidence:
+    return ExcludedAttractionEvidence(
+        poi_id=candidate.place.poi_id,
+        name=candidate.place.name,
+        poi_type=candidate.place.poi_type,
+        stage="selection",
+        reason=_exclusion_reason(candidate, selected),
+        source_queries=sorted(candidate.search_ranks),
+        best_search_rank=min(candidate.search_ranks.values(), default=None),
+        candidate_score=candidate.score,
+    )
 
 
 __all__ = [

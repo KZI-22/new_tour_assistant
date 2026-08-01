@@ -176,6 +176,13 @@ async def test_collection_filters_facilities_city_mismatches_and_fuzzy_duplicate
             place("park-main", "成都人民公园景区", 0.001, poi_type="风景名胜;公园广场"),
             place("park-copy", "人民公园", 0.0011, poi_type="风景名胜;公园广场"),
             place("parking", "人民公园停车场", 0.0012, poi_type="交通设施;停车场"),
+            place("company", "联动文化有限公司", 0.0013, poi_type="公司企业;公司;公司"),
+            place(
+                "industrial-park",
+                "现代农业科技示范园",
+                0.0014,
+                poi_type="商务住宅;产业园区;产业园区",
+            ),
             place("other-city", "外地景点", 0.003, city="重庆市"),
             place("a2", "历史博物馆", 0.004, poi_type="科教文化服务;博物馆"),
             place("a3", "文化古街", 0.008, poi_type="风景名胜;特色街区"),
@@ -193,11 +200,18 @@ async def test_collection_filters_facilities_city_mismatches_and_fuzzy_duplicate
 
     ids = [item.poi_id for day in evidence.days for item in day.attractions]
     assert "parking" not in ids
+    assert "company" not in ids
+    assert "industrial-park" not in ids
     assert "other-city" not in ids
     assert len({"park-main", "park-copy"} & set(ids)) == 1
     assert len(ids) == len(set(ids))
     assert [len(day.attractions) for day in evidence.days] == [2, 2]
     assert any("少于每天 3 个" in warning for warning in evidence.warnings)
+    exclusions = {item.poi_id: item for item in evidence.excluded_attractions}
+    assert exclusions["company"].stage == "provider_filter"
+    assert exclusions["company"].poi_type == "公司企业;公司;公司"
+    assert exclusions["company"].source_queries
+    assert exclusions["industrial-park"].stage == "provider_filter"
 
 
 @pytest.mark.asyncio

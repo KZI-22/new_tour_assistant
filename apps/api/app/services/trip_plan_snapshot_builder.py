@@ -9,6 +9,7 @@ from app.schemas.trip_evidence import JoinedTripEvidence
 from app.schemas.trip_options import HotelOptionSnapshot, TransportOptionSnapshot
 from app.schemas.trip_plan_snapshot import (
     TripHotelSnapshot,
+    TripPlanAttractionExclusionSnapshot,
     TripPlanDaySnapshot,
     TripPlanPlaceSnapshot,
     TripPlanRouteLegSnapshot,
@@ -113,6 +114,21 @@ class TripPlanSnapshotBuilder:
                 ),
                 transport_queried_at=evidence.transport.queried_at,
                 hotel_queried_at=evidence.hotel.queried_at,
+                attraction_exclusions=[
+                    TripPlanAttractionExclusionSnapshot(
+                        provider_place_id=item.poi_id,
+                        name=item.name,
+                        poi_type=item.poi_type,
+                        stage=item.stage,
+                        reason=item.reason,
+                        source_queries=list(item.source_queries),
+                        best_search_rank=item.best_search_rank,
+                        candidate_score=item.candidate_score,
+                    )
+                    for item in (
+                        map_evidence.excluded_attractions if map_evidence is not None else []
+                    )
+                ],
             ),
         )
 

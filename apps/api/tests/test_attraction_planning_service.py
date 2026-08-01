@@ -17,6 +17,7 @@ from app.services.attraction_planning_service import (
     PoiSearchTask,
     build_poi_search_tasks,
     classify_attraction,
+    exclude_remote_low_confidence_candidates,
     match_weather_to_days,
     merge_and_deduplicate_candidates,
     normalize_poi_name,
@@ -129,7 +130,7 @@ def test_normalization_exact_and_fuzzy_dedup_preserve_recall_evidence() -> None:
         preference=TripPreference.LEISURE,
     )
 
-    candidates, stats = merge_and_deduplicate_candidates(
+    candidates, stats, rejected = merge_and_deduplicate_candidates(
         "南京",
         [(task_a, [first, parking]), (task_b, [fuzzy, first])],
     )
@@ -138,6 +139,7 @@ def test_normalization_exact_and_fuzzy_dedup_preserve_recall_evidence() -> None:
     assert len(candidates) == 1
     assert set(candidates[0].search_ranks) == {"公园", "休闲街区"}
     assert candidates[0].matched_preferences == {TripPreference.LEISURE}
+    assert [item.place.poi_id for item in rejected] == ["parking"]
     assert stats == {
         "raw": 4,
         "invalid": 1,
@@ -152,7 +154,7 @@ def test_parent_poi_absorbs_child_recall_evidence() -> None:
     child = place("ming-tomb", "明孝陵", 118.8005)
     child = child.model_copy(update={"parent_poi_id": parent.poi_id})
 
-    candidates, stats = merge_and_deduplicate_candidates(
+    candidates, stats, rejected = merge_and_deduplicate_candidates(
         "南京",
         [
             (
@@ -173,6 +175,7 @@ def test_parent_poi_absorbs_child_recall_evidence() -> None:
     assert [item.place.poi_id for item in candidates] == ["scenic"]
     assert set(candidates[0].search_ranks) == {"旅游景点", "文化遗址"}
     assert stats["parent_duplicates"] == 1
+    assert rejected == []
 
 
 def test_large_scenic_area_sub_pois_are_not_spatially_merged() -> None:
@@ -189,13 +192,56 @@ def test_large_scenic_area_sub_pois_are_not_spatially_merged() -> None:
         poi_type="风景名胜;国家公园",
     )
 
-    candidates, stats = merge_and_deduplicate_candidates(
+    candidates, stats, rejected = merge_and_deduplicate_candidates(
         "南京",
         [(PoiSearchTask(keyword="风景名胜", is_base=True), [first, second])],
     )
 
     assert len(candidates) == 2
     assert stats["fuzzy_duplicates"] == 0
+    assert rejected == []
+
+
+def test_non_tourism_provider_types_are_rejected_with_a_traceable_reason() -> None:
+    museum = place("museum", "南京博物院", 118.800, poi_type="科教文化服务;博物馆")
+    company = place("company", "联动文化有限公司", 118.801, poi_type="公司企业;公司;公司")
+    industrial_park = place(
+        "industrial-park",
+        "现代农业科技示范园",
+        118.802,
+        poi_type="商务住宅;产业园区;产业园区",
+    )
+
+    candidates, stats, rejected = merge_and_deduplicate_candidates(
+        "南京",
+        [(PoiSearchTask(keyword="城市地标", is_base=True), [museum, company, industrial_park])],
+    )
+
+    assert [item.place.poi_id for item in candidates] == ["museum"]
+    assert stats["invalid"] == 2
+    assert {item.place.poi_id for item in rejected} == {"company", "industrial-park"}
+    assert all("非游览景点" in item.reason for item in rejected)
+    assert {item.place.poi_id: item.search_ranks for item in rejected} == {
+        "company": {"城市地标": 2},
+        "industrial-park": {"城市地标": 3},
+    }
+
+
+def test_remote_low_confidence_other_poi_is_rejected_before_selection() -> None:
+    museum = candidate(
+        "museum",
+        118.800,
+        score=80,
+        poi_type="科教文化服务;博物馆",
+    )
+    remote = candidate("remote", 119.100, score=90, poi_type="其他")
+    remote.fame_tier = "A"
+
+    kept, rejected = exclude_remote_low_confidence_candidates([museum, remote])
+
+    assert [item.place.poi_id for item in kept] == ["museum"]
+    assert [item.place.poi_id for item in rejected] == ["remote"]
+    assert "超过 20 公里" in rejected[0].reason
 
 
 def test_scoring_and_mmr_selection_are_deterministic_and_diverse() -> None:

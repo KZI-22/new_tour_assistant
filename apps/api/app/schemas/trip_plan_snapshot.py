@@ -113,6 +113,17 @@ class TripHotelSnapshot(TripPlanningModel):
     error_code: str | None = None
 
 
+class TripPlanAttractionExclusionSnapshot(TripPlanningModel):
+    provider_place_id: str
+    name: str
+    poi_type: str
+    stage: Literal["provider_filter", "spatial_guard", "selection"]
+    reason: str
+    source_queries: list[str] = Field(default_factory=list)
+    best_search_rank: int | None = Field(default=None, ge=1)
+    candidate_score: float | None = None
+
+
 class TripPlanSourceMetadata(TripPlanningModel):
     planning_run_id: str
     generated_at: datetime
@@ -120,6 +131,10 @@ class TripPlanSourceMetadata(TripPlanningModel):
     weather_queried_at: datetime | None = None
     transport_queried_at: datetime | None = None
     hotel_queried_at: datetime | None = None
+    attraction_exclusions: list[TripPlanAttractionExclusionSnapshot] = Field(
+        default_factory=list,
+        max_length=20,
+    )
 
 
 class TripPlanSnapshot(TripPlanningModel):
@@ -138,6 +153,7 @@ class TripPlanSnapshot(TripPlanningModel):
 __all__ = [
     "RouteMode",
     "TripHotelSnapshot",
+    "TripPlanAttractionExclusionSnapshot",
     "TripPlanDaySnapshot",
     "TripPlanPlaceSnapshot",
     "TripPlanRouteLegSnapshot",
