@@ -21,34 +21,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 API_SOURCE_ROOT = PROJECT_ROOT / "apps" / "api"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "fliai.md"
 DEFAULT_TIMEOUT_SECONDS = 130.0
-ITINERARY_PROMPT_TEMPLATE = """任务：仅根据用户输入，生成逐日景点安排。
+ITINERARY_PROMPT_TEMPLATE = """根据用户需求，只安排每天要游玩的景点,只要景点信息，其他信息都不要。
 
-忽略且禁止输出：酒店、航班、火车票、住宿、餐饮、购物、门票、演出、交通、预算、链接、前言、总结、提示和解释。
-
-严格只输出合法 JSON，不能使用 Markdown 代码块，不能输出 JSON 以外的任何文字。
-返回结构必须完全符合：
-
-{
-  "days": [
-    {
-      "day": 1,
-      "attractions": [
-        {"name": "景点名称"},
-        {"name": "景点名称"}
-      ]
-    }
-  ]
-}
-
-要求：
-1. `days` 数量必须等于用户明确提出的游玩天数。
-2. `day` 从 1 连续递增。
-3. 每天只保留 2 至 4 个景点。
-4. 不确定的景点不要编造。
-5. 用户未给出天数时，返回一个空 `days` 数组。
-
-用户输入：
+严格按以下格式输出，不要前言、总结、酒店、交通、餐饮、门票、链接或解释：
+第1天：
+- 景点名称
+- 景点名称
+第2天：
+- 景点名称
+- 景点名称
+...
+天数必须与用户需求一致，哪怕用户输入有查酒店/车票/航班 等其他信息也不要管，只返回景点信息。
+用户需求：
 {user_input}
+
 """
 
 if str(API_SOURCE_ROOT) not in sys.path:

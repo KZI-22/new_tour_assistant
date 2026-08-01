@@ -13,11 +13,11 @@ models:
     base_url_env: MIMO_BASE_URL
     enabled: true
 
-  - id: qwen3.7-flash
-    display_name: qwen3.7-flash
-    description: Qwen model for reasoning and coding tasks
+  - id: deepseek-v4-flash-0731
+    display_name: deepseek-v4-flash-0731
+    description: DeepSeek model for reasoning and coding tasks
     provider: openai
-    model: qwen3.7-flash
+    model: deepseek-v4-flash-0731
     api_key_env: DASHSCOPE_API_KEY
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
@@ -49,15 +49,6 @@ models:
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
 
-  - id: qwen3.5-omni-plus-2026-03-15
-    display_name: Qwen3.5 Omni Plus (2026-03-15)
-    description: Multimodal Qwen snapshot; the current chat UI sends text only
-    provider: openai
-    model: qwen3.5-omni-plus-2026-03-15
-    api_key_env: DASHSCOPE_API_KEY
-    base_url_env: DASHSCOPE_BASE_URL
-    enabled: true
-
   - id: qwen3.7-max-2026-05-20
     display_name: qwen3.7-max-2026-05-20
     description: Latest Qwen3.7 Max snapshot for reasoning and coding tasks
@@ -66,3 +57,22 @@ models:
     api_key_env: DASHSCOPE_API_KEY
     base_url_env: DASHSCOPE_BASE_URL
     enabled: true
+
+  - id: qwen-image-2.0-pro-2026-06-22
+    display_name: qwen-image-2.0-pro-2026-06-22
+    description: Qwen Image 2.0 Pro model for image generation and understanding
+    provider: openai
+    model: qwen-image-2.0-pro-2026-06-22
+    api_key_env: DASHSCOPE_API_KEY
+    base_url_env: DASHSCOPE_BASE_URL
+    enabled: true
+
+  - id: wan2.7-t2v-2026-06-12
+    display_name: wan2.7-t2v-2026-06-12
+    description: Wan 2.7 T2V model for text-to-video generation and understanding
+    provider: openai
+    model: wan2.7-t2v-2026-06-12
+    api_key_env: DASHSCOPE_API_KEY
+    base_url_env: DASHSCOPE_BASE_URL
+    enabled: true
+
