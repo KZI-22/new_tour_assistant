@@ -44,6 +44,7 @@ DAY_EFFECTIVE_BUDGET_MINUTES = 480
 MAX_ATTRACTIONS_PER_DAY = 5
 MIN_ATTRACTIONS_PER_DAY = 3
 MAX_SELECTED_ATTRACTIONS = 25
+MAX_DAILY_ROUTE_LEG_DISTANCE_KM = 4
 FUZZY_DUPLICATE_DISTANCE_KM = 0.2
 
 _FACILITY_NAME_MARKERS = (
@@ -538,13 +539,22 @@ class DailyClusterPlanner:
         candidates: list[AttractionCandidate],
         days: int,
     ) -> list[list[AttractionCandidate]]:
+        groups, _ = self.plan_with_exclusions(candidates, days)
+        return groups
+
+    def plan_with_exclusions(
+        self,
+        candidates: list[AttractionCandidate],
+        days: int,
+    ) -> tuple[list[list[AttractionCandidate]], list[AttractionCandidate]]:
         if not candidates:
-            return [[] for _ in range(days)]
+            return [[] for _ in range(days)], []
         seed_count = min(days, len(candidates))
         seeds = self._select_seeds(candidates, seed_count)
         groups = [[seed] for seed in seeds]
         groups.extend([] for _ in range(days - len(groups)))
         remaining = [item for item in candidates if item not in seeds]
+        excluded: list[AttractionCandidate] = []
         balanced_capacity = min(
             MAX_ATTRACTIONS_PER_DAY,
             math.ceil(len(candidates) / days),
@@ -557,11 +567,19 @@ class DailyClusterPlanner:
             ]
             if not underfilled:
                 break
+            assigned = False
             for group in underfilled:
                 if not remaining:
                     break
+                eligible = [
+                    item
+                    for item in remaining
+                    if _has_route_within_daily_leg_limit([*group, item])
+                ]
+                if not eligible:
+                    continue
                 chosen = min(
-                    remaining,
+                    eligible,
                     key=lambda item: (
                         self._assignment_cost(item, group),
                         -item.score,
@@ -570,6 +588,9 @@ class DailyClusterPlanner:
                 )
                 group.append(chosen)
                 remaining.remove(chosen)
+                assigned = True
+            if not assigned:
+                break
 
         for candidate in sorted(remaining, key=lambda item: (-item.score, item.place.poi_id)):
             ranked_groups = sorted(
@@ -580,10 +601,15 @@ class DailyClusterPlanner:
                     index,
                 ),
             )
+            feasible_groups = [
+                index
+                for index in ranked_groups
+                if _has_route_within_daily_leg_limit([*groups[index], candidate])
+            ]
             target_index = next(
                 (
                     index
-                    for index in ranked_groups
+                    for index in feasible_groups
                     if len(groups[index]) < balanced_capacity
                     and _group_budget_minutes([*groups[index], candidate])
                     <= DAY_EFFECTIVE_BUDGET_MINUTES
@@ -592,17 +618,20 @@ class DailyClusterPlanner:
             )
             if target_index is None:
                 target_index = next(
-                    (
-                        index
-                        for index in ranked_groups
-                        if len(groups[index]) < MAX_ATTRACTIONS_PER_DAY
-                    ),
-                    ranked_groups[0],
-                )
+                (
+                    index
+                    for index in feasible_groups
+                    if len(groups[index]) < MAX_ATTRACTIONS_PER_DAY
+                ),
+                None,
+            )
+            if target_index is None:
+                excluded.append(candidate)
+                continue
             groups[target_index].append(candidate)
 
         self._improve_by_swaps(groups)
-        return [optimize_daily_route(group) for group in groups]
+        return [optimize_daily_route(group) for group in groups], excluded
 
     def _select_seeds(
         self,
@@ -718,6 +747,11 @@ class DailyClusterPlanner:
                         new_right[right_item],
                         new_left[left_item],
                     )
+                    if not (
+                        _has_route_within_daily_leg_limit(new_left)
+                        and _has_route_within_daily_leg_limit(new_right)
+                    ):
+                        continue
                     if (
                         max(
                             sum(item.estimated_visit_minutes for item in new_left),
@@ -756,14 +790,12 @@ class DailyClusterPlanner:
 
 
 def optimize_daily_route(group: list[AttractionCandidate]) -> list[AttractionCandidate]:
-    if len(group) < 2:
-        return list(group)
-    return list(
-        min(
-            itertools.permutations(group),
-            key=lambda route: (_route_cost(route), tuple(item.place.poi_id for item in route)),
+    route = _best_daily_route_within_leg_limit(group)
+    if route is None:
+        raise ValueError(
+            "Daily route cannot satisfy the maximum adjacent attraction distance."
         )
-    )
+    return list(route)
 
 
 def match_weather_to_days(
@@ -800,6 +832,29 @@ def haversine_km(left: AmapPlace, right: AmapPlace) -> float:
         + math.cos(left_lat) * math.cos(right_lat) * math.sin(delta_lon / 2) ** 2
     )
     return 6371.0088 * 2 * math.atan2(math.sqrt(value), math.sqrt(max(0.0, 1 - value)))
+
+
+def _has_route_within_daily_leg_limit(group: list[AttractionCandidate]) -> bool:
+    return _best_daily_route_within_leg_limit(group) is not None
+
+
+def _best_daily_route_within_leg_limit(
+    group: list[AttractionCandidate],
+) -> tuple[AttractionCandidate, ...] | None:
+    if len(group) < 2:
+        return tuple(group)
+    return min(
+        (
+            route
+            for route in itertools.permutations(group)
+            if all(
+                haversine_km(left.place, right.place) <= MAX_DAILY_ROUTE_LEG_DISTANCE_KM
+                for left, right in itertools.pairwise(route)
+            )
+        ),
+        key=lambda route: (_route_cost(route), tuple(item.place.poi_id for item in route)),
+        default=None,
+    )
 
 
 def classify_attraction(place: AmapPlace) -> str:

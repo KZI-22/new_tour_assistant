@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from datetime import date
 from time import perf_counter
 
@@ -18,6 +19,7 @@ from app.services.attraction_planning_service import (
     build_poi_search_tasks,
     classify_attraction,
     exclude_remote_low_confidence_candidates,
+    haversine_km,
     match_weather_to_days,
     merge_and_deduplicate_candidates,
     normalize_poi_name,
@@ -385,6 +387,27 @@ def test_daily_clusters_never_use_c_tier_outlier_as_seed_when_prominent_pool_is_
     groups = DailyClusterPlanner().plan([*prominent, outlier], 3)
 
     assert all(any(item.fame_tier == "A" for item in group) for group in groups)
+
+
+def test_daily_clusters_exclude_candidate_without_a_four_km_route() -> None:
+    local_candidates = [
+        candidate("local-1", 118.800, score=100),
+        candidate("local-2", 118.810, score=90),
+        candidate("local-3", 118.820, score=80),
+    ]
+    remote = candidate("remote", 118.870, score=70)
+
+    groups, excluded = DailyClusterPlanner().plan_with_exclusions(
+        [*local_candidates, remote],
+        1,
+    )
+
+    assert [item.place.poi_id for item in groups[0]] == ["local-1", "local-2", "local-3"]
+    assert [item.place.poi_id for item in excluded] == ["remote"]
+    assert all(
+        haversine_km(left.place, right.place) <= 4
+        for left, right in itertools.pairwise(groups[0])
+    )
 
 
 def test_daily_route_optimizer_enumerates_open_path_order() -> None:

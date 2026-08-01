@@ -258,6 +258,36 @@ async def test_all_route_failures_keep_order_with_straight_line_estimates() -> N
 
 
 @pytest.mark.asyncio
+async def test_collection_excludes_candidate_that_breaks_four_km_daily_route_limit() -> None:
+    client = FakeMapClient(
+        attractions=[
+            place("local-1", "本地景点一", 0.000),
+            place("local-2", "本地景点二", 0.010),
+            place("local-3", "本地景点三", 0.020),
+            place("remote", "远处景点", 0.070),
+        ]
+    )
+
+    evidence = await MapTripCollectionService(client).collect(
+        CityTripRequest(
+            destination_city="成都",
+            duration_days=1,
+            start_date=date(2026, 7, 25),
+        )
+    )
+
+    assert [item.poi_id for item in evidence.days[0].attractions] == [
+        "local-1",
+        "local-2",
+        "local-3",
+    ]
+    exclusion = next(item for item in evidence.excluded_attractions if item.poi_id == "remote")
+    assert exclusion.stage == "selection"
+    assert "相邻景点直线距离不超过 4 公里" in exclusion.reason
+    assert any("相邻直线距离不超过 4 公里" in warning for warning in evidence.warnings)
+
+
+@pytest.mark.asyncio
 async def test_partial_poi_query_failure_uses_other_successful_results() -> None:
     client = FakeMapClient(
         attractions=standard_attractions(),
@@ -373,3 +403,46 @@ async def test_one_local_correction_swaps_an_abnormal_real_route_edge() -> None:
 
     assert [item.poi_id for item in evidence.days[0].attractions] == ["a", "c", "b", "d"]
     assert len(client.route_queries) == 6
+
+
+@pytest.mark.asyncio
+async def test_route_correction_never_introduces_a_leg_over_four_km() -> None:
+    attractions = [
+        place("a", "景点A", 0.00),
+        place("b", "景点B", 0.04),
+        place("c", "景点C", 0.08),
+        place("d", "景点D", 0.12),
+    ]
+
+    class DistantCorrectionClient(FakeMapClient):
+        async def plan_route(self, query: RoutePlanInput) -> RouteResult:
+            self.route_queries.append(query)
+            is_abnormal = {
+                round(query.origin.longitude, 2),
+                round(query.destination.longitude, 2),
+            } == {104.04, 104.08}
+            return RouteResult(
+                mode=query.mode,
+                distance_meters=900,
+                duration_seconds=6_000 if is_abnormal else 100,
+                route_summary="异常路线" if is_abnormal else "正常路线",
+                steps=[],
+            )
+
+    client = DistantCorrectionClient(attractions=attractions)
+
+    evidence = await MapTripCollectionService(client).collect(
+        CityTripRequest(
+            destination_city="成都",
+            duration_days=1,
+            start_date=date(2026, 7, 25),
+        )
+    )
+
+    assert len(evidence.days[0].attractions) == 4
+    queried_pairs = {
+        frozenset({round(query.origin.longitude, 2), round(query.destination.longitude, 2)})
+        for query in client.route_queries
+    }
+    assert frozenset({104.00, 104.08}) not in queried_pairs
+    assert frozenset({104.04, 104.12}) not in queried_pairs

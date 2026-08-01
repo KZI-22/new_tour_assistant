@@ -28,6 +28,7 @@ from app.schemas.map_planning import (
 )
 from app.schemas.trip_planning import CityTripRequest
 from app.services.attraction_planning_service import (
+    MAX_DAILY_ROUTE_LEG_DISTANCE_KM,
     AttractionCandidate,
     DailyClusterPlanner,
     PoiSearchTask,
@@ -172,10 +173,20 @@ class MapTripCollectionService:
                 "MAP_ATTRACTIONS_EMPTY",
                 "高德地图没有返回可用于规划的有效景点，请换个城市名称后重试。",
             )
-        groups = self._cluster_planner.plan(selected, request.duration_days)
-        if len(selected) < request.duration_days * 3:
+        groups, route_distance_exclusions = self._cluster_planner.plan_with_exclusions(
+            selected,
+            request.duration_days,
+        )
+        planned_count = sum(len(group) for group in groups)
+        if route_distance_exclusions:
             warnings.append(
-                f"有效景点仅有 {len(selected)} 个，少于每天 3 个的目标；未使用模型猜测地点补足。"
+                "有 "
+                f"{len(route_distance_exclusions)} 个候选景点无法排入相邻直线距离不超过 "
+                f"{MAX_DAILY_ROUTE_LEG_DISTANCE_KM} 公里的日内路线，已不纳入行程。"
+            )
+        if planned_count < request.duration_days * 3:
+            warnings.append(
+                f"有效景点仅有 {planned_count} 个，少于每天 3 个的目标；未使用模型猜测地点补足。"
             )
 
         remaining_timeout = max(
@@ -208,6 +219,7 @@ class MapTripCollectionService:
                 [
                     *[_provider_filter_exclusion(item) for item in provider_rejections],
                     *[_spatial_guard_exclusion(item) for item in spatial_rejections],
+                    *[_route_distance_exclusion(item) for item in route_distance_exclusions],
                     *[
                         _selection_exclusion(item, selected)
                         for item in sorted(
@@ -233,7 +245,7 @@ class MapTripCollectionService:
             stats["parent_duplicates"],
             stats["fuzzy_duplicates"],
             len(candidates),
-            len(selected),
+            planned_count,
             route_stats["api_calls"],
             route_stats["fallbacks"],
             elapsed_ms,
@@ -614,6 +626,11 @@ class MapTripCollectionService:
             candidate_group[worst_index],
         )
         candidate_pairs = list(itertools.pairwise(candidate_group))
+        if any(
+            haversine_km(origin.place, destination.place) > MAX_DAILY_ROUTE_LEG_DISTANCE_KM
+            for origin, destination in candidate_pairs
+        ):
+            return group, legs, 0
         missing = [
             pair
             for pair in candidate_pairs
@@ -792,6 +809,22 @@ def _selection_exclusion(
         poi_type=candidate.place.poi_type,
         stage="selection",
         reason=_exclusion_reason(candidate, selected),
+        source_queries=sorted(candidate.search_ranks),
+        best_search_rank=min(candidate.search_ranks.values(), default=None),
+        candidate_score=candidate.score,
+    )
+
+
+def _route_distance_exclusion(candidate: AttractionCandidate) -> ExcludedAttractionEvidence:
+    return ExcludedAttractionEvidence(
+        poi_id=candidate.place.poi_id,
+        name=candidate.place.name,
+        poi_type=candidate.place.poi_type,
+        stage="selection",
+        reason=(
+            "无法排入任一日内相邻景点直线距离不超过 "
+            f"{MAX_DAILY_ROUTE_LEG_DISTANCE_KM} 公里的路线"
+        ),
         source_queries=sorted(candidate.search_ranks),
         best_search_rank=min(candidate.search_ranks.values(), default=None),
         candidate_score=candidate.score,
