@@ -295,12 +295,14 @@ npm run dev
 
 访问 http://localhost:3000 。前端默认连接 `http://localhost:8000`，也可以在 `.env.local` 中修改 `NEXT_PUBLIC_API_BASE_URL`。
 
-旅行计划页在未配置地图 Key 时仍可展示分日路线并跳转高德。若需要内嵌交互地图，使用高德 Web 端（JS API）Key 配置：
+旅行计划页在未配置地图 Key 时仍可展示分日路线并跳转高德。若需要内嵌交互地图，以及点击两个景点后绘制步行/驾车路线，请在高德控制台单独创建平台类型为 **Web端（JS API）** 的 Key；不能复用后端 `AMAP_API_KEY` 所使用的 Web 服务 Key：
 
 ```dotenv
 NEXT_PUBLIC_AMAP_JS_KEY=your-js-api-key
 NEXT_PUBLIC_AMAP_SECURITY_CODE=your-security-js-code
 ```
+
+保存 `apps/web/.env.local` 后必须重新启动 Next.js 开发服务。若页面提示 `USERKEY_PLAT_NOMATCH`（错误码 `10009`），说明 Key 的平台类型不是 Web端（JS API），需要在高德控制台重新添加对应类型的 Key。
 
 ## 6. 运行检查
 

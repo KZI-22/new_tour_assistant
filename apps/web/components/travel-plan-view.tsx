@@ -23,7 +23,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   fetchTravelPlan,
@@ -38,8 +38,37 @@ import {
 type AmapMapInstance = {
   add: (overlays: object[]) => void;
   fitView: (overlays?: object[], immediately?: boolean, padding?: number[]) => void;
+  on: (event: "complete", handler: () => void) => void;
   destroy: () => void;
 };
+
+type AmapMarkerInstance = {
+  on: (event: "click", handler: () => void) => void;
+  setContent: (content: string) => void;
+};
+
+type AmapRouteResult = {
+  routes?: Array<{
+    distance?: number | string;
+    time?: number | string;
+  }>;
+  info?: string;
+};
+
+type AmapRouteService = {
+  clear: () => void;
+  search: (
+    origin: [number, number],
+    destination: [number, number],
+    callback: (status: string, result: AmapRouteResult | string) => void,
+  ) => void;
+};
+
+type AmapRouteServiceConstructor = new (options: {
+  map: AmapMapInstance;
+  hideMarkers: boolean;
+  showTraffic?: boolean;
+}) => AmapRouteService;
 
 type AmapApi = {
   Map: new (
@@ -51,7 +80,7 @@ type AmapApi = {
     anchor: "center";
     content: string;
     title: string;
-  }) => object;
+  }) => AmapMarkerInstance;
   Polyline: new (options: {
     path: Array<[number, number]>;
     strokeColor: string;
@@ -60,6 +89,9 @@ type AmapApi = {
     strokeStyle: "dashed";
     lineJoin: "round";
   }) => object;
+  plugin: (plugins: string | string[], callback: () => void) => void;
+  Walking?: AmapRouteServiceConstructor;
+  Driving?: AmapRouteServiceConstructor;
 };
 
 declare global {
@@ -76,29 +108,37 @@ function loadAmap(key: string, securityCode?: string): Promise<AmapApi> {
   if (amapLoader) return amapLoader;
   if (securityCode) window._AMapSecurityConfig = { securityJsCode: securityCode };
 
-  amapLoader = new Promise<AmapApi>((resolve, reject) => {
-    const finish = () => {
-      if (window.AMap) resolve(window.AMap);
-      else reject(new Error("高德地图脚本未正确加载。"));
-    };
-    const existing = document.querySelector<HTMLScriptElement>("script[data-tour-amap]");
-    if (existing) {
-      existing.addEventListener("load", finish, { once: true });
-      existing.addEventListener("error", () => reject(new Error("高德地图加载失败。")), {
-        once: true,
-      });
-      return;
-    }
+  const existing = document.querySelector<HTMLScriptElement>("script[data-tour-amap]");
+  existing?.remove();
 
-    const script = document.createElement("script");
+  const script = document.createElement("script");
+  const loading = new Promise<AmapApi>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("高德地图加载超时，请检查网络、Key 和域名白名单。"));
+    }, 15_000);
+    const finish = () => {
+      window.clearTimeout(timeoutId);
+      if (window.AMap) resolve(window.AMap);
+      else reject(new Error("高德地图脚本未正确加载，请确认 Key 类型为 Web端（JS API）。"));
+    };
     script.dataset.tourAmap = "true";
     script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}`;
     script.async = true;
     script.addEventListener("load", finish, { once: true });
-    script.addEventListener("error", () => reject(new Error("高德地图加载失败。")), {
-      once: true,
-    });
+    script.addEventListener(
+      "error",
+      () => {
+        window.clearTimeout(timeoutId);
+        reject(new Error("高德地图脚本加载失败，请检查网络连接。"));
+      },
+      { once: true },
+    );
     document.head.appendChild(script);
+  });
+  amapLoader = loading.catch((reason: unknown) => {
+    amapLoader = null;
+    script.remove();
+    throw reason;
   });
   return amapLoader;
 }
@@ -160,6 +200,24 @@ function safeDetailUrl(value: string | null): string | null {
 function amapPlaceUrl(place: TripPlanPlace): string {
   const position = `${place.location.longitude},${place.location.latitude}`;
   return `https://uri.amap.com/marker?position=${position}&name=${encodeURIComponent(place.name)}&src=tour-assistant&coordinate=gaode&callnative=1`;
+}
+
+type InteractiveRouteMode = "walking" | "driving";
+
+function amapRouteUrl(
+  origin: TripPlanPlace,
+  destination: TripPlanPlace,
+  mode: InteractiveRouteMode,
+): string {
+  const params = new URLSearchParams({
+    from: `${origin.location.longitude},${origin.location.latitude},${origin.name}`,
+    to: `${destination.location.longitude},${destination.location.latitude},${destination.name}`,
+    mode: mode === "walking" ? "walk" : "car",
+    src: "tour-assistant",
+    coordinate: "gaode",
+    callnative: "1",
+  });
+  return `https://uri.amap.com/navigation?${params.toString()}`;
 }
 
 function routeModeLabel(mode: TripPlanRouteLeg["mode"]): string {
@@ -352,7 +410,11 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
           )}
         </div>
         <div className="order-first lg:sticky lg:top-[132px] lg:order-last">
-          <RouteMap places={mapPlaces} day={selectedDay} />
+          <RouteMap
+            day={selectedDay}
+            key={selectedDay?.day_id ?? "trip-overview"}
+            places={mapPlaces}
+          />
         </div>
       </div>
     </main>
@@ -732,19 +794,69 @@ function FliggyLink({ href }: { href: string }) {
   );
 }
 
+type MapLoadStatus = "idle" | "loading" | "ready" | "failed";
+type RouteSearchStatus = "idle" | "loading" | "ready" | "failed";
+type SelectedRouteRole = "origin" | "destination" | null;
+
+type RouteSearchResult = {
+  requestKey: string;
+  status: "ready" | "failed";
+  detail: string;
+};
+
+function markerContent(index: number, role: SelectedRouteRole): string {
+  const label = role === "origin" ? "起" : role === "destination" ? "终" : String(index + 1);
+  const background = role === "origin" ? "#f59e0b" : role === "destination" ? "#ef4444" : "#0f766e";
+  return `<div style="display:grid;place-items:center;width:32px;height:32px;border-radius:999px;background:${background};color:white;border:3px solid white;box-shadow:0 4px 14px rgba(15,23,42,.28);font:700 11px system-ui;cursor:pointer">${label}</div>`;
+}
+
+function routeMetric(value: number | string | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+}
+
 function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay | null }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [mapReady, setMapReady] = useState(false);
-  const [mapFailed, setMapFailed] = useState(false);
-  const key = process.env.NEXT_PUBLIC_AMAP_JS_KEY;
-  const securityCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE;
+  const mapRef = useRef<AmapMapInstance | null>(null);
+  const amapRef = useRef<AmapApi | null>(null);
+  const markersRef = useRef<Map<string, AmapMarkerInstance>>(new Map());
+  const routeServiceRef = useRef<AmapRouteService | null>(null);
+  const [mapStatus, setMapStatus] = useState<MapLoadStatus>("idle");
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapAttempt, setMapAttempt] = useState(0);
+  const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([]);
+  const [routeMode, setRouteMode] = useState<InteractiveRouteMode>("walking");
+  const [routeResult, setRouteResult] = useState<RouteSearchResult | null>(null);
+  const key = process.env.NEXT_PUBLIC_AMAP_JS_KEY?.trim();
+  const securityCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE?.trim();
+
+  const selectPlace = useCallback((placeId: string) => {
+    setSelectedPlaceIds((current) => {
+      if (current.includes(placeId)) return current.filter((item) => item !== placeId);
+      if (current.length >= 2) return [placeId];
+      return [...current, placeId];
+    });
+  }, []);
+
+  const selectedPlaces = useMemo(
+    () =>
+      selectedPlaceIds
+        .map((placeId) => places.find((place) => place.plan_item_id === placeId))
+        .filter((place): place is TripPlanPlace => Boolean(place)),
+    [places, selectedPlaceIds],
+  );
 
   useEffect(() => {
-    if (!key || !hostRef.current || places.length === 0) return;
+    if (!key || !hostRef.current || places.length === 0) {
+      setMapStatus("idle");
+      return;
+    }
     let active = true;
     let map: AmapMapInstance | null = null;
-    setMapReady(false);
-    setMapFailed(false);
+    let mapReadyTimeoutId: number | null = null;
+    setMapStatus("loading");
+    setMapError(null);
+
     loadAmap(key, securityCode)
       .then((AMap) => {
         if (!active || !hostRef.current) return;
@@ -753,15 +865,30 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
           viewMode: "2D",
           mapStyle: "amap://styles/whitesmoke",
         });
-        const markers = places.map(
-          (place, index) =>
-            new AMap.Marker({
-              position: [place.location.longitude, place.location.latitude],
-              anchor: "center",
-              content: `<div style="display:grid;place-items:center;width:30px;height:30px;border-radius:999px;background:#0f766e;color:white;border:3px solid white;box-shadow:0 4px 14px rgba(15,118,110,.35);font:700 11px system-ui">${index + 1}</div>`,
-              title: place.name,
-            }),
-        );
+        mapRef.current = map;
+        amapRef.current = AMap;
+        map.on("complete", () => {
+          if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
+          if (active) setMapStatus("ready");
+        });
+        mapReadyTimeoutId = window.setTimeout(() => {
+          if (!active) return;
+          setMapError("高德底图响应超时，请检查 Web端（JS API）Key、安全密钥和域名白名单。");
+          setMapStatus("failed");
+        }, 12_000);
+
+        const markerEntries = places.map((place, index) => {
+          const marker = new AMap.Marker({
+            position: [place.location.longitude, place.location.latitude],
+            anchor: "center",
+            content: markerContent(index, null),
+            title: `${place.name}（点击选择路线起终点）`,
+          });
+          marker.on("click", () => selectPlace(place.plan_item_id));
+          return [place.plan_item_id, marker] as const;
+        });
+        const markers = markerEntries.map(([, marker]) => marker);
+        markersRef.current = new Map(markerEntries);
         const overlays: object[] = [...markers];
         if (places.length > 1) {
           overlays.push(
@@ -771,8 +898,8 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
                 place.location.latitude,
               ]),
               strokeColor: "#0f766e",
-              strokeWeight: 4,
-              strokeOpacity: 0.58,
+              strokeWeight: 3,
+              strokeOpacity: 0.38,
               strokeStyle: "dashed",
               lineJoin: "round",
             }),
@@ -780,74 +907,363 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
         }
         map.add(overlays);
         map.fitView(markers, false, [72, 52, 72, 52]);
-        setMapReady(true);
       })
-      .catch(() => {
-        if (active) setMapFailed(true);
+      .catch((reason: unknown) => {
+        if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
+        map?.destroy();
+        map = null;
+        mapRef.current = null;
+        amapRef.current = null;
+        markersRef.current.clear();
+        if (!active) return;
+        setMapError(reason instanceof Error ? reason.message : "高德地图加载失败。");
+        setMapStatus("failed");
       });
+
     return () => {
       active = false;
+      if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
+      routeServiceRef.current?.clear();
+      routeServiceRef.current = null;
+      markersRef.current.clear();
+      if (mapRef.current === map) mapRef.current = null;
+      amapRef.current = null;
       map?.destroy();
     };
-  }, [key, securityCode, places]);
+  }, [key, mapAttempt, places, securityCode, selectPlace]);
 
-  const fallback = !key || mapFailed;
+  useEffect(() => {
+    places.forEach((place, index) => {
+      const selectedIndex = selectedPlaceIds.indexOf(place.plan_item_id);
+      const role: SelectedRouteRole =
+        selectedIndex === 0 ? "origin" : selectedIndex === 1 ? "destination" : null;
+      markersRef.current.get(place.plan_item_id)?.setContent(markerContent(index, role));
+    });
+  }, [mapStatus, places, selectedPlaceIds]);
+
+  useEffect(() => {
+    routeServiceRef.current?.clear();
+    routeServiceRef.current = null;
+
+    const map = mapRef.current;
+    const AMap = amapRef.current;
+    if (mapStatus !== "ready" || !map || !AMap) return;
+    if (selectedPlaces.length !== 2) {
+      const markers = [...markersRef.current.values()];
+      if (markers.length > 0) map.fitView(markers, false, [72, 52, 72, 52]);
+      return;
+    }
+
+    let active = true;
+    const [origin, destination] = selectedPlaces;
+    const pluginName = routeMode === "walking" ? "AMap.Walking" : "AMap.Driving";
+    const requestKey = `${origin.plan_item_id}:${destination.plan_item_id}:${routeMode}`;
+    const timeoutId = window.setTimeout(() => {
+      if (!active) return;
+      setRouteResult({
+        requestKey,
+        status: "failed",
+        detail: "路线计算超时，可点击下方按钮前往高德继续查看。",
+      });
+    }, 15_000);
+
+    try {
+      AMap.plugin(pluginName, () => {
+        if (!active || !mapRef.current) return;
+        try {
+          const RouteService = routeMode === "walking" ? AMap.Walking : AMap.Driving;
+          if (!RouteService) throw new Error("路线规划插件未加载");
+          const service = new RouteService({
+            map: mapRef.current,
+            hideMarkers: true,
+            showTraffic: routeMode === "driving",
+          });
+          routeServiceRef.current = service;
+          service.search(
+            [origin.location.longitude, origin.location.latitude],
+            [destination.location.longitude, destination.location.latitude],
+            (status, result) => {
+              if (!active) return;
+              window.clearTimeout(timeoutId);
+              if (status !== "complete" || typeof result === "string") {
+                setRouteResult({
+                  requestKey,
+                  status: "failed",
+                  detail: "暂时无法取得这两个景点的路线，可前往高德继续规划。",
+                });
+                return;
+              }
+              const primaryRoute = result.routes?.[0];
+              const distance = routeMetric(primaryRoute?.distance);
+              const durationSeconds = routeMetric(primaryRoute?.time);
+              const facts = [
+                distance === null ? null : formatDistance(distance),
+                durationSeconds === null
+                  ? null
+                  : formatDuration(Math.max(1, Math.round(durationSeconds / 60))),
+              ].filter(Boolean);
+              setRouteResult({
+                requestKey,
+                status: "ready",
+                detail:
+                  facts.length > 0
+                    ? `${routeMode === "walking" ? "步行" : "驾车"} · ${facts.join(" · ")}`
+                    : "路线已绘制在地图上。",
+              });
+            },
+          );
+        } catch {
+          window.clearTimeout(timeoutId);
+          if (!active) return;
+          setRouteResult({
+            requestKey,
+            status: "failed",
+            detail: "路线规划插件加载失败，可前往高德继续规划。",
+          });
+        }
+      });
+    } catch {
+      window.clearTimeout(timeoutId);
+      window.queueMicrotask(() => {
+        if (!active) return;
+        setRouteResult({
+          requestKey,
+          status: "failed",
+          detail: "路线规划插件加载失败，可前往高德继续规划。",
+        });
+      });
+    }
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+      routeServiceRef.current?.clear();
+      routeServiceRef.current = null;
+    };
+  }, [mapStatus, routeMode, selectedPlaces]);
+
+  const routeUrl =
+    selectedPlaces.length === 2
+      ? amapRouteUrl(selectedPlaces[0], selectedPlaces[1], routeMode)
+      : null;
+  const routeRequestKey =
+    selectedPlaces.length === 2
+      ? `${selectedPlaces[0].plan_item_id}:${selectedPlaces[1].plan_item_id}:${routeMode}`
+      : null;
+  const currentRouteResult =
+    routeRequestKey && routeResult?.requestKey === routeRequestKey ? routeResult : null;
+  const routeStatus: RouteSearchStatus = !routeRequestKey
+    ? "idle"
+    : currentRouteResult?.status ?? "loading";
+  const routeDetail =
+    currentRouteResult?.detail ?? `${routeMode === "walking" ? "步行" : "驾车"}路线计算中…`;
+  const fallback = !key || mapStatus === "failed" || places.length === 0;
+  const loadingMap = Boolean(key) && places.length > 0 && mapStatus !== "ready" && !fallback;
+
   return (
     <section className="overflow-hidden rounded-3xl border border-black/[0.055] bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-black/[0.055] px-5 py-4">
         <div>
           <p className="text-sm font-semibold">{day ? `D${day.day_index} 路线地图` : "行程地图"}</p>
           <p className="mt-0.5 text-[11px] text-[#8090a0]">
-            {places.length} 个地点 · 标记按游览顺序排列
+            {places.length} 个地点 · 点击两个景点规划路线
           </p>
         </div>
         <MapPinned className="text-[#0f766e]" size={18} />
       </div>
+
       <div className="relative h-[340px] sm:h-[420px] lg:h-[520px]">
-        {!fallback && <div className="absolute inset-0" ref={hostRef} />}
-        {!fallback && !mapReady && (
+        <div aria-label="高德行程地图" className="absolute inset-0" ref={hostRef} />
+        {loadingMap && (
           <div className="absolute inset-0 grid place-items-center bg-[#edf3f1] text-xs text-[#697586]">
             <span className="flex items-center gap-2">
               <LoaderCircle className="animate-spin" size={15} /> 正在加载高德地图
             </span>
           </div>
         )}
-        {fallback && <MapFallback places={places} configured={Boolean(key)} />}
+        {fallback && (
+          <MapFallback
+            configured={Boolean(key)}
+            error={mapError}
+            onRetry={() => setMapAttempt((attempt) => attempt + 1)}
+            onSelect={selectPlace}
+            places={places}
+            selectedPlaceIds={selectedPlaceIds}
+          />
+        )}
       </div>
+
+      <div className="border-t border-black/[0.055] p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold">两点路线规划</p>
+            <p className="mt-1 text-[11px] leading-4 text-[#8090a0]">
+              {selectedPlaces.length === 0 && "请先选择起点，再选择终点。"}
+              {selectedPlaces.length === 1 && `已选起点：${selectedPlaces[0].name}，请继续选择终点。`}
+              {selectedPlaces.length === 2 &&
+                `${selectedPlaces[0].name} → ${selectedPlaces[1].name}`}
+            </p>
+          </div>
+          <div className="flex shrink-0 rounded-xl bg-[#f1f5f4] p-1 text-[10px] font-medium">
+            {(["walking", "driving"] as const).map((mode) => (
+              <button
+                className={`rounded-lg px-2.5 py-1.5 transition-colors ${
+                  routeMode === mode ? "bg-white text-[#0f766e] shadow-sm" : "text-[#697586]"
+                }`}
+                key={mode}
+                onClick={() => setRouteMode(mode)}
+                type="button"
+              >
+                {mode === "walking" ? "步行" : "驾车"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {places.map((place, index) => {
+            const selectedIndex = selectedPlaceIds.indexOf(place.plan_item_id);
+            const selected = selectedIndex >= 0;
+            return (
+              <button
+                aria-pressed={selected}
+                className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-[11px] font-medium transition-colors ${
+                  selected
+                    ? selectedIndex === 0
+                      ? "border-amber-300 bg-amber-50 text-amber-900"
+                      : "border-red-200 bg-red-50 text-red-800"
+                    : "border-black/[0.07] bg-white text-[#52606d] hover:bg-[#f4f7f6]"
+                }`}
+                key={place.plan_item_id}
+                onClick={() => selectPlace(place.plan_item_id)}
+                type="button"
+              >
+                <span
+                  className={`grid size-5 place-items-center rounded-full text-[9px] font-bold text-white ${
+                    selectedIndex === 0
+                      ? "bg-amber-500"
+                      : selectedIndex === 1
+                        ? "bg-red-500"
+                        : "bg-[#0f766e]"
+                  }`}
+                >
+                  {selectedIndex === 0 ? "起" : selectedIndex === 1 ? "终" : index + 1}
+                </span>
+                {place.name}
+              </button>
+            );
+          })}
+        </div>
+
+        {selectedPlaces.length === 2 && (
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-[#f4f7f6] px-3.5 py-3">
+            <div className="min-w-0 text-[11px] leading-5 text-[#52606d]">
+              {routeStatus === "loading" && (
+                <span className="flex items-center gap-2">
+                  <LoaderCircle className="animate-spin" size={13} /> {routeDetail}
+                </span>
+              )}
+              {routeStatus !== "loading" && (
+                <span className={routeStatus === "failed" ? "text-amber-700" : ""}>
+                  {mapStatus === "ready" ? routeDetail : "内嵌地图恢复后会自动绘制路线。"}
+                </span>
+              )}
+            </div>
+            {routeUrl && (
+              <a
+                className="flex shrink-0 items-center gap-1.5 rounded-xl bg-[#0f766e] px-3 py-2 text-[10px] font-semibold text-white"
+                href={routeUrl}
+                rel="noreferrer noopener"
+                target="_blank"
+              >
+                高德打开 <ExternalLink size={12} />
+              </a>
+            )}
+          </div>
+        )}
+
+        {selectedPlaceIds.length > 0 && (
+          <button
+            className="mt-3 text-[10px] font-medium text-[#697586] underline underline-offset-4"
+            onClick={() => setSelectedPlaceIds([])}
+            type="button"
+          >
+            清除选择
+          </button>
+        )}
+      </div>
+
       <div className="border-t border-black/[0.055] px-5 py-3 text-[10px] leading-4 text-[#8090a0]">
-        虚线表示计划中的游览顺序；实际道路与实时交通请点击地点卡片后在高德地图确认。
+        虚线表示行程游览顺序；选择两个景点后，高德会按步行或驾车方式绘制实际路线。
       </div>
     </section>
   );
 }
 
-function MapFallback({ places, configured }: { places: TripPlanPlace[]; configured: boolean }) {
+function MapFallback({
+  places,
+  configured,
+  error,
+  selectedPlaceIds,
+  onSelect,
+  onRetry,
+}: {
+  places: TripPlanPlace[];
+  configured: boolean;
+  error: string | null;
+  selectedPlaceIds: string[];
+  onSelect: (placeId: string) => void;
+  onRetry: () => void;
+}) {
   return (
-    <div className="absolute inset-0 overflow-hidden bg-[radial-gradient(circle_at_30%_20%,#d1fae5_0%,transparent_34%),radial-gradient(circle_at_75%_70%,#dbeafe_0%,transparent_40%),#edf3f1] p-5">
+    <div className="absolute inset-0 overflow-y-auto bg-[radial-gradient(circle_at_30%_20%,#d1fae5_0%,transparent_34%),radial-gradient(circle_at_75%_70%,#dbeafe_0%,transparent_40%),#edf3f1] p-5">
       <div className="absolute inset-0 opacity-25 [background-image:linear-gradient(#94a3b8_1px,transparent_1px),linear-gradient(90deg,#94a3b8_1px,transparent_1px)] [background-size:36px_36px]" />
-      <div className="relative flex h-full flex-col justify-center gap-3">
-        {places.slice(0, 6).map((place, index) => (
-          <a
-            className="flex items-center gap-3 rounded-2xl border border-white/70 bg-white/85 p-3 shadow-sm backdrop-blur transition-transform hover:translate-x-1"
-            href={amapPlaceUrl(place)}
-            key={place.plan_item_id}
-            rel="noreferrer noopener"
-            target="_blank"
-          >
-            <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#0f766e] text-[10px] font-bold text-white">
-              {index + 1}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-xs font-medium">{place.name}</span>
-            <ChevronRight className="text-[#8090a0]" size={14} />
-          </a>
-        ))}
+      <div className="relative flex min-h-full flex-col justify-center gap-3">
+        {(error || !configured) && places.length > 0 && (
+          <div className="rounded-2xl border border-amber-200/70 bg-amber-50/95 px-4 py-3 text-[10px] leading-4 text-amber-900 shadow-sm">
+            <p className="font-semibold">
+              {configured ? "高德地图没有成功加载" : "前端尚未读取到高德 JS Key"}
+            </p>
+            <p className="mt-1">
+              {error ?? "保存 apps/web/.env.local 后，需要重新启动前端开发服务。"}
+            </p>
+            {configured && (
+              <button className="mt-2 font-semibold underline underline-offset-4" onClick={onRetry} type="button">
+                重新加载地图
+              </button>
+            )}
+          </div>
+        )}
+        {places.slice(0, 6).map((place, index) => {
+          const selectedIndex = selectedPlaceIds.indexOf(place.plan_item_id);
+          return (
+            <button
+              aria-pressed={selectedIndex >= 0}
+              className={`flex items-center gap-3 rounded-2xl border bg-white/90 p-3 text-left shadow-sm backdrop-blur transition-transform hover:translate-x-1 ${
+                selectedIndex >= 0 ? "border-[#0f766e]/40" : "border-white/70"
+              }`}
+              key={place.plan_item_id}
+              onClick={() => onSelect(place.plan_item_id)}
+              type="button"
+            >
+              <span
+                className={`grid size-7 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white ${
+                  selectedIndex === 0
+                    ? "bg-amber-500"
+                    : selectedIndex === 1
+                      ? "bg-red-500"
+                      : "bg-[#0f766e]"
+                }`}
+              >
+                {selectedIndex === 0 ? "起" : selectedIndex === 1 ? "终" : index + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs font-medium">{place.name}</span>
+              <ChevronRight className="text-[#8090a0]" size={14} />
+            </button>
+          );
+        })}
         {places.length === 0 && (
           <div className="text-center text-xs text-[#697586]">当前没有可显示的地点坐标。</div>
-        )}
-        {!configured && places.length > 0 && (
-          <p className="mt-1 text-center text-[10px] leading-4 text-[#697586]">
-            配置前端高德 JS Key 后显示交互地图；当前仍可点击地点打开高德。
-          </p>
         )}
       </div>
     </div>
