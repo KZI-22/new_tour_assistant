@@ -88,6 +88,7 @@ _NON_TOURISM_TYPE_MARKERS = (
 )
 _GENERIC_NAME_SUFFIXES = ("风景名胜区", "旅游景区", "风景区", "旅游区", "景区")
 _LARGE_SCENIC_MARKERS = ("国家公园", "风景名胜区", "旅游度假区", "自然保护区")
+_COMPOUND_NAME_SUFFIXES = ("广场", "博物院", "博物馆")
 _REMOTE_LOW_CONFIDENCE_DISTANCE_KM = 20
 
 _DURATION_MINUTES = {
@@ -409,27 +410,33 @@ def score_candidates(candidates: list[AttractionCandidate]) -> None:
 def exclude_remote_low_confidence_candidates(
     candidates: list[AttractionCandidate],
 ) -> tuple[list[AttractionCandidate], list[RejectedAttraction]]:
-    tourism_candidates = [item for item in candidates if item.attraction_type != "other"]
-    if not tourism_candidates:
+    trusted_cores = [item for item in candidates if item.fame_tier in {"S", "A"}]
+    if not trusted_cores:
         return candidates, []
     kept: list[AttractionCandidate] = []
     rejected: list[RejectedAttraction] = []
     for candidate in candidates:
-        if candidate.attraction_type != "other":
+        if candidate.fame_tier == "S":
             kept.append(candidate)
             continue
-        nearest_tourism_distance = min(
-            haversine_km(candidate.place, item.place) for item in tourism_candidates
+        other_trusted_cores = [
+            item for item in trusted_cores if item.place.poi_id != candidate.place.poi_id
+        ]
+        if not other_trusted_cores:
+            kept.append(candidate)
+            continue
+        nearest_core_distance = min(
+            haversine_km(candidate.place, item.place) for item in other_trusted_cores
         )
         if (
             candidate.fame_tier != "S"
-            and nearest_tourism_distance > _REMOTE_LOW_CONFIDENCE_DISTANCE_KM
+            and nearest_core_distance > _REMOTE_LOW_CONFIDENCE_DISTANCE_KM
         ):
             rejected.append(
                 RejectedAttraction(
                     place=candidate.place,
                     reason=(
-                        "POI 旅游属性置信度不足，且距已识别旅游景点超过 "
+                        "候选景点距主旅游核心超过 "
                         f"{_REMOTE_LOW_CONFIDENCE_DISTANCE_KM} 公里"
                     ),
                     search_ranks=dict(candidate.search_ranks),
@@ -856,11 +863,28 @@ def _pre_score_key(candidate: AttractionCandidate) -> tuple[int, int, int, str]:
 def _is_fuzzy_duplicate(left: AttractionCandidate, right: AttractionCandidate) -> bool:
     if "large_scenic_area" in {left.attraction_type, right.attraction_type}:
         return False
+    if _is_nearby_name_containment(left, right):
+        return True
     if left.attraction_type != right.attraction_type:
         return False
     similarity = SequenceMatcher(None, left.normalized_name, right.normalized_name).ratio()
     return (
         similarity >= 0.88 and haversine_km(left.place, right.place) < FUZZY_DUPLICATE_DISTANCE_KM
+    )
+
+
+def _is_nearby_name_containment(
+    left: AttractionCandidate,
+    right: AttractionCandidate,
+) -> bool:
+    shorter, longer = sorted(
+        (left.normalized_name, right.normalized_name),
+        key=lambda item: (len(item), item),
+    )
+    return (
+        len(shorter) >= 3
+        and longer.removeprefix(shorter) in _COMPOUND_NAME_SUFFIXES
+        and haversine_km(left.place, right.place) < FUZZY_DUPLICATE_DISTANCE_KM
     )
 
 

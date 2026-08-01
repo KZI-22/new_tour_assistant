@@ -33,13 +33,14 @@ def place(
     longitude: float,
     *,
     poi_type: str = "风景名胜",
+    city: str = "南京",
 ) -> AmapPlace:
     return AmapPlace(
         poi_id=poi_id,
         name=name,
         address=f"{name}地址",
         province="江苏省",
-        city="南京市",
+        city=f"{city}市",
         district="玄武区",
         adcode="320102",
         poi_type=poi_type,
@@ -149,6 +150,36 @@ def test_normalization_exact_and_fuzzy_dedup_preserve_recall_evidence() -> None:
     }
 
 
+def test_nearby_name_containment_merges_attraction_compound() -> None:
+    square = place(
+        "tiananmen-square",
+        "天安门广场",
+        116.3970,
+        poi_type="风景名胜;城市广场",
+        city="北京",
+    )
+    gate = place(
+        "tiananmen-gate",
+        "天安门",
+        116.4050,
+        poi_type="风景名胜;国家级景点",
+        city="北京",
+    )
+
+    candidates, stats, rejected = merge_and_deduplicate_candidates(
+        "北京",
+        [
+            (PoiSearchTask(keyword="旅游景点", is_base=True), [square]),
+            (PoiSearchTask(keyword="风景名胜", is_base=True), [square, gate]),
+        ],
+    )
+
+    assert [item.place.poi_id for item in candidates] == ["tiananmen-square"]
+    assert set(candidates[0].search_ranks) == {"旅游景点", "风景名胜"}
+    assert stats["fuzzy_duplicates"] == 1
+    assert rejected == []
+
+
 def test_parent_poi_absorbs_child_recall_evidence() -> None:
     parent = place("scenic", "钟山风景区", 118.8000)
     child = place("ming-tomb", "明孝陵", 118.8005)
@@ -235,6 +266,7 @@ def test_remote_low_confidence_other_poi_is_rejected_before_selection() -> None:
         poi_type="科教文化服务;博物馆",
     )
     remote = candidate("remote", 119.100, score=90, poi_type="其他")
+    museum.fame_tier = "S"
     remote.fame_tier = "A"
 
     kept, rejected = exclude_remote_low_confidence_candidates([museum, remote])
@@ -242,6 +274,32 @@ def test_remote_low_confidence_other_poi_is_rejected_before_selection() -> None:
     assert [item.place.poi_id for item in kept] == ["museum"]
     assert [item.place.poi_id for item in rejected] == ["remote"]
     assert "超过 20 公里" in rejected[0].reason
+
+
+def test_remote_non_s_scenic_area_is_rejected_from_city_core() -> None:
+    city_core = candidate(
+        "city-core",
+        118.800,
+        score=80,
+        poi_type="科教文化服务;博物馆",
+    )
+    city_core.fame_tier = "S"
+    remote_scenic_area = candidate(
+        "remote-scenic-area",
+        119.900,
+        score=70,
+        poi_type="风景名胜;风景名胜区",
+    )
+    remote_scenic_area.fame_tier = "B"
+
+    kept, rejected = exclude_remote_low_confidence_candidates(
+        [city_core, remote_scenic_area]
+    )
+
+    assert remote_scenic_area.attraction_type == "large_scenic_area"
+    assert [item.place.poi_id for item in kept] == ["city-core"]
+    assert [item.place.poi_id for item in rejected] == ["remote-scenic-area"]
+    assert "主旅游核心超过 20 公里" in rejected[0].reason
 
 
 def test_selection_keeps_higher_scoring_same_type_attractions() -> None:
