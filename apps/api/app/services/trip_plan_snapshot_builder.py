@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.schemas.map_planning import MapDayEvidence, MapPlaceEvidence
-from app.schemas.trip_evidence import JoinedTripEvidence
+from app.schemas.platform_planning import RestaurantSearchEvidence, StructuredTripRequest
+from app.schemas.trip_evidence import JoinedTripEvidence, MapWeatherEvidenceBundle
 from app.schemas.trip_options import HotelOptionSnapshot, TransportOptionSnapshot
 from app.schemas.trip_plan_snapshot import (
     TripHotelSnapshot,
@@ -14,7 +15,9 @@ from app.schemas.trip_plan_snapshot import (
     TripPlanPlaceSnapshot,
     TripPlanRouteLegSnapshot,
     TripPlanSnapshot,
+    TripPlanSnapshotV2,
     TripPlanSourceMetadata,
+    TripPlanSourceMetadataV2,
     TripPlanWeatherSnapshot,
     TripTransportSnapshot,
 )
@@ -38,9 +41,7 @@ class TripPlanSnapshotBuilder:
             map_evidence.planning_run_id if map_evidence is not None else "unavailable"
         )
         weather_by_date = (
-            {day.date: day for day in weather_evidence.days}
-            if weather_evidence is not None
-            else {}
+            {day.date: day for day in weather_evidence.days} if weather_evidence is not None else {}
         )
         days = [
             self._build_day(
@@ -114,6 +115,77 @@ class TripPlanSnapshotBuilder:
                 ),
                 transport_queried_at=evidence.transport.queried_at,
                 hotel_queried_at=evidence.hotel.queried_at,
+                attraction_exclusions=[
+                    TripPlanAttractionExclusionSnapshot(
+                        provider_place_id=item.poi_id,
+                        name=item.name,
+                        poi_type=item.poi_type,
+                        stage=item.stage,
+                        reason=item.reason,
+                        source_queries=list(item.source_queries),
+                        best_search_rank=item.best_search_rank,
+                        candidate_score=item.candidate_score,
+                    )
+                    for item in (
+                        map_evidence.excluded_attractions if map_evidence is not None else []
+                    )
+                ],
+            ),
+        )
+
+    def build_structured(
+        self,
+        request: StructuredTripRequest,
+        map_weather: MapWeatherEvidenceBundle,
+        restaurants: RestaurantSearchEvidence,
+        *,
+        planning_run_id: str,
+    ) -> TripPlanSnapshotV2:
+        map_evidence = map_weather.map
+        weather_evidence = map_weather.weather
+        weather_by_date = (
+            {day.date: day for day in weather_evidence.days} if weather_evidence is not None else {}
+        )
+        days = [
+            self._build_day(
+                day,
+                weather_by_date.get(day.date),
+                planning_run_id=planning_run_id,
+                weather_queried_at=(
+                    weather_evidence.queried_at if weather_evidence is not None else None
+                ),
+            )
+            for day in (map_evidence.days if map_evidence is not None else [])
+        ]
+        warnings = list(
+            dict.fromkeys(
+                [
+                    *map_weather.warnings,
+                    *restaurants.warnings,
+                ]
+            )
+        )
+        overall_status = (
+            "failed"
+            if map_weather.status == "failed"
+            else "partial"
+            if map_weather.status == "partial" or restaurants.status == "failed"
+            else "usable"
+        )
+        return TripPlanSnapshotV2(
+            request=request,
+            days=days,
+            restaurant_recommendations=list(restaurants.recommendations),
+            overall_status=overall_status,
+            warnings=warnings,
+            source_metadata=TripPlanSourceMetadataV2(
+                planning_run_id=planning_run_id,
+                generated_at=datetime.now(UTC),
+                map_queried_at=map_evidence.queried_at if map_evidence is not None else None,
+                weather_queried_at=(
+                    weather_evidence.queried_at if weather_evidence is not None else None
+                ),
+                restaurant_queried_at=restaurants.queried_at,
                 attraction_exclusions=[
                     TripPlanAttractionExclusionSnapshot(
                         provider_place_id=item.poi_id,
@@ -220,6 +292,21 @@ def build_trip_plan_snapshot(
     )
 
 
+def build_structured_trip_plan_snapshot(
+    request: StructuredTripRequest,
+    map_weather: MapWeatherEvidenceBundle,
+    restaurants: RestaurantSearchEvidence,
+    *,
+    planning_run_id: str,
+) -> TripPlanSnapshotV2:
+    return TripPlanSnapshotBuilder().build_structured(
+        request,
+        map_weather,
+        restaurants,
+        planning_run_id=planning_run_id,
+    )
+
+
 def _build_weather_snapshot(
     weather: DailyWeatherEvidence | None,
     *,
@@ -261,5 +348,6 @@ def _normalize_field_sources(
 
 __all__ = [
     "TripPlanSnapshotBuilder",
+    "build_structured_trip_plan_snapshot",
     "build_trip_plan_snapshot",
 ]

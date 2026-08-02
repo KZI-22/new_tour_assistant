@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conversation_id: UUID | None = None
+    active_plan_id: UUID | None = None
     model_id: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=100_000)
     planning_source: PlanningSource = "standard"

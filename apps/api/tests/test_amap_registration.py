@@ -63,7 +63,7 @@ def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: 
     application = create_app(settings(tmp_path, api_key="test-key"))
     names = [tool.name for tool in application.state.travel_tools]
 
-    assert len(names) == len(set(names)) == 11
+    assert len(names) == len(set(names)) == 12
     assert set(names) == {
         "ai_search",
         "search_poi",
@@ -73,6 +73,7 @@ def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: 
         "search_hotel",
         "amap_get_current_city",
         "amap_search_places",
+        "amap_search_restaurants",
         "amap_plan_route",
         "amap_travel_time_matrix",
         "amap_get_weather",

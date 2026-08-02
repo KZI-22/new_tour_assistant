@@ -50,6 +50,11 @@ class User(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    travel_plans: Mapped[list[TravelPlan]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('active', 'disabled')", name="ck_users_status"),
@@ -203,8 +208,11 @@ class TravelPlan(Base):
     __tablename__ = "travel_plans"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, unique=True
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, unique=True
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
@@ -218,7 +226,8 @@ class TravelPlan(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    conversation: Mapped[Conversation] = relationship(back_populates="travel_plan")
+    user: Mapped[User] = relationship(back_populates="travel_plans")
+    conversation: Mapped[Conversation | None] = relationship(back_populates="travel_plan")
     versions: Mapped[list[TravelPlanVersion]] = relationship(
         back_populates="plan",
         cascade="all, delete-orphan",
@@ -232,6 +241,7 @@ class TravelPlan(Base):
             name="ck_travel_plans_status",
         ),
         CheckConstraint("current_version >= 0", name="ck_travel_plans_current_version"),
+        Index("ix_travel_plans_user_updated_at", "user_id", "updated_at"),
         Index("ix_travel_plans_conversation_status", "conversation_id", "status"),
     )
 

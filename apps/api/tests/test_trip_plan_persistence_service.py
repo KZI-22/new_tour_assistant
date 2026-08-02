@@ -56,9 +56,10 @@ class FakeTripPlanVersionRepository:
     def __init__(self) -> None:
         self.plan: TravelPlan | None = None
         self.versions: list[TravelPlanVersion] = []
+        self.user_id = uuid4()
 
     async def lock_conversation(self, *_: object) -> object:
-        return object()
+        return type("Conversation", (), {"user_id": self.user_id})()
 
     async def get_owned_plan(
         self,
@@ -104,6 +105,7 @@ class FakeTripPlanVersionRepository:
         self,
         _: object,
         *,
+        user_id: object,
         conversation_id: object,
         title: str,
         request_json: dict[str, object],
@@ -111,6 +113,7 @@ class FakeTripPlanVersionRepository:
     ) -> TravelPlan:
         self.plan = TravelPlan(
             id=uuid4(),
+            user_id=user_id,
             conversation_id=conversation_id,
             title=title,
             status="active",
@@ -159,11 +162,13 @@ def snapshot() -> TripPlanSnapshot:
 
 def artifact(
     *,
+    user_id: UUID,
     conversation_id: UUID,
     assistant_message_id: UUID,
 ) -> TripPlanVersionArtifact:
     plan_snapshot = snapshot()
     return TripPlanVersionArtifact(
+        user_id=user_id,
         conversation_id=conversation_id,
         assistant_message_id=assistant_message_id,
         snapshot=plan_snapshot,
@@ -188,6 +193,7 @@ async def test_persistence_creates_immutable_parented_versions_and_is_idempotent
     first_message_id = uuid4()
     conversation_id = uuid4()
     first_artifact = artifact(
+        user_id=repository.user_id,
         conversation_id=conversation_id,
         assistant_message_id=first_message_id,
     )
@@ -196,6 +202,7 @@ async def test_persistence_creates_immutable_parented_versions_and_is_idempotent
     duplicate = await service.save_completed_version(first_artifact)
     second = await service.save_completed_version(
         artifact(
+            user_id=repository.user_id,
             conversation_id=conversation_id,
             assistant_message_id=uuid4(),
         )

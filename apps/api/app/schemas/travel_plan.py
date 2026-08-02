@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.trip_itinerary import TripNarrativePlan
-from app.schemas.trip_plan_snapshot import TripPlanSnapshot
+from app.schemas.trip_plan_snapshot import TripPlanSnapshotAny
 
 
 class TravelPlanModel(BaseModel):
@@ -26,7 +26,7 @@ class TravelPlanDetailResponse(TravelPlanReference):
     current_version: int = Field(ge=1)
     change_summary: str | None = None
     created_at: datetime
-    snapshot: TripPlanSnapshot
+    snapshot: TripPlanSnapshotAny
     narrative: TripNarrativePlan | None = None
 
 

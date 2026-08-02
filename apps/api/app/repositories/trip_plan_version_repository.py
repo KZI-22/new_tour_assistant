@@ -17,13 +17,29 @@ class TripPlanVersionRepository:
         plan_id: uuid.UUID,
     ) -> TravelPlan | None:
         return await session.scalar(
-            select(TravelPlan)
-            .join(Conversation, TravelPlan.conversation_id == Conversation.id)
-            .where(
+            select(TravelPlan).where(
                 TravelPlan.id == plan_id,
-                Conversation.user_id == user_id,
+                TravelPlan.user_id == user_id,
             )
         )
+
+    async def list_owned_plans(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        limit: int = 100,
+    ) -> list[TravelPlan]:
+        result = await session.scalars(
+            select(TravelPlan)
+            .where(
+                TravelPlan.user_id == user_id,
+                TravelPlan.current_version > 0,
+            )
+            .order_by(TravelPlan.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result)
 
     async def lock_conversation(
         self,
@@ -74,6 +90,22 @@ class TripPlanVersionRepository:
             .with_for_update(of=TravelPlan)
         )
 
+    async def get_owned_plan_for_update(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+    ) -> TravelPlan | None:
+        return await session.scalar(
+            select(TravelPlan)
+            .where(
+                TravelPlan.id == plan_id,
+                TravelPlan.user_id == user_id,
+            )
+            .with_for_update(of=TravelPlan)
+        )
+
     async def get_version(
         self,
         session: AsyncSession,
@@ -92,12 +124,14 @@ class TripPlanVersionRepository:
         self,
         session: AsyncSession,
         *,
-        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
         title: str,
         request_json: dict[str, object],
         snapshot_json: dict[str, object],
     ) -> TravelPlan:
         plan = TravelPlan(
+            user_id=user_id,
             conversation_id=conversation_id,
             title=title,
             status="active",

@@ -37,6 +37,7 @@ class FakeAmapClient:
         )
 
     async def search_places(self, query: Any) -> PlaceSearchResult:
+        is_restaurant = query.poi_type == "餐饮服务"
         return PlaceSearchResult(
             pois=[
                 AmapPlace(
@@ -47,7 +48,7 @@ class FakeAmapClient:
                     city="南京市",
                     district="玄武区",
                     adcode="320102",
-                    poi_type="博物馆",
+                    poi_type="餐饮服务;中餐厅" if is_restaurant else "博物馆",
                     location=AmapCoordinate(longitude=118.8, latitude=32.0),
                 )
             ]
@@ -104,6 +105,7 @@ async def test_tool_names_schemas_outputs_and_server_side_ip() -> None:
     assert set(by_name) == {
         "amap_get_current_city",
         "amap_search_places",
+        "amap_search_restaurants",
         "amap_plan_route",
         "amap_travel_time_matrix",
         "amap_get_weather",
@@ -116,6 +118,9 @@ async def test_tool_names_schemas_outputs_and_server_side_ip() -> None:
         current = await by_name["amap_get_current_city"].ainvoke({})
     places = await by_name["amap_search_places"].ainvoke(
         {"keywords": "南京博物院", "adcode": "320100"}
+    )
+    restaurants = await by_name["amap_search_restaurants"].ainvoke(
+        {"city": "南京", "keyword": "本地特色美食"}
     )
     route = await by_name["amap_plan_route"].ainvoke(
         {
@@ -139,6 +144,7 @@ async def test_tool_names_schemas_outputs_and_server_side_ip() -> None:
     assert "8.8.8.8" not in str(current)
     assert current["data"]["accuracy_level"] == "city"
     assert places["data"]["pois"][0]["location"]["coordinate_system"] == "GCJ02"
+    assert restaurants["data"]["pois"][0]["poi_type"].startswith("餐饮服务")
     assert route["data"]["mode"] == RouteMode.WALKING
     assert matrix["success"] is True
     assert weather["data"]["current"]["weather"] == "晴"

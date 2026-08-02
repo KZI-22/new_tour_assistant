@@ -90,9 +90,10 @@ class Settings:
     app_timezone: str = "Asia/Shanghai"
     trusted_proxy_cidrs: tuple[str, ...] = ()
     trip_planner_enabled: bool = True
-    trip_planner_max_days: int = 5
+    trip_planner_max_days: int = 10
     trip_planner_model_timeout_seconds: float = 90
     trip_planner_request_extraction_timeout_seconds: float = 30
+    direct_search_presentation_timeout_seconds: float = 30
     xhs_mcp_transport: Literal["streamable-http", "stdio"] = "streamable-http"
     xhs_mcp_url: str = "http://127.0.0.1:8765/mcp"
     xhs_mcp_auth_token: str | None = field(default=None, repr=False)
@@ -117,6 +118,9 @@ class Settings:
             "trip_planner_model_timeout_seconds": self.trip_planner_model_timeout_seconds,
             "trip_planner_request_extraction_timeout_seconds": (
                 self.trip_planner_request_extraction_timeout_seconds
+            ),
+            "direct_search_presentation_timeout_seconds": (
+                self.direct_search_presentation_timeout_seconds
             ),
             "amap_poi_max_concurrency": self.amap_poi_max_concurrency,
             "amap_route_max_concurrency": self.amap_route_max_concurrency,
@@ -262,12 +266,15 @@ def get_settings() -> Settings:
         app_timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai"),
         trusted_proxy_cidrs=trusted_proxy_cidrs,
         trip_planner_enabled=_environment_bool("TRIP_PLANNER_ENABLED", True),
-        trip_planner_max_days=int(os.getenv("TRIP_PLANNER_MAX_DAYS", "5")),
+        trip_planner_max_days=int(os.getenv("TRIP_PLANNER_MAX_DAYS", "10")),
         trip_planner_model_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_MODEL_TIMEOUT_SECONDS", "90")
         ),
         trip_planner_request_extraction_timeout_seconds=float(
             os.getenv("TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS", "30")
+        ),
+        direct_search_presentation_timeout_seconds=float(
+            os.getenv("DIRECT_SEARCH_PRESENTATION_TIMEOUT_SECONDS", "30")
         ),
         xhs_mcp_transport=(os.getenv("XHS_MCP_TRANSPORT", "streamable-http").strip().casefold()),
         xhs_mcp_url=(os.getenv("XHS_MCP_URL") or "http://127.0.0.1:8765/mcp").rstrip("/"),

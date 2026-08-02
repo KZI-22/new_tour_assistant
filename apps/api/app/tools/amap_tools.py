@@ -17,6 +17,8 @@ from app.schemas.amap import (
     TravelTimeMatrixInput,
     WeatherInput,
 )
+from app.schemas.platform_planning import RestaurantSearchInput
+from app.services.restaurant_recommendation_service import search_restaurant_places
 
 
 def _success(data: AmapToolData) -> dict[str, Any]:
@@ -92,6 +94,26 @@ def build_search_places_tool(client: AmapClient) -> StructuredTool:
     )
 
 
+def build_search_restaurants_tool(client: AmapClient) -> StructuredTool:
+    async def search_restaurants(**values: Any) -> dict[str, Any]:
+        query = RestaurantSearchInput.model_validate(values)
+        try:
+            return _success(await search_restaurant_places(client, query))
+        except AmapError as exc:
+            return _failure(exc)
+
+    return StructuredTool.from_function(
+        coroutine=search_restaurants,
+        name="amap_search_restaurants",
+        description=(
+            "Search verified Amap restaurant POIs in a user-specified city. The tool enforces "
+            "the dining category and returns names, addresses, ratings, business areas, POI IDs, "
+            "and GCJ-02 coordinates when supplied by Amap."
+        ),
+        args_schema=RestaurantSearchInput,
+    )
+
+
 def build_plan_route_tool(client: AmapClient) -> StructuredTool:
     async def plan_route(**values: Any) -> dict[str, Any]:
         query = RoutePlanInput.model_validate(values)
@@ -155,6 +177,7 @@ def build_amap_tools(client: AmapClient) -> list[StructuredTool]:
     return [
         build_current_city_tool(client),
         build_search_places_tool(client),
+        build_search_restaurants_tool(client),
         build_plan_route_tool(client),
         build_travel_time_matrix_tool(client),
         build_weather_tool(client),
@@ -166,6 +189,7 @@ __all__ = [
     "build_current_city_tool",
     "build_plan_route_tool",
     "build_search_places_tool",
+    "build_search_restaurants_tool",
     "build_travel_time_matrix_tool",
     "build_weather_tool",
 ]

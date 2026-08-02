@@ -13,7 +13,7 @@ from app.schemas.chat import ChatMessage
 from app.schemas.routing import TripRouteDecision
 from app.schemas.tool_execution import MessageDeltaEvent, PlanningStageEvent
 from app.schemas.xhs_planning import XhsPostEvidence, XhsResearchResult
-from app.services.chat_service import ChatService
+from app.services.chat_service import ChatService, _to_langchain_messages
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 
@@ -160,6 +160,18 @@ def _service() -> tuple[ChatService, FakeRegistry, FakeHybridModel, FakeResearch
     return service, registry, model, research
 
 
+def test_active_plan_context_is_injected_as_read_only_system_data() -> None:
+    messages = _to_langchain_messages(
+        [ChatMessage(role="user", content="第二天有什么？")],
+        plan_context='{"title":"成都3日旅行方案"}',
+    )
+
+    system_prompt = str(messages[0].content)
+    assert "成都3日旅行方案" in system_prompt
+    assert "只读参考数据" in system_prompt
+    assert "不能声称已经修改" in system_prompt
+
+
 @pytest.mark.asyncio
 async def test_explicit_xhs_mode_bypasses_all_llm_calls_and_returns_raw_posts() -> None:
     service, registry, model, research = _service()
@@ -253,7 +265,7 @@ async def test_standard_general_query_keeps_existing_agent_executor() -> None:
         == "单项查询"
     )
     assert registry.model_ids == ["test"]
-    assert registry.router_calls == 1
+    assert registry.router_calls == 0
     assert model.bind_calls == 1
 
 
@@ -326,28 +338,8 @@ async def test_router_failure_still_falls_back_to_general_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_standard_source_routes_planning_intent_to_trip_planner_graph() -> None:
+async def test_standard_source_keeps_planning_text_in_general_agent() -> None:
     service, registry, _, research = _service()
-
-    class FakeStandardTripPlanner:
-        calls = 0
-
-        async def stream(
-            self,
-            _: object,
-            messages: list[ChatMessage],
-            *,
-            route_source: str,
-            execution_context: object | None,
-        ) -> Any:
-            self.calls += 1
-            assert messages[-1].content == "帮我规划成都三日游"
-            assert route_source == "llm_router"
-            assert execution_context is None
-            yield MessageDeltaEvent(delta="地图方案")
-
-    fake_planner = FakeStandardTripPlanner()
-    service._standard_trip_planner = fake_planner  # type: ignore[assignment]
 
     events = [
         event
@@ -357,8 +349,7 @@ async def test_standard_source_routes_planning_intent_to_trip_planner_graph() ->
         )
     ]
 
-    assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == ["地图方案"]
-    assert fake_planner.calls == 1
-    assert registry.router_calls == 1
+    assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == ["单项查询"]
+    assert registry.router_calls == 0
     assert research.keywords == []
     assert research.login_checks == 0

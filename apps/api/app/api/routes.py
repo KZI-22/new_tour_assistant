@@ -18,13 +18,20 @@ from app.core.model_registry import (
     UnavailableModelError,
     UnknownModelError,
 )
+from app.graphs.structured_trip_planner import StructuredTripPlannerError
 from app.schemas.chat import ChatRequest, HealthResponse, ModelListResponse
 from app.schemas.conversation import ConversationDetailResponse, ConversationSummaryResponse
+from app.schemas.platform_planning import (
+    DirectTravelSearchResponse,
+    TravelPlanSummaryResponse,
+    TripPlanCreateRequest,
+)
 from app.schemas.tool_execution import (
     ChatStreamEvent,
     MessageDeltaEvent,
     PlanningTraceEvent,
 )
+from app.schemas.travel import FlightSearchInput, HotelSearchInput, TrainSearchInput
 from app.schemas.travel_plan import TravelPlanDetailResponse
 from app.services.agent_executor import AgentExecutionError
 from app.services.auth_service import AuthenticatedUser
@@ -81,6 +88,10 @@ def _travel_plan_service(request: Request) -> TripPlanPersistenceService:
             detail="Travel plan storage is not configured.",
         )
     return service
+
+
+def _direct_search_service(request: Request):
+    return request.app.state.direct_travel_search_service
 
 
 async def _finish_safely(
@@ -206,6 +217,139 @@ async def get_travel_plan(
     return plan
 
 
+@router.get("/travel-plans", response_model=list[TravelPlanSummaryResponse])
+async def list_travel_plans(
+    request: Request,
+    response: Response,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+) -> list[TravelPlanSummaryResponse]:
+    plans = await _travel_plan_service(request).list_plans(user.id)
+    response.headers["Cache-Control"] = "private, no-store"
+    return plans
+
+
+@router.post("/travel-plans/stream")
+async def stream_travel_plan(
+    payload: TripPlanCreateRequest,
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    _: Annotated[str, Depends(require_csrf_protection)],
+) -> StreamingResponse:
+    planner = request.app.state.structured_trip_planner
+    if planner is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Structured trip planning is not configured.",
+        )
+    try:
+        model = request.app.state.model_registry.create_model(payload.model_id)
+        stream = planner.stream(
+            model,
+            payload.request,
+            user_id=user.id,
+            plan_id=payload.plan_id,
+        )
+        first_event = await anext(stream, None)
+    except UnknownModelError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except UnavailableModelError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except StructuredTripPlannerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=exc.user_message,
+        ) from exc
+    except Exception as exc:
+        logger.exception("Structured trip plan failed before streaming")
+        raise _provider_http_exception(exc) from exc
+
+    heartbeat_seconds = request.app.state.settings.xhs_sse_heartbeat_seconds
+
+    async def events() -> AsyncIterator[str]:
+        next_event_task: asyncio.Task[ChatStreamEvent | str | None] | None = None
+        try:
+            if first_event is not None:
+                yield _chat_event_sse(first_event)
+            next_event_task = asyncio.create_task(anext(stream, None))
+            while True:
+                done, _ = await asyncio.wait(
+                    {next_event_task},
+                    timeout=heartbeat_seconds,
+                )
+                if not done:
+                    yield ": heartbeat\n\n"
+                    continue
+                event = next_event_task.result()
+                next_event_task = None
+                if event is None:
+                    break
+                yield _chat_event_sse(event)
+                next_event_task = asyncio.create_task(anext(stream, None))
+            yield _sse("done", {})
+        except StructuredTripPlannerError as exc:
+            yield _sse(
+                "error",
+                {"type": "error", "code": exc.code, "message": exc.user_message},
+            )
+        except Exception:
+            logger.exception("Structured trip plan stream failed")
+            yield _sse(
+                "error",
+                {
+                    "type": "error",
+                    "code": "TRIP_PLAN_STREAM_FAILED",
+                    "message": "旅行规划生成中断，请稍后重试。",
+                },
+            )
+        finally:
+            if next_event_task is not None and not next_event_task.done():
+                next_event_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await next_event_task
+            with suppress(Exception):
+                await stream.aclose()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/search/hotels", response_model=DirectTravelSearchResponse)
+async def search_hotels(
+    payload: HotelSearchInput,
+    request: Request,
+    _: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    __: Annotated[str, Depends(require_csrf_protection)],
+) -> DirectTravelSearchResponse:
+    return await _direct_search_service(request).search_hotel(payload)
+
+
+@router.post("/search/flights", response_model=DirectTravelSearchResponse)
+async def search_flights(
+    payload: FlightSearchInput,
+    request: Request,
+    _: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    __: Annotated[str, Depends(require_csrf_protection)],
+) -> DirectTravelSearchResponse:
+    return await _direct_search_service(request).search_flight(payload)
+
+
+@router.post("/search/trains", response_model=DirectTravelSearchResponse)
+async def search_trains(
+    payload: TrainSearchInput,
+    request: Request,
+    _: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    __: Annotated[str, Depends(require_csrf_protection)],
+) -> DirectTravelSearchResponse:
+    return await _direct_search_service(request).search_train(payload)
+
+
 @router.post("/chat/stream")
 async def stream_chat(
     payload: ChatRequest,
@@ -213,6 +357,23 @@ async def stream_chat(
     user: Annotated[AuthenticatedUser, Depends(require_current_user)],
     _: Annotated[str, Depends(require_csrf_protection)],
 ) -> StreamingResponse:
+    plan_context: str | None = None
+    if payload.active_plan_id is not None:
+        try:
+            active_plan = await _travel_plan_service(request).get_plan(
+                user.id,
+                payload.active_plan_id,
+            )
+        except TripPlanNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Active travel plan not found.",
+            ) from exc
+        plan_context = active_plan.model_dump_json(
+            exclude={"narrative"},
+            exclude_none=True,
+        )[:40_000]
+
     conversation_service = _conversation_service(request)
     try:
         turn = await conversation_service.start_turn(
@@ -242,12 +403,13 @@ async def stream_chat(
             conversation_id=turn.conversation_id,
             assistant_message_id=turn.assistant_message_id,
         )
-        stream = service.stream(
-            payload.model_id,
-            turn.messages,
-            planning_source=payload.planning_source,
-            execution_context=execution_context,
-        )
+        stream_kwargs: dict[str, object] = {
+            "planning_source": payload.planning_source,
+            "execution_context": execution_context,
+        }
+        if plan_context is not None:
+            stream_kwargs["plan_context"] = plan_context
+        stream = service.stream(payload.model_id, turn.messages, **stream_kwargs)
         first_event = await anext(stream, None)
     except asyncio.CancelledError:
         if stream is not None:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field
 
 from app.schemas.amap import AmapCoordinate
+from app.schemas.platform_planning import RestaurantRecommendation, StructuredTripRequest
 from app.schemas.trip_capabilities import (
     CapabilityPlan,
     JourneyScope,
@@ -150,6 +151,37 @@ class TripPlanSnapshot(TripPlanningModel):
     source_metadata: TripPlanSourceMetadata
 
 
+class TripPlanSourceMetadataV2(TripPlanningModel):
+    planning_run_id: str
+    generated_at: datetime
+    map_queried_at: datetime | None = None
+    weather_queried_at: datetime | None = None
+    restaurant_queried_at: datetime | None = None
+    attraction_exclusions: list[TripPlanAttractionExclusionSnapshot] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+
+class TripPlanSnapshotV2(TripPlanningModel):
+    schema_version: Literal["trip_plan.v2"] = "trip_plan.v2"
+    request: StructuredTripRequest
+    days: list[TripPlanDaySnapshot] = Field(min_length=1, max_length=10)
+    restaurant_recommendations: list[RestaurantRecommendation] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    overall_status: Literal["usable", "partial", "failed"]
+    warnings: list[str] = Field(default_factory=list)
+    source_metadata: TripPlanSourceMetadataV2
+
+
+TripPlanSnapshotAny = Annotated[
+    TripPlanSnapshot | TripPlanSnapshotV2,
+    Field(discriminator="schema_version"),
+]
+
+
 __all__ = [
     "RouteMode",
     "TripHotelSnapshot",
@@ -158,7 +190,10 @@ __all__ = [
     "TripPlanPlaceSnapshot",
     "TripPlanRouteLegSnapshot",
     "TripPlanSnapshot",
+    "TripPlanSnapshotAny",
+    "TripPlanSnapshotV2",
     "TripPlanSourceMetadata",
+    "TripPlanSourceMetadataV2",
     "TripPlanWeatherSnapshot",
     "TripTransportSnapshot",
 ]

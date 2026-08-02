@@ -19,13 +19,19 @@ from app.core.request_context import RequestContextMiddleware
 from app.core.security import JwtCodec
 from app.core.settings import Settings, get_settings
 from app.db.session import create_database
+from app.graphs.structured_trip_planner import StructuredTripPlanner
 from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
+from app.services.direct_travel_search_service import DirectTravelSearchService
+from app.services.map_trip_collection_service import MapTripCollectionService
+from app.services.map_weather_collection_service import MapWeatherCollectionService
 from app.services.otp_service import OtpService
 from app.services.otp_store import RedisOtpChallengeStore
+from app.services.restaurant_recommendation_service import RestaurantRecommendationService
 from app.services.tool_call_log_service import ToolCallLogService
 from app.services.trip_plan_persistence_service import TripPlanPersistenceService
+from app.services.weather_evidence_service import WeatherEvidenceService
 from app.services.xhs_research_service import XhsResearchService
 from app.tools import build_travel_tools
 
@@ -142,7 +148,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         default_timeout_seconds=current_settings.flyai_timeout_seconds,
         max_concurrency=current_settings.flyai_max_concurrency,
     )
+    direct_travel_search_service = DirectTravelSearchService(
+        flyai_client,
+        registry,
+        presentation_timeout_seconds=current_settings.direct_search_presentation_timeout_seconds,
+    )
     travel_tools = build_travel_tools(flyai_client, amap_client)
+    structured_trip_planner = None
+    if current_settings.trip_planner_enabled and amap_client is not None:
+        map_service = MapTripCollectionService(
+            amap_client,
+            poi_max_concurrency=current_settings.amap_poi_max_concurrency,
+            route_max_concurrency=current_settings.amap_route_max_concurrency,
+            poi_page_size=current_settings.amap_poi_page_size,
+            max_raw_candidates=current_settings.max_raw_poi_candidates,
+            max_transit_transfers=current_settings.max_transit_transfers,
+            max_transit_duration_minutes=current_settings.max_transit_duration_minutes,
+            max_walk_distance_meters=current_settings.max_walk_distance_meters,
+            cluster_max_iterations=current_settings.trip_planning_cluster_max_iterations,
+            data_timeout_seconds=current_settings.trip_planning_data_timeout_seconds,
+        )
+        structured_trip_planner = StructuredTripPlanner(
+            MapWeatherCollectionService(
+                map_service,
+                WeatherEvidenceService(amap_client),
+                weather_timeout_seconds=current_settings.trip_planning_data_timeout_seconds,
+            ),
+            RestaurantRecommendationService(amap_client),
+            current_settings,
+            version_writer=trip_plan_persistence_service,
+        )
     xhs_mcp_client = None
     xhs_research_service = None
     if current_settings.trip_planner_enabled:
@@ -182,6 +217,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.conversation_service = conversation_service
     application.state.tool_call_log_service = tool_call_log_service
     application.state.trip_plan_persistence_service = trip_plan_persistence_service
+    application.state.structured_trip_planner = structured_trip_planner
+    application.state.direct_travel_search_service = direct_travel_search_service
     application.state.xhs_mcp_client = xhs_mcp_client
     application.state.xhs_research_service = xhs_research_service
     application.state.flyai_client = flyai_client

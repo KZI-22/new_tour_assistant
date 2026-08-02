@@ -99,6 +99,7 @@ class PlanningStageEvent(BaseModel):
     type: Literal["planning_stage"] = "planning_stage"
     stage: Literal[
         "understanding_request",
+        "validating_request",
         "checking_requirements",
         "checking_xhs_login",
         "waiting_xhs_login",
@@ -106,6 +107,7 @@ class PlanningStageEvent(BaseModel):
         "collecting_hotels",
         "collecting_pois",
         "collecting_weather",
+        "collecting_restaurants",
         "calculating_routes",
         "searching_xhs",
         "reading_xhs_posts",

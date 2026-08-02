@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.api.dependencies import require_csrf_protection, require_current_user
 from app.core.settings import Settings
@@ -228,6 +229,7 @@ def test_get_travel_plan_returns_owned_version(tmp_path: Path) -> None:
                 "change_summary": "更新旅游规划",
                 "created_at": "2026-08-01T08:00:00Z",
                 "snapshot": {
+                    "schema_version": "trip_plan.v1",
                     "request": {
                         "core": {
                             "destination_city": "成都",
@@ -264,6 +266,198 @@ def test_get_travel_plan_returns_owned_version(tmp_path: Path) -> None:
     assert response.headers["cache-control"] == "private, no-store"
     assert response.json()["plan_id"] == str(plan_id)
     assert response.json()["snapshot"]["request"]["core"]["destination_city"] == "成都"
+
+
+def test_stream_structured_travel_plan_uses_form_fields(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    plan_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    class FakeRegistry:
+        def create_model(self, model_id: str) -> object:
+            assert model_id == "test-model"
+            return object()
+
+    class FakePlanner:
+        async def stream(
+            self,
+            model: object,
+            planning_request: object,
+            *,
+            user_id: uuid.UUID,
+            plan_id: uuid.UUID | None,
+        ) -> AsyncIterator[PlanningStageEvent | TravelPlanReadyEvent]:
+            captured.update(
+                model=model,
+                request=planning_request,
+                user_id=user_id,
+                plan_id=plan_id,
+            )
+            yield PlanningStageEvent(
+                stage="validating_request",
+                display_name="正在校验规划表单",
+                status="success",
+            )
+            yield TravelPlanReadyEvent(
+                plan_id=plan_id or uuid.uuid4(),
+                version_id=uuid.uuid4(),
+                version=2,
+            )
+
+    client.app.state.model_registry = FakeRegistry()
+    client.app.state.structured_trip_planner = FakePlanner()
+    response = client.post(
+        "/api/v1/travel-plans/stream",
+        json={
+            "model_id": "test-model",
+            "plan_id": str(plan_id),
+            "request": {
+                "destination_city": "成都",
+                "start_date": "2026-08-10",
+                "duration_days": 3,
+                "interests": ["历史文化", "自然风光"],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert 'event: planning_stage\ndata: {"type":"planning_stage"' in response.text
+    assert 'event: travel_plan_ready\ndata: {"type":"travel_plan_ready"' in response.text
+    assert "event: done\ndata: {}" in response.text
+    planning_request = captured["request"]
+    assert planning_request.destination_city == "成都"  # type: ignore[attr-defined]
+    assert planning_request.duration_days == 3  # type: ignore[attr-defined]
+    assert captured["user_id"] == _TEST_USER.id
+    assert captured["plan_id"] == plan_id
+
+
+def test_direct_travel_search_routes_forward_user_fields(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    received: list[tuple[str, object]] = []
+
+    class FakeDirectSearchService:
+        async def search_hotel(self, query: object) -> dict[str, object]:
+            received.append(("hotel", query))
+            return _direct_search_fixture("hotel", "search_hotel")
+
+        async def search_flight(self, query: object) -> dict[str, object]:
+            received.append(("flight", query))
+            return _direct_search_fixture("flight", "search_flight")
+
+        async def search_train(self, query: object) -> dict[str, object]:
+            received.append(("train", query))
+            return _direct_search_fixture("train", "search_train")
+
+    client.app.state.direct_travel_search_service = FakeDirectSearchService()
+    responses = [
+        client.post(
+            "/api/v1/search/hotels",
+            json={
+                "destination": "杭州",
+                "check_in_date": "2026-08-10",
+                "check_out_date": "2026-08-12",
+            },
+        ),
+        client.post(
+            "/api/v1/search/flights",
+            json={
+                "origin": "上海",
+                "destination": "成都",
+                "departure_date": "2026-08-10",
+            },
+        ),
+        client.post(
+            "/api/v1/search/trains",
+            json={
+                "origin": "南京",
+                "destination": "杭州",
+                "departure_date": "2026-08-10",
+            },
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert [kind for kind, _ in received] == ["hotel", "flight", "train"]
+    assert received[0][1].destination == "杭州"  # type: ignore[attr-defined]
+    assert received[1][1].origin == "上海"  # type: ignore[attr-defined]
+    assert received[2][1].destination == "杭州"  # type: ignore[attr-defined]
+
+
+def _direct_search_fixture(kind: str, tool_name: str) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "tool_call_id": f"test-{kind}",
+        "tool_name": tool_name,
+        "arguments": {},
+        "success": True,
+        "summary": "查询完成。",
+        "options": [],
+        "provider_item_count": 0,
+        "rejected_item_count": 0,
+        "queried_at": "2026-08-02T08:00:00Z",
+    }
+
+
+def test_chat_receives_active_plan_as_read_only_context(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    plan_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    assistant_message_id = uuid.uuid4()
+
+    class FakeTravelPlanService:
+        async def get_plan(
+            self,
+            user_id: uuid.UUID,
+            requested_plan_id: uuid.UUID,
+            *,
+            version: int | None = None,
+        ) -> object:
+            assert user_id == _TEST_USER.id
+            assert requested_plan_id == plan_id
+            assert version is None
+            return SimpleNamespace(model_dump_json=lambda **_: '{"title":"成都3日旅行方案"}')
+
+    class FakeChatService:
+        async def stream(
+            self,
+            model_id: str,
+            messages: object,
+            *,
+            planning_source: str,
+            execution_context: ToolExecutionContext,
+            plan_context: str,
+        ) -> AsyncIterator[MessageDeltaEvent]:
+            del messages, planning_source, execution_context
+            assert model_id == "test-model"
+            assert "成都3日旅行方案" in plan_context
+            yield MessageDeltaEvent(delta="已参考当前规划。")
+
+    class FakeConversationService:
+        async def start_turn(self, *_: object) -> TurnContext:
+            return TurnContext(
+                conversation_id=conversation_id,
+                conversation_title="问规划",
+                assistant_message_id=assistant_message_id,
+                messages=[ChatMessage(role="user", content="第二天有什么？")],
+            )
+
+        async def finish_turn(self, *_: object, **__: object) -> None:
+            return None
+
+    client.app.state.trip_plan_persistence_service = FakeTravelPlanService()
+    client.app.state.chat_service = FakeChatService()
+    client.app.state.conversation_service = FakeConversationService()
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={
+            "model_id": "test-model",
+            "message": "第二天有什么？",
+            "active_plan_id": str(plan_id),
+        },
+    )
+
+    assert response.status_code == 200
+    assert "已参考当前规划。" in response.text
 
 
 def test_stream_chat_serializes_browser_login_without_persisting_it(tmp_path: Path) -> None:
