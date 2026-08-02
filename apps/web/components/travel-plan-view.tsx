@@ -542,6 +542,7 @@ function DayTab({ active, label, onClick }: { active: boolean; label: string; on
 function PlanOverview({ plan }: { plan: TravelPlanDetail }) {
   const { snapshot } = plan;
   const structured = snapshot.schema_version === "trip_plan.v2";
+  const practicalTips = structured ? [] : (plan.narrative?.practical_tips ?? []);
   const hasTravelOptions =
     !structured &&
     (snapshot.transport.enabled || snapshot.hotel.enabled || snapshot.transport.options.length > 0);
@@ -587,14 +588,14 @@ function PlanOverview({ plan }: { plan: TravelPlanDetail }) {
       {structured && <RestaurantRecommendations restaurants={snapshot.restaurant_recommendations} />}
       {hasTravelOptions && !structured && <TravelOptions snapshot={snapshot} />}
 
-      {(plan.narrative?.practical_tips.length || snapshot.warnings.length) && (
+      {practicalTips.length > 0 && (
         <section className="rounded-3xl border border-black/[0.055] bg-white p-5 shadow-sm sm:p-6">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Sparkles className="text-amber-500" size={18} /> 出发前提醒
           </div>
           <ul className="mt-4 space-y-2.5 text-sm leading-6 text-[#52606d]">
-            {[...(plan.narrative?.practical_tips ?? []), ...snapshot.warnings].map((tip) => (
-              <li className="flex gap-2.5" key={tip}>
+            {practicalTips.map((tip, index) => (
+              <li className="flex gap-2.5" key={`${tip}-${index}`}>
                 <span className="mt-2 size-1.5 shrink-0 rounded-full bg-amber-400" />
                 {tip}
               </li>
@@ -607,7 +608,9 @@ function PlanOverview({ plan }: { plan: TravelPlanDetail }) {
 }
 
 function DayItinerary({ plan, day }: { plan: TravelPlanDetail; day: TripPlanDay }) {
+  const structured = plan.snapshot.schema_version === "trip_plan.v2";
   const narrativeDay = plan.narrative?.days.find((item) => item.day_index === day.day_index);
+  const dayTips = structured ? [] : (narrativeDay?.tips ?? []);
   const legsByDestination = new Map(
     day.route_legs.map((leg) => [leg.destination_plan_item_id, leg]),
   );
@@ -684,14 +687,14 @@ function DayItinerary({ plan, day }: { plan: TravelPlanDetail; day: TripPlanDay 
         </div>
       </section>
 
-      {((narrativeDay?.tips.length ?? 0) > 0 || day.warnings.length > 0) && (
+      {dayTips.length > 0 && (
         <section className="rounded-3xl border border-amber-200/60 bg-amber-50 p-5 sm:p-6">
           <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
             <TriangleAlert size={17} /> 当天提醒
           </div>
           <ul className="mt-3 space-y-2 text-sm leading-6 text-amber-900/80">
-            {[...(narrativeDay?.tips ?? []), ...day.warnings].map((tip) => (
-              <li key={tip}>· {tip}</li>
+            {dayTips.map((tip, index) => (
+              <li key={`${tip}-${index}`}>· {tip}</li>
             ))}
           </ul>
         </section>
