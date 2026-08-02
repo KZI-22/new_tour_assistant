@@ -1,19 +1,24 @@
 # 远行 · 智能旅游规划助手
 
-当前里程碑是一个可运行的网页版 LLM 聊天机器人。它提供：
+当前里程碑是一个结构化智能旅游规划平台。它提供：
 
+- 以目标城市、出行日期、1–10 天时长和固定兴趣标签为唯一输入的结构化规划表单。
+- 基于高德真实 POI、路线和天气生成的单城市逐日行程，不在核心计划中混入酒店、航班或车票。
+- 规划完成后独立推荐最多三家餐厅；餐厅不参与每日路线，并作为单独图层显示在交互地图中。
+- 酒店、航班、火车三个独立结构化查询入口；字段由用户自行填写，结果保留供应商事实与“查看详情”链接，并由 LLM 生成简短说明。
+- 右上角旅行机器人助手，保留 General Agent 工具调用能力、可见模型选择和独立小红书原帖模式；在计划页只能读取当前计划，不能修改计划。
+- 用户级旅行计划与不可变版本持久化，首页可继续打开历史规划。
 - 通过 YAML 配置新增、禁用或删除模型。
 - OpenAI、Anthropic、Google GenAI 及 OpenAI-compatible 接口接入方式。
 - FastAPI + LangChain 的 SSE 流式聊天接口，普通聊天与单项查询按模型生成节奏逐段下发，
   包含工具调用轮次中的模型说明文本。
 - Python FlyAI CLI 客户端，以及攻略、景点、门票商品、航班、火车、酒店六个结构化 Tool。
-- 高德 Web Service 异步客户端，以及 IP 城市推测、POI、路线、距离矩阵、天气五个结构化 Tool。
+- 高德 Web Service 异步客户端，以及 IP 城市推测、POI、餐饮、路线、距离矩阵、天气六个结构化 Tool。
 - 请求级可信代理 IP、时区时钟上下文和基础旅行日期标准化能力。
-- 独立的小红书规划链路，要求目标城市、游玩天数和开始日期，最多结合两篇笔记正文与逐日天气生成攻略。
-- 小红书未登录时可显式切换到高德地图与天气方案，按真实 POI、距离矩阵和路线证据编排逐日五点行程。
+- 独立的小红书原帖检索链路，最多返回两篇真实笔记正文，不参与结构化核心规划。
 - 通过 stdio 或 Streamable HTTP 接入 `xhs-read-mcp`，支持由主 API 托管本机子进程或连接独立服务。
 - SSE `planning_stage` 规划阶段事件与独立的前端进度展示。
-- Next.js + TypeScript + Tailwind CSS 的响应式聊天界面。
+- Next.js + TypeScript + Tailwind CSS 的响应式旅游规划工作台。
 - PostgreSQL 会话与消息持久化，支持刷新后加载和继续历史对话。
 - 模型选择、Markdown 回复、停止生成、删除会话和错误提示。
 
@@ -81,7 +86,7 @@ MIMO_API_KEY=your-mimo-api-key
 阿里百炼模型共用 `DASHSCOPE_API_KEY`。
 
 高德工具使用 Web Service 类型的 Key。未配置 `AMAP_API_KEY` 时，应用仍可启动，但只注册
-原有四个 FlyAI Tool；配置后会额外注册五个高德 Tool：
+原有六个 FlyAI Tool；配置后会额外注册六个高德 Tool：
 
 ```dotenv
 AMAP_API_KEY=your-web-service-key
@@ -134,9 +139,9 @@ TOOL_EXECUTION_TIMEOUT_SECONDS=130
 
 ```dotenv
 TRIP_PLANNER_ENABLED=true
-TRIP_PLANNER_MAX_DAYS=5
+TRIP_PLANNER_MAX_DAYS=10
 TRIP_PLANNER_MODEL_TIMEOUT_SECONDS=90
-TRIP_PLANNER_REQUEST_EXTRACTION_TIMEOUT_SECONDS=30
+DIRECT_SEARCH_PRESENTATION_TIMEOUT_SECONDS=30
 XHS_MCP_TRANSPORT=stdio
 XHS_MCP_STDIO_COMMAND=
 XHS_MCP_STDIO_ARGS=["-m","xhs_read_mcp","--transport","stdio","--headed"]
@@ -158,19 +163,24 @@ XHS_SSE_HEARTBEAT_SECONDS=15
 点赞量选择最多五篇详情候选；只有一篇可用时会明确说明。`xsec_token` 只在 MCP 客户端内部使用，
 不进入规划状态、普通日志或最终回复。
 
-每次检索前都会检查 MCP 登录状态；未登录时 MCP 会打开本机 Google Chrome，前端提示用户完成
-手机号、短信验证码或其他安全验证，登录成功后自动继续同一请求。用户也可在卡片中跳过登录：
-前端会中止旧 SSE 登录等待，并在同一会话启动标准地图与天气方案。
+每次检索前都会检查 MCP 登录状态；未登录时 MCP 会打开本机 Google Chrome，助手窗口提示用户完成
+手机号、短信验证码或其他安全验证，登录成功后自动继续同一请求。
 
-`planning_source=standard` 使用城市行程规划：要求目标城市、1–5 天时长和开始日期，
-并行收集 POI、路线证据与天气。
+`POST /api/v1/travel-plans/stream` 是核心城市规划入口：请求体只接受目标城市、出行日期、
+1–10 天时长和固定兴趣标签。前端不再把自然语言规划请求发给 General Agent，也不执行需求提取、
+能力判断、缺失字段追问或酒店/交通自动收集。后端收集 POI、路线与天气，另行查询最多三家餐厅；
+餐厅不进入任何一天的景点顺序、交通时间或路线计算。
+
+`planning_source=standard` 现在始终进入 General Agent。酒店、航班和火车使用
+`/api/v1/search/hotels`、`/api/v1/search/flights`、`/api/v1/search/trains` 独立查询，
+查询结果上限分别为 10、5、5。供应商链接由结构化数据直接渲染，LLM 只润色摘要，不能改写事实。
 天气只按高德实际返回的自然日期映射，超出预报范围或查询失败的日期会明确标记不可用，不用当前天气冒充未来
-预报。地图方案每天最多两个景点，固定按“早餐 → 上午景点 → 午餐 → 下午景点 → 晚餐”输出；
+预报。地图方案按真实候选与空间聚类结果组织每日景点，不生成具体早餐、午餐或晚餐站点；
 所有具体地点都必须带高德 POI ID，步行距离或公交路线也必须有高德证据。模型只能整理推荐理由和
 天气建议，不能新增地点、改变顺序或补造供应商事实。
 
-完整规划架构、降级算法与事实边界见
-[`docs/architecture/xhs_map_weather_fallback.md`](docs/architecture/xhs_map_weather_fallback.md)；小红书
+结构化平台架构与事实边界见
+[`docs/architecture/structured_travel_platform.md`](docs/architecture/structured_travel_platform.md)；小红书
 原帖检索详情见 [`docs/architecture/xhs_trip_planner.md`](docs/architecture/xhs_trip_planner.md)。
 
 项目支持 `stdio` 和 `streamable-http` 两种 MCP 传输。需要在本机有界面 Chrome 中完成短信验证码时，
@@ -256,9 +266,8 @@ conda activate py312
 alembic upgrade head
 ```
 
-迁移 `20260714_0003` 新增的 `travel_plans` 和 `travel_plan_versions` 属于旧结构化规划图。
-新小红书规划链路只依赖现有会话消息持久化，不再写入这两张表；旧表和已有数据暂时保留，
-不会在本次链路切换中删除。
+迁移 `20260802_0013` 将 `travel_plans` 从必须绑定聊天会话改为直接归属用户；旧计划会从原会话
+回填用户 ID，之后新计划可以独立创建和保存版本。删除聊天会话不会再删除独立旅行计划。
 
 迁移 `20260731_0012` 删除已停用的多 Agent Runtime 表、工具调用关联字段和历史运行事件；
 FlyAI 的进程、供应商、解析和业务四层执行诊断字段继续保留。
@@ -281,6 +290,7 @@ uvicorn app.main:app --app-dir apps/api --reload --port 8000
 - 健康检查：http://localhost:8000/api/v1/health
 - 模型列表：http://localhost:8000/api/v1/models
 - 会话列表：http://localhost:8000/api/v1/conversations
+- 旅行计划列表：http://localhost:8000/api/v1/travel-plans
 
 ## 5. 启动前端
 
@@ -315,9 +325,9 @@ python -m ruff check .
 python -m ruff format --check .
 ```
 
-规划测试覆盖请求路由、城市/天数/日期追问、本机 Chrome 登录与跳过、固定小红书搜索协议、
-点赞量标准化、主辅帖选择、Token 隔离、天气日期映射、地图 POI 筛选、餐饮组合优化、步行/公交
-阈值、来源白名单、结构化生成校验和 SSE 阶段事件。MCP 与高德单元测试使用 Fake Client，不访问
+规划测试覆盖结构化字段校验、标准请求固定进入 General Agent、独立查询契约、本机 Chrome 登录、
+固定小红书搜索协议、点赞量标准化、Token 隔离、天气日期映射、地图 POI 筛选、餐饮推荐去重与上限、
+步行/公交阈值、来源白名单、结构化生成校验和 SSE 阶段事件。MCP 与高德单元测试使用 Fake Client，不访问
 真实供应商；数据库、FlyAI、高德及真实模型测试仍按对应环境变量显式启用，避免默认消耗外部配额。
 
 FlyAI 单元测试全部使用 mock，不消耗请求额度。若要手工执行一次真实航班集成测试，先确认
@@ -378,7 +388,8 @@ TOUR_ASSISTANT_NO_PROXY_HOSTS=dashscope.aliyuncs.com
 
 ## 当前数据边界
 
-会话、消息和脱敏后的工具调用摘要由 PostgreSQL 保存，前端刷新后可以加载并继续历史对话。
+用户、会话、消息、旅行计划版本和脱敏后的工具调用摘要由 PostgreSQL 保存；数据按登录用户隔离。
+前端刷新后可以继续打开历史计划，General Agent 对当前计划只具有读取上下文的能力。
 工具原始结果和 API Key 不入库；前端工具进度当前不随历史会话恢复。助手消息会记录
-`streaming`、`completed`、`failed` 或 `interrupted` 状态。当前尚未实现用户账号和数据隔离，
-因此本地实例中的所有会话对访问该后端的客户端可见；在对外部署前必须加入身份认证与用户归属。
+`streaming`、`completed`、`failed` 或 `interrupted` 状态。平台不执行预订、支付、出票或锁价；
+酒店、航班和火车结果需点击“查看详情”后在供应商页面自行确认和预订。

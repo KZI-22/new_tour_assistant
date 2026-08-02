@@ -11,6 +11,7 @@ import {
   Clock3,
   CloudSun,
   ExternalLink,
+  Utensils,
   Hotel,
   LoaderCircle,
   MapPinned,
@@ -25,11 +26,15 @@ import {
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AssistantWidget } from "@/components/assistant-widget";
+import { TravelSearchDialog, type SearchKind } from "@/components/travel-search-dialog";
 import {
   fetchTravelPlan,
   type HotelOption,
+  type RestaurantRecommendation,
   type TransportOption,
   type TravelPlanDetail,
+  type TravelPlanSnapshotV1,
   type TripPlanDay,
   type TripPlanPlace,
   type TripPlanRouteLeg,
@@ -264,7 +269,7 @@ function safeDetailUrl(value: string | null): string | null {
   }
 }
 
-function amapPlaceUrl(place: TripPlanPlace): string {
+function amapPlaceUrl(place: Pick<TripPlanPlace, "location" | "name">): string {
   const position = `${place.location.longitude},${place.location.latitude}`;
   return `https://uri.amap.com/marker?position=${position}&name=${encodeURIComponent(place.name)}&src=tour-assistant&coordinate=gaode&callnative=1`;
 }
@@ -340,6 +345,7 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
   const [error, setError] = useState<string | null>(null);
   const [activeDay, setActiveDay] = useState(0);
   const [shared, setShared] = useState(false);
+  const [searchKind, setSearchKind] = useState<SearchKind | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -404,17 +410,24 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
   }
 
   const snapshot = plan.snapshot;
-  const city = snapshot.request.core.destination_city ?? "目的地";
-  const startDate = snapshot.request.core.start_date;
-  const duration = snapshot.request.core.duration_days ?? snapshot.days.length;
+  const structured = snapshot.schema_version === "trip_plan.v2";
+  const city = structured
+    ? snapshot.request.destination_city
+    : snapshot.request.core.destination_city ?? "目的地";
+  const startDate = structured ? snapshot.request.start_date : snapshot.request.core.start_date;
+  const duration = structured
+    ? snapshot.request.duration_days
+    : snapshot.request.core.duration_days ?? snapshot.days.length;
+  const restaurants = structured ? snapshot.restaurant_recommendations : [];
 
   return (
     <main className="min-h-dvh bg-[#f4f6f8] text-[#17202a]">
+      <AssistantWidget activePlanId={planId} />
       <header className="sticky top-0 z-50 border-b border-black/[0.06] bg-white/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1240px] items-center justify-between px-4 sm:px-6">
           <Link className="flex items-center gap-2 text-sm font-medium" href="/">
             <ArrowLeft size={17} />
-            <span className="hidden sm:inline">返回对话</span>
+            <span className="hidden sm:inline">返回规划台</span>
           </Link>
           <div className="flex items-center gap-2 text-sm font-semibold">
             <span className="grid size-8 place-items-center rounded-xl bg-[#0f766e] text-white">
@@ -423,7 +436,7 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
             远行计划
           </div>
           <button
-            className="flex items-center gap-2 rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs font-medium transition-colors hover:bg-black/[0.025]"
+            className="mr-14 flex items-center gap-2 rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-xs font-medium transition-colors hover:bg-black/[0.025] sm:mr-16"
             onClick={() => void share()}
             type="button"
           >
@@ -449,8 +462,26 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
             {plan.narrative?.title ?? plan.title}
           </h1>
           <p className="mt-4 max-w-3xl text-sm leading-7 text-[#52606d] sm:text-base">
-            {plan.narrative?.summary ?? "地图、路线、天气和出行候选已整理为可执行旅行计划。"}
+            {plan.narrative?.summary ?? "地图、路线、天气和城市餐饮推荐已整理为可执行旅行计划。"}
           </p>
+          <div className="mt-6 flex flex-wrap gap-2">
+            {(
+              [
+                ["hotel", "查询酒店", Hotel],
+                ["flight", "查询航班", Plane],
+                ["train", "查询火车", TrainFront],
+              ] as const
+            ).map(([kind, label, Icon]) => (
+              <button
+                className="flex items-center gap-2 rounded-xl border border-black/[0.07] bg-white/85 px-3.5 py-2.5 text-xs font-semibold text-[#425466] shadow-sm hover:bg-white"
+                key={kind}
+                onClick={() => setSearchKind(kind)}
+                type="button"
+              >
+                <Icon className="text-[#0f766e]" size={14} /> {label}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -481,9 +512,15 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
             day={selectedDay}
             key={selectedDay?.day_id ?? "trip-overview"}
             places={mapPlaces}
+            restaurants={restaurants}
           />
         </div>
       </div>
+      <TravelSearchDialog
+        key={searchKind ?? "closed"}
+        kind={searchKind}
+        onClose={() => setSearchKind(null)}
+      />
     </main>
   );
 }
@@ -504,8 +541,10 @@ function DayTab({ active, label, onClick }: { active: boolean; label: string; on
 
 function PlanOverview({ plan }: { plan: TravelPlanDetail }) {
   const { snapshot } = plan;
+  const structured = snapshot.schema_version === "trip_plan.v2";
   const hasTravelOptions =
-    snapshot.transport.enabled || snapshot.hotel.enabled || snapshot.transport.options.length > 0;
+    !structured &&
+    (snapshot.transport.enabled || snapshot.hotel.enabled || snapshot.transport.options.length > 0);
   return (
     <>
       <section className="rounded-3xl border border-black/[0.055] bg-white p-5 shadow-sm sm:p-6">
@@ -545,7 +584,8 @@ function PlanOverview({ plan }: { plan: TravelPlanDetail }) {
         </div>
       </section>
 
-      {hasTravelOptions && <TravelOptions plan={plan} />}
+      {structured && <RestaurantRecommendations restaurants={snapshot.restaurant_recommendations} />}
+      {hasTravelOptions && !structured && <TravelOptions snapshot={snapshot} />}
 
       {(plan.narrative?.practical_tips.length || snapshot.warnings.length) && (
         <section className="rounded-3xl border border-black/[0.055] bg-white p-5 shadow-sm sm:p-6">
@@ -687,8 +727,58 @@ function RouteLegRow({ leg }: { leg: TripPlanRouteLeg }) {
   );
 }
 
-function TravelOptions({ plan }: { plan: TravelPlanDetail }) {
-  const { transport, hotel } = plan.snapshot;
+function RestaurantRecommendations({ restaurants }: { restaurants: RestaurantRecommendation[] }) {
+  return (
+    <section className="rounded-3xl border border-black/[0.055] bg-white p-5 shadow-sm sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Utensils className="text-orange-500" size={18} /> 城市餐饮推荐
+        </div>
+        <span className="text-[11px] text-[#8090a0]">整体推荐，不计入每日路线</span>
+      </div>
+      {restaurants.length === 0 ? (
+        <p className="mt-4 rounded-2xl bg-[#f7f9f8] p-4 text-xs leading-5 text-[#697586]">
+          本次没有补充未经验证的餐厅，核心行程不受影响。
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          {restaurants.map((restaurant) => (
+            <article
+              className="rounded-2xl border border-black/[0.055] bg-[#fffaf5] p-4"
+              key={restaurant.provider_place_id}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="text-sm font-semibold">{restaurant.name}</h3>
+                {restaurant.rating !== null && (
+                  <span className="shrink-0 rounded-full bg-orange-100 px-2 py-1 text-[10px] font-semibold text-orange-700">
+                    {restaurant.rating} 分
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-[#697586]">
+                {[restaurant.business_area, restaurant.address].filter(Boolean).join(" · ") || "地址待确认"}
+              </p>
+              <p className="mt-3 text-xs leading-5 text-[#52606d]">
+                {restaurant.recommendation_reason}
+              </p>
+              <a
+                className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-orange-500 px-3 py-2 text-xs font-semibold text-white"
+                href={amapPlaceUrl(restaurant)}
+                rel="noreferrer noopener"
+                target="_blank"
+              >
+                地图查看 <Navigation size={12} />
+              </a>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TravelOptions({ snapshot }: { snapshot: TravelPlanSnapshotV1 }) {
+  const { transport, hotel } = snapshot;
   return (
     <section className="rounded-3xl border border-black/[0.055] bg-white p-5 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -877,16 +967,29 @@ function markerContent(index: number, role: SelectedRouteRole): string {
   return `<div style="display:grid;place-items:center;width:32px;height:32px;border-radius:999px;background:${background};color:white;border:3px solid white;box-shadow:0 4px 14px rgba(15,23,42,.28);font:700 11px system-ui;cursor:pointer">${label}</div>`;
 }
 
+function restaurantMarkerContent(): string {
+  return '<div style="display:grid;place-items:center;width:30px;height:30px;border-radius:10px;background:#f97316;color:white;border:3px solid white;box-shadow:0 4px 14px rgba(15,23,42,.24);font:700 14px system-ui">餐</div>';
+}
+
 function routeMetric(value: number | string | undefined): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
 }
 
-function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay | null }) {
+function RouteMap({
+  places,
+  restaurants,
+  day,
+}: {
+  places: TripPlanPlace[];
+  restaurants: RestaurantRecommendation[];
+  day: TripPlanDay | null;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<AmapMapInstance | null>(null);
   const amapRef = useRef<AmapApi | null>(null);
   const markersRef = useRef<Map<string, AmapMarkerInstance>>(new Map());
+  const restaurantMarkersRef = useRef<Map<string, AmapMarkerInstance>>(new Map());
   const routeServiceRef = useRef<AmapRouteService | null>(null);
   const [mapStatus, setMapStatus] = useState<MapLoadStatus>("idle");
   const [mapError, setMapError] = useState<string | null>(null);
@@ -894,6 +997,7 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
   const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([]);
   const [routeMode, setRouteMode] = useState<InteractiveRouteMode>("walking");
   const [routeResult, setRouteResult] = useState<RouteSearchResult | null>(null);
+  const [showRestaurants, setShowRestaurants] = useState(true);
   const key = process.env.NEXT_PUBLIC_AMAP_JS_KEY?.trim();
   const securityCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE?.trim();
 
@@ -962,7 +1066,20 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
         });
         const markers = markerEntries.map(([, marker]) => marker);
         markersRef.current = new Map(markerEntries);
-        const overlays: object[] = [...markers];
+        const restaurantEntries = showRestaurants
+          ? restaurants.map((restaurant) => {
+              const marker = new AMap.Marker({
+                position: [restaurant.location.longitude, restaurant.location.latitude],
+                anchor: "center",
+                content: restaurantMarkerContent(),
+                title: `${restaurant.name}（餐饮推荐）`,
+              });
+              return [restaurant.provider_place_id, marker] as const;
+            })
+          : [];
+        const restaurantMarkers = restaurantEntries.map(([, marker]) => marker);
+        restaurantMarkersRef.current = new Map(restaurantEntries);
+        const overlays: object[] = [...markers, ...restaurantMarkers];
         if (places.length > 1) {
           overlays.push(
             new AMap.Polyline({
@@ -979,7 +1096,7 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
           );
         }
         map.add(overlays);
-        map.setFitView(markers, false, [72, 52, 72, 52]);
+        map.setFitView([...markers, ...restaurantMarkers], false, [72, 52, 72, 52]);
       })
       .catch((reason: unknown) => {
         if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
@@ -988,6 +1105,7 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
         mapRef.current = null;
         amapRef.current = null;
         markersRef.current.clear();
+        restaurantMarkersRef.current.clear();
         if (!active) return;
         setMapError(reason instanceof Error ? reason.message : "高德地图加载失败。");
         setMapStatus("failed");
@@ -999,11 +1117,12 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
       routeServiceRef.current?.clear();
       routeServiceRef.current = null;
       markersRef.current.clear();
+      restaurantMarkersRef.current.clear();
       if (mapRef.current === map) mapRef.current = null;
       amapRef.current = null;
       map?.destroy();
     };
-  }, [key, mapAttempt, places, securityCode, selectPlace]);
+  }, [key, mapAttempt, places, restaurants, securityCode, selectPlace, showRestaurants]);
 
   useEffect(() => {
     places.forEach((place, index) => {
@@ -1022,7 +1141,10 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
     const AMap = amapRef.current;
     if (mapStatus !== "ready" || !map || !AMap) return;
     if (selectedPlaces.length !== 2) {
-      const markers = [...markersRef.current.values()];
+      const markers = [
+        ...markersRef.current.values(),
+        ...restaurantMarkersRef.current.values(),
+      ];
       if (markers.length > 0) map.setFitView(markers, false, [72, 52, 72, 52]);
       return;
     }
@@ -1135,14 +1257,29 @@ function RouteMap({ places, day }: { places: TripPlanPlace[]; day: TripPlanDay |
 
   return (
     <section className="overflow-hidden rounded-3xl border border-black/[0.055] bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-black/[0.055] px-5 py-4">
+      <div className="flex items-center justify-between gap-3 border-b border-black/[0.055] px-5 py-4">
         <div>
           <p className="text-sm font-semibold">{day ? `D${day.day_index} 路线地图` : "行程地图"}</p>
           <p className="mt-0.5 text-[11px] text-[#8090a0]">
-            {places.length} 个地点 · 点击两个景点规划路线
+            {places.length} 个景点
+            {restaurants.length > 0 ? ` · ${restaurants.length} 家餐厅` : ""} · 点击两个景点规划路线
           </p>
         </div>
-        <MapPinned className="text-[#0f766e]" size={18} />
+        <div className="flex items-center gap-2">
+          {restaurants.length > 0 && (
+            <button
+              aria-pressed={showRestaurants}
+              className={`rounded-xl px-2.5 py-1.5 text-[10px] font-medium ${
+                showRestaurants ? "bg-orange-100 text-orange-700" : "bg-[#f1f5f4] text-[#697586]"
+              }`}
+              onClick={() => setShowRestaurants((value) => !value)}
+              type="button"
+            >
+              餐饮图层
+            </button>
+          )}
+          <MapPinned className="text-[#0f766e]" size={18} />
+        </div>
       </div>
 
       <div className="travel-plan-map-frame">

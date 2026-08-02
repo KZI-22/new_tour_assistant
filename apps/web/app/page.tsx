@@ -1,10 +1,10 @@
 import { AuthGate } from "@/components/auth-gate";
-import { ChatShell } from "@/components/chat-shell";
+import { TravelWorkspace } from "@/components/travel-workspace";
 
 export default function Home() {
   return (
     <AuthGate>
-      <ChatShell />
+      <TravelWorkspace />
     </AuthGate>
   );
 }

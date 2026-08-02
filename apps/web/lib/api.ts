@@ -266,7 +266,7 @@ export type HotelOption = {
 
 type CapabilityStatus = "skipped" | "usable" | "empty" | "failed";
 
-export type TravelPlanSnapshot = {
+export type TravelPlanSnapshotV1 = {
   schema_version: "trip_plan.v1";
   request: {
     core: {
@@ -322,6 +322,70 @@ export type TravelPlanSnapshot = {
   };
 };
 
+export type TripPreference =
+  | "历史文化"
+  | "博物馆展览"
+  | "自然风光"
+  | "城市地标"
+  | "特色街区"
+  | "摄影打卡"
+  | "亲子游"
+  | "休闲慢游"
+  | "夜景体验";
+
+export type StructuredTripRequest = {
+  destination_city: string;
+  start_date: string;
+  duration_days: number;
+  interests: TripPreference[];
+};
+
+export type RestaurantRecommendation = {
+  provider_place_id: string;
+  name: string;
+  address: string;
+  poi_type: string;
+  rating: number | null;
+  business_area: string | null;
+  city: string | null;
+  adcode: string | null;
+  location: TripPlanCoordinate;
+  source_queries: string[];
+  best_search_rank: number;
+  selection_reasons: string[];
+  recommendation_reason: string;
+};
+
+export type TravelPlanSnapshotV2 = {
+  schema_version: "trip_plan.v2";
+  request: StructuredTripRequest;
+  days: TripPlanDay[];
+  restaurant_recommendations: RestaurantRecommendation[];
+  overall_status: "usable" | "partial" | "failed";
+  warnings: string[];
+  source_metadata: {
+    planning_run_id: string;
+    generated_at: string;
+    map_queried_at: string | null;
+    weather_queried_at: string | null;
+    restaurant_queried_at: string | null;
+  };
+};
+
+export type TravelPlanSnapshot = TravelPlanSnapshotV1 | TravelPlanSnapshotV2;
+
+export type TravelPlanSummary = {
+  plan_id: string;
+  title: string;
+  status: "draft" | "active" | "archived";
+  current_version: number;
+  destination_city: string;
+  start_date: string;
+  duration_days: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type TripNarrative = {
   title: string;
   summary: string;
@@ -345,6 +409,39 @@ export type TravelPlanDetail = TravelPlanReference & {
   created_at: string;
   snapshot: TravelPlanSnapshot;
   narrative: TripNarrative | null;
+};
+
+export type DirectTravelSearchResponse = {
+  kind: "hotel" | "flight" | "train";
+  tool_call_id: string;
+  tool_name: "search_hotel" | "search_flight" | "search_train";
+  arguments: Record<string, unknown>;
+  success: boolean;
+  summary: string;
+  options: Array<HotelOption | TransportOption>;
+  error_code: string | null;
+  provider_error_code: string | null;
+  provider_item_count: number | null;
+  rejected_item_count: number;
+  queried_at: string;
+};
+
+export type HotelSearchRequest = {
+  destination: string;
+  check_in_date: string;
+  check_out_date: string;
+  keywords?: string;
+  nearby_poi?: string;
+  hotel_stars?: number[];
+  max_price?: number;
+};
+
+export type TransportSearchRequest = {
+  origin: string;
+  destination: string;
+  departure_date: string;
+  return_date?: string;
+  max_price?: number;
 };
 
 type StreamCallbacks = {
@@ -552,6 +649,15 @@ export async function fetchTravelPlan(
   return (await response.json()) as TravelPlanDetail;
 }
 
+export async function fetchTravelPlans(signal?: AbortSignal): Promise<TravelPlanSummary[]> {
+  const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/travel-plans`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as TravelPlanSummary[];
+}
+
 function parseEventFrame(frame: string): { event: string; data: unknown } | null {
   let event = "message";
   const dataLines: string[] = [];
@@ -577,6 +683,7 @@ export async function streamChat(
   callbacks: StreamCallbacks,
   signal: AbortSignal,
   planningSource: PlanningSource = "standard",
+  activePlanId: string | null = null,
 ): Promise<void> {
   const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
@@ -586,6 +693,7 @@ export async function streamChat(
       message,
       conversation_id: conversationId,
       planning_source: planningSource,
+      active_plan_id: activePlanId,
     }),
     signal,
   });
@@ -721,4 +829,94 @@ export async function streamChat(
     if (done) break;
   }
   if (buffer.trim()) consume(buffer);
+}
+
+export async function streamTravelPlan(
+  modelId: string,
+  tripRequest: StructuredTripRequest,
+  callbacks: StreamCallbacks,
+  signal: AbortSignal,
+  planId: string | null = null,
+): Promise<void> {
+  const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/travel-plans/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_id: modelId, plan_id: planId, request: tripRequest }),
+    signal,
+  });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body) throw new Error("浏览器无法读取规划流。 ");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const consume = (frame: string) => {
+    const parsed = parseEventFrame(frame.replaceAll("\r\n", "\n"));
+    if (!parsed) return;
+    if (parsed.event === "message_delta") {
+      const data = parsed.data as { delta?: string };
+      if (data.delta) callbacks.onToken(data.delta);
+    } else if (parsed.event === "planning_stage") {
+      const data = parsed.data as PlanningStageUpdate;
+      callbacks.onPlanningStage?.(data);
+    } else if (parsed.event === "planning_trace") {
+      callbacks.onPlanningTrace?.(parsed.data as PlanningTraceUpdate);
+    } else if (parsed.event === "travel_plan_ready") {
+      callbacks.onTravelPlanReady?.(parsed.data as TravelPlanReference);
+    } else if (parsed.event === "done") {
+      callbacks.onDone?.();
+    } else if (parsed.event === "error") {
+      const data = parsed.data as { message?: string };
+      throw new Error(data.message || "旅行规划生成中断。");
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      consume(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+}
+
+async function directTravelSearch(
+  endpoint: "hotels" | "flights" | "trains",
+  payload: HotelSearchRequest | TransportSearchRequest,
+  signal?: AbortSignal,
+): Promise<DirectTravelSearchResponse> {
+  const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/search/${endpoint}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as DirectTravelSearchResponse;
+}
+
+export function searchHotels(
+  request: HotelSearchRequest,
+  signal?: AbortSignal,
+): Promise<DirectTravelSearchResponse> {
+  return directTravelSearch("hotels", request, signal);
+}
+
+export function searchFlights(
+  request: TransportSearchRequest,
+  signal?: AbortSignal,
+): Promise<DirectTravelSearchResponse> {
+  return directTravelSearch("flights", request, signal);
+}
+
+export function searchTrains(
+  request: TransportSearchRequest,
+  signal?: AbortSignal,
+): Promise<DirectTravelSearchResponse> {
+  return directTravelSearch("trains", request, signal);
 }
