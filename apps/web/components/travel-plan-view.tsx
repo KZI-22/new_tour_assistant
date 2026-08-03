@@ -59,14 +59,45 @@ type AmapRouteResult = {
     distance?: number | string;
     time?: number | string;
   }>;
+  plans?: AmapTransitPlan[];
   info?: string;
 };
+
+type AmapTransitStop = {
+  name?: string;
+};
+
+type AmapTransitLine = {
+  name?: string;
+  departure_stop?: AmapTransitStop;
+  arrival_stop?: AmapTransitStop;
+  via_num?: number | string;
+};
+
+type AmapTransitSegment = {
+  instruction?: string;
+  transit_mode?: string;
+  transit?: {
+    buslines?: AmapTransitLine[];
+    distance?: number | string;
+    duration?: number | string;
+  };
+};
+
+type AmapTransitPlan = {
+  time?: number | string;
+  cost?: number | string;
+  walking_distance?: number | string;
+  segments?: AmapTransitSegment[];
+};
+
+type AmapRoutePoint = [number, number] | object;
 
 type AmapRouteService = {
   clear: () => void;
   search: (
-    origin: [number, number],
-    destination: [number, number],
+    origin: AmapRoutePoint,
+    destination: AmapRoutePoint,
     callback: (status: string, result: AmapRouteResult | string) => void,
   ) => void;
 };
@@ -75,6 +106,9 @@ type AmapRouteServiceConstructor = new (options: {
   map: AmapMapInstance;
   hideMarkers: boolean;
   showTraffic?: boolean;
+  city?: string;
+  policy?: number;
+  extensions?: "base" | "all";
 }) => AmapRouteService;
 
 type AmapServiceResult = {
@@ -94,6 +128,7 @@ type AmapApi = {
     container: HTMLElement,
     options: { zoom: number; viewMode: "2D"; mapStyle: string; resizeEnable: boolean },
   ) => AmapMapInstance;
+  LngLat: new (longitude: number, latitude: number) => object;
   Marker: new (options: {
     position: [number, number];
     anchor: "center";
@@ -111,6 +146,7 @@ type AmapApi = {
   plugin: (plugins: string | string[], callback: () => void) => void;
   Walking?: AmapRouteServiceConstructor;
   Driving?: AmapRouteServiceConstructor;
+  Transfer?: AmapRouteServiceConstructor;
   DistrictSearch?: new (options: { subdistrict: number; extensions: "base" }) => AmapDistrictSearchService;
 };
 
@@ -276,7 +312,111 @@ function amapPlaceUrl(place: Pick<TripPlanPlace, "location" | "name">): string {
   return `https://uri.amap.com/marker?position=${position}&name=${encodeURIComponent(place.name)}&src=tour-assistant&coordinate=gaode&callnative=1`;
 }
 
-type InteractiveRouteMode = "walking" | "driving";
+type InteractiveRouteMode = "walking" | "transit" | "driving";
+
+type TransitSegmentMode = "walking" | "bus" | "subway" | "railway" | "taxi" | "other";
+
+type TransitPlanSegment = {
+  id: string;
+  mode: TransitSegmentMode;
+  label: string;
+  detail: string | null;
+};
+
+type TransitPlanOption = {
+  id: string;
+  durationMinutes: number | null;
+  walkingDistanceMeters: number | null;
+  cost: number | null;
+  transfers: number;
+  segments: TransitPlanSegment[];
+};
+
+function interactiveRouteModeLabel(mode: InteractiveRouteMode): string {
+  const labels: Record<InteractiveRouteMode, string> = {
+    walking: "步行",
+    transit: "公交地铁",
+    driving: "驾车",
+  };
+  return labels[mode];
+}
+
+function transitSegmentMode(value?: string): TransitSegmentMode {
+  const mode = value?.toUpperCase();
+  if (mode === "WALK") return "walking";
+  if (mode === "BUS") return "bus";
+  if (mode === "SUBWAY") return "subway";
+  if (mode === "RAILWAY") return "railway";
+  if (mode === "TAXI") return "taxi";
+  return "other";
+}
+
+function transitSegmentLabel(mode: TransitSegmentMode): string {
+  const labels: Record<TransitSegmentMode, string> = {
+    walking: "步行",
+    bus: "公交",
+    subway: "地铁",
+    railway: "轨道交通",
+    taxi: "出租车",
+    other: "换乘路段",
+  };
+  return labels[mode];
+}
+
+function normalizeTransitPlans(result: AmapRouteResult): TransitPlanOption[] {
+  return (result.plans ?? []).slice(0, 3).map((plan, planIndex) => {
+    const segments = (plan.segments ?? []).flatMap((segment, segmentIndex) => {
+      const mode = transitSegmentMode(segment.transit_mode);
+      const lines = segment.transit?.buslines ?? [];
+      if (lines.length > 0 && ["bus", "subway", "railway"].includes(mode)) {
+        return lines.map((line, lineIndex): TransitPlanSegment => {
+          const stationRange = [line.departure_stop?.name, line.arrival_stop?.name]
+            .filter(Boolean)
+            .join(" → ");
+          const viaStops = routeMetric(line.via_num);
+          return {
+            id: `${planIndex}-${segmentIndex}-${lineIndex}`,
+            mode,
+            label: line.name?.trim() || transitSegmentLabel(mode),
+            detail:
+              [stationRange || null, viaStops ? `${viaStops} 个途经站` : null]
+                .filter(Boolean)
+                .join(" · ") || null,
+          };
+        });
+      }
+
+      const distance = formatDistance(routeMetric(segment.transit?.distance));
+      return [
+        {
+          id: `${planIndex}-${segmentIndex}`,
+          mode,
+          label: transitSegmentLabel(mode),
+          detail: distance ?? segment.instruction?.trim() ?? null,
+        } satisfies TransitPlanSegment,
+      ];
+    });
+    const durationSeconds = routeMetric(plan.time);
+    const walkingDistanceMeters = routeMetric(plan.walking_distance);
+    const rawCost = Number(plan.cost);
+    const cost = Number.isFinite(rawCost) && rawCost > 0 ? rawCost : null;
+    const rideSegments = segments.filter((segment) => segment.mode !== "walking").length;
+    return {
+      id: `transit-plan-${planIndex}`,
+      durationMinutes:
+        durationSeconds === null ? null : Math.max(1, Math.round(durationSeconds / 60)),
+      walkingDistanceMeters,
+      cost,
+      transfers: Math.max(0, rideSegments - 1),
+      segments,
+    };
+  });
+}
+
+function formatTransitCost(cost: number | null): string | null {
+  if (cost === null) return null;
+  return `¥${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(cost)}`;
+}
 
 function amapRouteUrl(
   origin: TripPlanPlace,
@@ -286,7 +426,7 @@ function amapRouteUrl(
   const params = new URLSearchParams({
     from: `${origin.location.longitude},${origin.location.latitude},${origin.name}`,
     to: `${destination.location.longitude},${destination.location.latitude},${destination.name}`,
-    mode: mode === "walking" ? "walk" : "car",
+    mode: mode === "walking" ? "walk" : mode === "transit" ? "bus" : "car",
     src: "tour-assistant",
     coordinate: "gaode",
     callnative: "1",
@@ -1039,6 +1179,7 @@ type RouteSearchResult = {
   requestKey: string;
   status: "ready" | "failed";
   detail: string;
+  transitPlans?: TransitPlanOption[];
 };
 
 function markerContent(index: number, role: SelectedRouteRole): string {
@@ -1231,8 +1372,27 @@ function RouteMap({
 
     let active = true;
     const [origin, destination] = selectedPlaces;
-    const pluginName = routeMode === "walking" ? "AMap.Walking" : "AMap.Driving";
+    const pluginName =
+      routeMode === "walking"
+        ? "AMap.Walking"
+        : routeMode === "transit"
+          ? "AMap.Transfer"
+          : "AMap.Driving";
     const requestKey = `${origin.plan_item_id}:${destination.plan_item_id}:${routeMode}`;
+    const transitCity = origin.city?.trim() || destination.city?.trim();
+    if (routeMode === "transit" && !transitCity) {
+      window.queueMicrotask(() => {
+        if (!active) return;
+        setRouteResult({
+          requestKey,
+          status: "failed",
+          detail: "景点缺少城市信息，暂时无法查询公交地铁方案。",
+        });
+      });
+      return () => {
+        active = false;
+      };
+    }
     const timeoutId = window.setTimeout(() => {
       if (!active) return;
       setRouteResult({
@@ -1246,17 +1406,40 @@ function RouteMap({
       AMap.plugin(pluginName, () => {
         if (!active || !mapRef.current) return;
         try {
-          const RouteService = routeMode === "walking" ? AMap.Walking : AMap.Driving;
+          const RouteService =
+            routeMode === "walking"
+              ? AMap.Walking
+              : routeMode === "transit"
+                ? AMap.Transfer
+                : AMap.Driving;
           if (!RouteService) throw new Error("路线规划插件未加载");
-          const service = new RouteService({
-            map: mapRef.current,
-            hideMarkers: true,
-            showTraffic: routeMode === "driving",
-          });
+          const service = new RouteService(
+            routeMode === "transit"
+              ? {
+                  map: mapRef.current,
+                  hideMarkers: true,
+                  city: transitCity,
+                  policy: 0,
+                  extensions: "all",
+                }
+              : {
+                  map: mapRef.current,
+                  hideMarkers: true,
+                  showTraffic: routeMode === "driving",
+                },
+          );
           routeServiceRef.current = service;
+          const originPoint: AmapRoutePoint =
+            routeMode === "transit"
+              ? new AMap.LngLat(origin.location.longitude, origin.location.latitude)
+              : [origin.location.longitude, origin.location.latitude];
+          const destinationPoint: AmapRoutePoint =
+            routeMode === "transit"
+              ? new AMap.LngLat(destination.location.longitude, destination.location.latitude)
+              : [destination.location.longitude, destination.location.latitude];
           service.search(
-            [origin.location.longitude, origin.location.latitude],
-            [destination.location.longitude, destination.location.latitude],
+            originPoint,
+            destinationPoint,
             (status, result) => {
               if (!active) return;
               window.clearTimeout(timeoutId);
@@ -1265,6 +1448,36 @@ function RouteMap({
                   requestKey,
                   status: "failed",
                   detail: "暂时无法取得这两个景点的路线，可前往高德继续规划。",
+                });
+                return;
+              }
+              if (routeMode === "transit") {
+                const transitPlans = normalizeTransitPlans(result);
+                if (transitPlans.length === 0) {
+                  setRouteResult({
+                    requestKey,
+                    status: "failed",
+                    detail: "高德暂未返回可用的公交地铁方案，可前往高德继续规划。",
+                  });
+                  return;
+                }
+                const primaryPlan = transitPlans[0];
+                const primaryFacts = [
+                  primaryPlan.durationMinutes === null
+                    ? null
+                    : formatDuration(primaryPlan.durationMinutes),
+                  primaryPlan.walkingDistanceMeters === null
+                    ? null
+                    : `步行 ${formatDistance(primaryPlan.walkingDistanceMeters)}`,
+                  primaryPlan.transfers === 0 ? "直达" : `换乘 ${primaryPlan.transfers} 次`,
+                ].filter(Boolean);
+                setRouteResult({
+                  requestKey,
+                  status: "ready",
+                  detail: ["公交地铁", ...primaryFacts, `共 ${transitPlans.length} 个方案`].join(
+                    " · ",
+                  ),
+                  transitPlans,
                 });
                 return;
               }
@@ -1282,7 +1495,7 @@ function RouteMap({
                 status: "ready",
                 detail:
                   facts.length > 0
-                    ? `${routeMode === "walking" ? "步行" : "驾车"} · ${facts.join(" · ")}`
+                    ? `${interactiveRouteModeLabel(routeMode)} · ${facts.join(" · ")}`
                     : "路线已绘制在地图上。",
               });
             },
@@ -1331,7 +1544,8 @@ function RouteMap({
     ? "idle"
     : currentRouteResult?.status ?? "loading";
   const routeDetail =
-    currentRouteResult?.detail ?? `${routeMode === "walking" ? "步行" : "驾车"}路线计算中…`;
+    currentRouteResult?.detail ?? `${interactiveRouteModeLabel(routeMode)}路线计算中…`;
+  const transitPlans = currentRouteResult?.transitPlans ?? [];
   const fallback = !key || mapStatus === "failed" || places.length === 0;
   const loadingMap = Boolean(key) && places.length > 0 && mapStatus !== "ready" && !fallback;
 
@@ -1395,7 +1609,7 @@ function RouteMap({
             </p>
           </div>
           <div className="flex shrink-0 rounded-xl bg-[#f1f5f4] p-1 text-[10px] font-medium">
-            {(["walking", "driving"] as const).map((mode) => (
+            {(["walking", "transit", "driving"] as const).map((mode) => (
               <button
                 className={`rounded-lg px-2.5 py-1.5 transition-colors ${
                   routeMode === mode ? "bg-white text-[#0f766e] shadow-sm" : "text-[#697586]"
@@ -1404,7 +1618,7 @@ function RouteMap({
                 onClick={() => setRouteMode(mode)}
                 type="button"
               >
-                {mode === "walking" ? "步行" : "驾车"}
+                {interactiveRouteModeLabel(mode)}
               </button>
             ))}
           </div>
@@ -1472,6 +1686,91 @@ function RouteMap({
           </div>
         )}
 
+        {selectedPlaces.length === 2 &&
+          routeMode === "transit" &&
+          routeStatus === "ready" &&
+          transitPlans.length > 0 && (
+            <section aria-label="公交地铁线路方案" className="mt-3 space-y-2.5">
+              <div className="flex items-center justify-between px-1">
+                <p className="text-[11px] font-semibold text-[#344054]">线路方案</p>
+                <span className="text-[10px] text-[#94a3b8]">高德实时规划</span>
+              </div>
+              {transitPlans.map((plan, planIndex) => {
+                const planFacts = [
+                  plan.durationMinutes === null ? null : formatDuration(plan.durationMinutes),
+                  plan.walkingDistanceMeters === null
+                    ? null
+                    : `步行 ${formatDistance(plan.walkingDistanceMeters)}`,
+                  plan.transfers === 0 ? "直达" : `换乘 ${plan.transfers} 次`,
+                  formatTransitCost(plan.cost),
+                ].filter(Boolean);
+                return (
+                  <article
+                    className={`rounded-2xl border p-3.5 ${
+                      planIndex === 0
+                        ? "border-[#0f766e]/25 bg-[#f0f9f6]"
+                        : "border-black/[0.065] bg-white"
+                    }`}
+                    key={plan.id}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-[#24313d]">方案 {planIndex + 1}</span>
+                        {planIndex === 0 && (
+                          <span className="rounded-full bg-[#dff3eb] px-2 py-0.5 text-[9px] font-semibold text-[#0f766e]">
+                            推荐
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-[#697586]">{planFacts.join(" · ")}</span>
+                    </div>
+
+                    <ol className="mt-3 space-y-2.5">
+                      {plan.segments.map((segment, segmentIndex) => (
+                        <li className="flex gap-2.5" key={segment.id}>
+                          <div className="flex flex-col items-center">
+                            <span
+                              className={`grid size-6 shrink-0 place-items-center rounded-lg ${
+                                segment.mode === "subway" || segment.mode === "railway"
+                                  ? "bg-sky-100 text-sky-700"
+                                  : segment.mode === "bus"
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : segment.mode === "taxi"
+                                      ? "bg-amber-100 text-amber-700"
+                                      : "bg-slate-100 text-slate-500"
+                              }`}
+                            >
+                              {segment.mode === "walking" ? (
+                                <Navigation size={12} />
+                              ) : segment.mode === "bus" ? (
+                                <BusFront size={12} />
+                              ) : segment.mode === "subway" || segment.mode === "railway" ? (
+                                <TrainFront size={12} />
+                              ) : (
+                                <Route size={12} />
+                              )}
+                            </span>
+                            {segmentIndex < plan.segments.length - 1 && (
+                              <span className="mt-1 h-full min-h-3 w-px bg-black/[0.09]" />
+                            )}
+                          </div>
+                          <div className="min-w-0 pb-0.5">
+                            <p className="text-[11px] font-medium leading-5 text-[#344054]">
+                              {segment.label}
+                            </p>
+                            {segment.detail && (
+                              <p className="text-[10px] leading-4 text-[#8090a0]">{segment.detail}</p>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  </article>
+                );
+              })}
+            </section>
+          )}
+
         {selectedPlaceIds.length > 0 && (
           <button
             className="mt-3 text-[10px] font-medium text-[#697586] underline underline-offset-4"
@@ -1484,7 +1783,7 @@ function RouteMap({
       </div>
 
       <div className="border-t border-black/[0.055] px-5 py-3 text-[10px] leading-4 text-[#8090a0]">
-        虚线表示行程游览顺序；选择两个景点后，高德会按步行或驾车方式绘制实际路线。
+        虚线表示行程游览顺序；选择两个景点后，高德会按步行、公交地铁或驾车方式绘制实际路线。
       </div>
     </section>
   );
