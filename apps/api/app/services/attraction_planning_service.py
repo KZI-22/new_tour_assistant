@@ -44,6 +44,7 @@ MAX_ATTRACTIONS_PER_DAY = 5
 MIN_ATTRACTIONS_PER_DAY = 3
 MAX_SELECTED_ATTRACTIONS = 25
 MAX_DAILY_ROUTE_LEG_DISTANCE_KM = 4
+PREFERRED_DAILY_ROUTE_LEG_DISTANCE_KM = 2
 FUZZY_DUPLICATE_DISTANCE_KM = 2
 
 _FACILITY_NAME_MARKERS = (
@@ -558,6 +559,23 @@ class DailyClusterPlanner:
             MAX_ATTRACTIONS_PER_DAY,
             math.ceil(len(candidates) / days),
         )
+        route_preference_cache: dict[tuple[str, ...], tuple[bool, int]] = {}
+
+        def route_preference(
+            group: list[AttractionCandidate],
+        ) -> tuple[bool, int]:
+            key = tuple(sorted(item.place.poi_id for item in group))
+            if key not in route_preference_cache:
+                route = _best_daily_route_within_leg_limit(group)
+                route_preference_cache[key] = (
+                    route is not None,
+                    (
+                        _route_short_leg_count(route)
+                        if route is not None
+                        else MAX_ATTRACTIONS_PER_DAY + 1
+                    ),
+                )
+            return route_preference_cache[key]
 
         # Fill days round-robin so a sparse result degrades evenly instead of starving later days.
         while remaining:
@@ -570,16 +588,13 @@ class DailyClusterPlanner:
             for group in underfilled:
                 if not remaining:
                     break
-                eligible = [
-                    item
-                    for item in remaining
-                    if _has_route_within_daily_leg_limit([*group, item])
-                ]
+                eligible = [item for item in remaining if route_preference([*group, item])[0]]
                 if not eligible:
                     continue
                 chosen = min(
                     eligible,
                     key=lambda item: (
+                        route_preference([*group, item])[1],
                         self._assignment_cost(item, group),
                         -item.score,
                         item.place.poi_id,
@@ -591,43 +606,62 @@ class DailyClusterPlanner:
             if not assigned:
                 break
 
-        for candidate in sorted(remaining, key=lambda item: (-item.score, item.place.poi_id)):
-            ranked_groups = sorted(
-                range(len(groups)),
-                key=lambda index: (
-                    self._assignment_cost(candidate, groups[index]),
-                    len(groups[index]),
-                    index,
-                ),
-            )
-            feasible_groups = [
-                index
-                for index in ranked_groups
-                if _has_route_within_daily_leg_limit([*groups[index], candidate])
-            ]
-            target_index = next(
-                (
+        pending = list(remaining)
+        while pending:
+            assignments: list[tuple[int, float, float, str, int, AttractionCandidate]] = []
+            for candidate in pending:
+                ranked_groups = sorted(
+                    range(len(groups)),
+                    key=lambda index: (
+                        route_preference([*groups[index], candidate])[1],
+                        self._assignment_cost(candidate, groups[index]),
+                        len(groups[index]),
+                        index,
+                    ),
+                )
+                feasible_groups = [
                     index
-                    for index in feasible_groups
-                    if len(groups[index]) < balanced_capacity
-                    and _group_budget_minutes([*groups[index], candidate])
-                    <= DAY_EFFECTIVE_BUDGET_MINUTES
-                ),
-                None,
-            )
-            if target_index is None:
+                    for index in ranked_groups
+                    if route_preference([*groups[index], candidate])[0]
+                ]
                 target_index = next(
-                (
-                    index
-                    for index in feasible_groups
-                    if len(groups[index]) < MAX_ATTRACTIONS_PER_DAY
-                ),
-                None,
-            )
-            if target_index is None:
-                excluded.append(candidate)
-                continue
+                    (
+                        index
+                        for index in feasible_groups
+                        if len(groups[index]) < balanced_capacity
+                        and _group_budget_minutes([*groups[index], candidate])
+                        <= DAY_EFFECTIVE_BUDGET_MINUTES
+                    ),
+                    None,
+                )
+                if target_index is None:
+                    target_index = next(
+                        (
+                            index
+                            for index in feasible_groups
+                            if len(groups[index]) < MAX_ATTRACTIONS_PER_DAY
+                        ),
+                        None,
+                    )
+                if target_index is None:
+                    continue
+                assignments.append(
+                    (
+                        route_preference([*groups[target_index], candidate])[1],
+                        self._assignment_cost(candidate, groups[target_index]),
+                        -candidate.score,
+                        candidate.place.poi_id,
+                        target_index,
+                        candidate,
+                    )
+                )
+
+            if not assignments:
+                excluded.extend(sorted(pending, key=lambda item: (-item.score, item.place.poi_id)))
+                break
+            *_, target_index, candidate = min(assignments)
             groups[target_index].append(candidate)
+            pending.remove(candidate)
 
         self._improve_by_swaps(groups)
         return [optimize_daily_route(group) for group in groups], excluded
@@ -696,7 +730,16 @@ class DailyClusterPlanner:
 
     def _improve_by_swaps(self, groups: list[list[AttractionCandidate]]) -> None:
         distance_cache: dict[tuple[str, str], float] = {}
-        cost_cache: dict[tuple[str, ...], float] = {}
+        cost_cache: dict[tuple[str, ...], tuple[int, float]] = {}
+        route_cache: dict[tuple[str, ...], tuple[AttractionCandidate, ...] | None] = {}
+
+        def best_route(
+            group: list[AttractionCandidate],
+        ) -> tuple[AttractionCandidate, ...] | None:
+            key = tuple(sorted(item.place.poi_id for item in group))
+            if key not in route_cache:
+                route_cache[key] = _best_daily_route_within_leg_limit(group)
+            return route_cache[key]
 
         def distance(left: AttractionCandidate, right: AttractionCandidate) -> float:
             key = tuple(sorted((left.place.poi_id, right.place.poi_id)))
@@ -704,7 +747,7 @@ class DailyClusterPlanner:
                 distance_cache[key] = haversine_km(left.place, right.place)
             return distance_cache[key]
 
-        def cost(group: list[AttractionCandidate]) -> float:
+        def cost(group: list[AttractionCandidate]) -> tuple[int, float]:
             key = tuple(sorted(item.place.poi_id for item in group))
             if key not in cost_cache:
                 pair_distances = sorted(
@@ -720,19 +763,41 @@ class DailyClusterPlanner:
                     0,
                     visit_minutes + transport_minutes - DAY_EFFECTIVE_BUDGET_MINUTES,
                 )
-                cost_cache[key] = compactness + over_budget * 0.2
+                route = best_route(group)
+                cost_cache[key] = (
+                    (
+                        _route_short_leg_count(route)
+                        if route is not None
+                        else MAX_ATTRACTIONS_PER_DAY + 1
+                    ),
+                    compactness + over_budget * 0.2,
+                )
             return cost_cache[key]
 
-        def total_cost(current_groups: list[list[AttractionCandidate]]) -> float:
+        def total_cost(
+            current_groups: list[list[AttractionCandidate]],
+        ) -> tuple[int, float]:
             visit_totals = [
                 sum(item.estimated_visit_minutes for item in group) for group in current_groups
             ]
             imbalance = statistics.pvariance(visit_totals) / 1_000 if visit_totals else 0.0
-            return sum(cost(group) for group in current_groups) + imbalance
+            group_costs = [cost(group) for group in current_groups]
+            return (
+                sum(item[0] for item in group_costs),
+                sum(item[1] for item in group_costs) + imbalance,
+            )
+
+        def improves(
+            candidate_cost: tuple[int, float],
+            current_cost: tuple[int, float],
+        ) -> bool:
+            return candidate_cost[0] < current_cost[0] or (
+                candidate_cost[0] == current_cost[0] and candidate_cost[1] < current_cost[1] - 0.01
+            )
 
         for _ in range(self._max_iterations):
             current_cost = total_cost(groups)
-            best: tuple[float, int, int, int, int] | None = None
+            best: tuple[tuple[int, float], int, int, int, int] | None = None
             for left_index, right_index in itertools.combinations(range(len(groups)), 2):
                 left = groups[left_index]
                 right = groups[right_index]
@@ -746,10 +811,7 @@ class DailyClusterPlanner:
                         new_right[right_item],
                         new_left[left_item],
                     )
-                    if not (
-                        _has_route_within_daily_leg_limit(new_left)
-                        and _has_route_within_daily_leg_limit(new_right)
-                    ):
+                    if not (best_route(new_left) is not None and best_route(new_right) is not None):
                         continue
                     if (
                         max(
@@ -767,15 +829,17 @@ class DailyClusterPlanner:
                     candidate_groups = list(groups)
                     candidate_groups[left_index] = new_left
                     candidate_groups[right_index] = new_right
-                    improvement = current_cost - total_cost(candidate_groups)
+                    candidate_cost = total_cost(candidate_groups)
                     candidate = (
-                        improvement,
+                        candidate_cost,
                         left_index,
                         right_index,
                         left_item,
                         right_item,
                     )
-                    if improvement > 0.01 and (best is None or candidate > best):
+                    if improves(candidate_cost, current_cost) and (
+                        best is None or candidate < best
+                    ):
                         best = candidate
             if best is None:
                 return
@@ -784,7 +848,7 @@ class DailyClusterPlanner:
                 groups[right_index][right_item],
                 groups[left_index][left_item],
             )
-            if total_cost(groups) >= current_cost:
+            if not improves(total_cost(groups), current_cost):
                 return
 
 
@@ -837,6 +901,13 @@ def _has_route_within_daily_leg_limit(group: list[AttractionCandidate]) -> bool:
     return _best_daily_route_within_leg_limit(group) is not None
 
 
+def _route_short_leg_count(route: tuple[AttractionCandidate, ...]) -> int:
+    return sum(
+        haversine_km(left.place, right.place) < PREFERRED_DAILY_ROUTE_LEG_DISTANCE_KM
+        for left, right in itertools.pairwise(route)
+    )
+
+
 def _best_daily_route_within_leg_limit(
     group: list[AttractionCandidate],
 ) -> tuple[AttractionCandidate, ...] | None:
@@ -851,7 +922,11 @@ def _best_daily_route_within_leg_limit(
                 for left, right in itertools.pairwise(route)
             )
         ),
-        key=lambda route: (_route_cost(route), tuple(item.place.poi_id for item in route)),
+        key=lambda route: (
+            _route_short_leg_count(route),
+            _route_cost(route),
+            tuple(item.place.poi_id for item in route),
+        ),
         default=None,
     )
 

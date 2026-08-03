@@ -423,6 +423,46 @@ def test_daily_route_optimizer_enumerates_open_path_order() -> None:
     assert longitudes in [sorted(longitudes), sorted(longitudes, reverse=True)]
 
 
+def test_daily_route_optimizer_prefers_two_to_four_km_legs() -> None:
+    route = optimize_daily_route(
+        [
+            candidate("left", 118.800, score=100),
+            candidate("near", 118.810, score=90),
+            candidate("far", 118.830, score=80),
+        ]
+    )
+    distances = [haversine_km(left.place, right.place) for left, right in itertools.pairwise(route)]
+
+    assert sum(distance >= 2 for distance in distances) == 1
+    assert all(distance <= 4 for distance in distances)
+
+
+def test_daily_clusters_use_compact_candidate_only_after_preferred_candidates() -> None:
+    candidates = [
+        candidate("anchor", 118.800, score=100),
+        candidate("compact", 118.805, score=99),
+        candidate("preferred-1", 118.825, score=90),
+        candidate("preferred-2", 118.850, score=80),
+        candidate("preferred-3", 118.875, score=70),
+        candidate("preferred-4", 118.900, score=60),
+    ]
+
+    groups, excluded = DailyClusterPlanner().plan_with_exclusions(candidates, 1)
+
+    assert {item.place.poi_id for item in groups[0]} == {
+        "anchor",
+        "preferred-1",
+        "preferred-2",
+        "preferred-3",
+        "preferred-4",
+    }
+    assert [item.place.poi_id for item in excluded] == ["compact"]
+    assert all(
+        2 <= haversine_km(left.place, right.place) <= 4
+        for left, right in itertools.pairwise(groups[0])
+    )
+
+
 def test_weather_matcher_only_swaps_route_groups_between_dates() -> None:
     outdoor = MapDayEvidence(
         day_index=1,

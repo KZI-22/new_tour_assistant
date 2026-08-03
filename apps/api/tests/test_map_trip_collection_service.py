@@ -380,8 +380,8 @@ async def test_one_local_correction_swaps_an_abnormal_real_route_edge() -> None:
         async def plan_route(self, query: RoutePlanInput) -> RouteResult:
             self.route_queries.append(query)
             is_abnormal = (
-                round(query.origin.longitude, 2) == 104.01
-                and round(query.destination.longitude, 2) == 104.02
+                round(query.origin.longitude, 2) == 104.00
+                and round(query.destination.longitude, 2) == 104.03
             )
             return RouteResult(
                 mode=query.mode,
@@ -401,7 +401,7 @@ async def test_one_local_correction_swaps_an_abnormal_real_route_edge() -> None:
         )
     )
 
-    assert [item.poi_id for item in evidence.days[0].attractions] == ["a", "c", "b", "d"]
+    assert [item.poi_id for item in evidence.days[0].attractions] == ["d", "a", "c", "b"]
     assert len(client.route_queries) == 6
 
 
