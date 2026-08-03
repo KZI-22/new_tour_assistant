@@ -3,6 +3,7 @@
 import {
   ArrowRight,
   CalendarDays,
+  CircleCheckBig,
   Clock3,
   Compass,
   History,
@@ -16,7 +17,6 @@ import {
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { type FormEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { AssistantWidget } from "@/components/assistant-widget";
@@ -51,7 +51,6 @@ function tomorrow(): string {
 }
 
 export function TravelWorkspace() {
-  const router = useRouter();
   const { user, signOut } = useAuth();
   const [city, setCity] = useState("");
   const [startDate, setStartDate] = useState(tomorrow);
@@ -62,6 +61,7 @@ export function TravelWorkspace() {
   const [stages, setStages] = useState<PlanningStageUpdate[]>([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readyPlanId, setReadyPlanId] = useState<string | null>(null);
   const [searchKind, setSearchKind] = useState<SearchKind | null>(null);
   const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -99,6 +99,7 @@ export function TravelWorkspace() {
     setGenerating(true);
     setStages([]);
     setError(null);
+    setReadyPlanId(null);
     try {
       await streamTravelPlan(
         modelId,
@@ -116,7 +117,12 @@ export function TravelWorkspace() {
                 ? current.map((item) => (item.stage === stage.stage ? stage : item))
                 : [...current, stage],
             ),
-          onTravelPlanReady: ({ plan_id }) => router.push(`/plans/${plan_id}`),
+          onTravelPlanReady: ({ plan_id }) => {
+            setReadyPlanId(plan_id);
+            void fetchTravelPlans()
+              .then(setPlans)
+              .catch(() => undefined);
+          },
         },
         controller.signal,
       );
@@ -183,6 +189,20 @@ export function TravelWorkspace() {
             <div className="sm:col-span-2"><button className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#0f766e] px-5 py-4 text-sm font-semibold text-white shadow-lg shadow-emerald-900/15 transition-transform hover:-translate-y-0.5 disabled:opacity-45" disabled={generating || !modelId} type="submit">{generating ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}{generating ? currentStage?.display_name || "正在生成旅行规划" : "生成我的旅行规划"}</button>{error && <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}</div>
           </form>
           {generating && stages.length > 0 && <div className="mt-5 grid gap-2 sm:grid-cols-3">{stages.map((stage) => <div className="rounded-xl bg-[#f5f8f7] px-3 py-2.5 text-[11px] text-[#52606d]" key={stage.stage}><span className={`mr-2 inline-block size-1.5 rounded-full ${stage.status === "running" ? "animate-pulse bg-amber-400" : stage.status === "failed" ? "bg-red-400" : "bg-emerald-500"}`} />{stage.display_name}</div>)}</div>}
+          {readyPlanId && !generating && (
+            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 sm:flex-row sm:items-center">
+              <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-emerald-100 text-[#0f766e]">
+                <CircleCheckBig size={20} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-emerald-950">旅行规划已生成</p>
+                <p className="mt-1 text-xs leading-5 text-emerald-800/75">文本攻略和互动页面均已准备好，可在方便时进入查看。</p>
+              </div>
+              <Link className="flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#0f766e] px-4 py-2.5 text-xs font-semibold text-white" href={`/plans/${readyPlanId}`}>
+                查看旅行攻略 <ArrowRight size={14} />
+              </Link>
+            </div>
+          )}
         </section>
 
         <aside className="space-y-5">
