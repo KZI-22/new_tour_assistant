@@ -89,6 +89,19 @@ class FakeTripPlanVersionRepository:
     async def get_plan_for_update(self, *_: object) -> TravelPlan | None:
         return self.plan
 
+    async def delete_owned_plan(
+        self,
+        _: object,
+        *,
+        user_id: object,
+        plan_id: object,
+    ) -> bool:
+        if self.plan is None or self.plan.id != plan_id or user_id != self.user_id:
+            return False
+        self.plan = None
+        self.versions.clear()
+        return True
+
     async def get_version(
         self,
         _: object,
@@ -233,6 +246,11 @@ async def test_persistence_creates_immutable_parented_versions_and_is_idempotent
     assert loaded.snapshot.request.core.destination_city == "成都"
     assert loaded.narrative is not None
     assert loaded.narrative.title == "成都一日旅行方案"
+    assert loaded.rendered_markdown == "# 成都一日旅行方案"
+
+    await service.delete_plan(repository.user_id, first.plan_id)
+    assert repository.plan is None
+    assert repository.versions == []
 
     with pytest.raises(TripPlanNotFoundError):
         await service.get_plan(uuid4(), uuid4())

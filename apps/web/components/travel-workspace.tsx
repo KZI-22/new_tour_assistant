@@ -13,15 +13,17 @@ import {
   Plane,
   Sparkles,
   TrainFront,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { AssistantWidget } from "@/components/assistant-widget";
 import { useAuth } from "@/components/auth-gate";
 import { TravelSearchDialog, type SearchKind } from "@/components/travel-search-dialog";
 import {
+  deleteTravelPlan,
   fetchModels,
   fetchTravelPlans,
   streamTravelPlan,
@@ -61,6 +63,7 @@ export function TravelWorkspace() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchKind, setSearchKind] = useState<SearchKind | null>(null);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -127,6 +130,27 @@ export function TravelWorkspace() {
     }
   };
 
+  const removePlan = async (event: MouseEvent<HTMLButtonElement>, planId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (
+      deletingPlanId ||
+      !window.confirm("确定删除这份旅行规划吗？删除后将同时移除它的所有规划版本。")
+    ) {
+      return;
+    }
+    setDeletingPlanId(planId);
+    setError(null);
+    try {
+      await deleteTravelPlan(planId);
+      setPlans((current) => current.filter((plan) => plan.plan_id !== planId));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "旅行规划删除失败。");
+    } finally {
+      setDeletingPlanId(null);
+    }
+  };
+
   return (
     <main className="min-h-dvh bg-[#f5f7f5] text-[#17202a]">
       <AssistantWidget />
@@ -163,7 +187,7 @@ export function TravelWorkspace() {
 
         <aside className="space-y-5">
           <section className="rounded-[26px] border border-black/[0.06] bg-white p-5"><div className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={16} className="text-amber-500" />按需查询</div><p className="mt-2 text-xs leading-5 text-[#8090a0]">不会自动带入规划信息，请按实际需求自行填写。</p><div className="mt-4 grid gap-2">{([{ kind: "hotel", label: "酒店", icon: Hotel }, { kind: "flight", label: "航班", icon: Plane }, { kind: "train", label: "火车", icon: TrainFront }] as const).map(({ kind, label, icon: Icon }) => <button className="flex items-center justify-between rounded-2xl border border-black/[0.07] bg-[#fbfcfc] px-4 py-3 text-sm font-medium hover:bg-[#f2f8f5]" key={kind} onClick={() => setSearchKind(kind)} type="button"><span className="flex items-center gap-2.5"><Icon size={16} className="text-[#0f766e]" />查询{label}</span><ArrowRight size={14} className="text-[#94a3b8]" /></button>)}</div></section>
-          <section className="rounded-[26px] border border-black/[0.06] bg-white p-5"><div className="flex items-center gap-2 text-sm font-semibold"><History size={16} className="text-[#0f766e]" />最近规划</div><div className="mt-4 space-y-2">{plans.length === 0 ? <p className="text-xs leading-5 text-[#8090a0]">生成后的旅行规划会保存在这里。</p> : plans.slice(0, 6).map((plan) => <Link className="block rounded-2xl bg-[#f7f9f8] p-3.5 transition-colors hover:bg-[#eef6f2]" href={`/plans/${plan.plan_id}`} key={plan.plan_id}><p className="truncate text-sm font-medium">{plan.title}</p><p className="mt-1 text-[11px] text-[#8090a0]">{plan.start_date} · {plan.duration_days} 天 · v{plan.current_version}</p></Link>)}</div></section>
+          <section className="rounded-[26px] border border-black/[0.06] bg-white p-5"><div className="flex items-center gap-2 text-sm font-semibold"><History size={16} className="text-[#0f766e]" />最近规划</div><div className="mt-4 space-y-2">{plans.length === 0 ? <p className="text-xs leading-5 text-[#8090a0]">生成后的旅行规划会保存在这里。</p> : plans.slice(0, 6).map((plan) => <div className="flex items-center gap-2 rounded-2xl bg-[#f7f9f8] p-3.5 transition-colors hover:bg-[#eef6f2]" key={plan.plan_id}><Link className="min-w-0 flex-1" href={`/plans/${plan.plan_id}`}><p className="truncate text-sm font-medium">{plan.title}</p><p className="mt-1 text-[11px] text-[#8090a0]">{plan.start_date} · {plan.duration_days} 天 · v{plan.current_version}</p></Link><button aria-label={`删除旅行规划：${plan.title}`} className="grid size-8 shrink-0 place-items-center rounded-xl text-[#94a3b8] transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40" disabled={deletingPlanId === plan.plan_id} onClick={(event) => void removePlan(event, plan.plan_id)} title="删除旅行规划" type="button">{deletingPlanId === plan.plan_id ? <LoaderCircle className="animate-spin" size={14} /> : <Trash2 size={14} />}</button></div>)}</div></section>
         </aside>
       </div>
       <TravelSearchDialog

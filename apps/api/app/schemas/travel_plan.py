@@ -28,6 +28,7 @@ class TravelPlanDetailResponse(TravelPlanReference):
     created_at: datetime
     snapshot: TripPlanSnapshotAny
     narrative: TripNarrativePlan | None = None
+    rendered_markdown: str | None = None
 
 
 __all__ = ["TravelPlanDetailResponse", "TravelPlanReference"]

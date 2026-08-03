@@ -106,6 +106,23 @@ class TripPlanVersionRepository:
             .with_for_update(of=TravelPlan)
         )
 
+    async def delete_owned_plan(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+    ) -> bool:
+        plan = await self.get_owned_plan_for_update(
+            session,
+            user_id=user_id,
+            plan_id=plan_id,
+        )
+        if plan is None:
+            return False
+        await session.delete(plan)
+        return True
+
     async def get_version(
         self,
         session: AsyncSession,

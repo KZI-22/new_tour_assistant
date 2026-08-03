@@ -10,6 +10,7 @@ import {
   CircleAlert,
   Clock3,
   CloudSun,
+  Copy,
   ExternalLink,
   Utensils,
   Hotel,
@@ -27,6 +28,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AssistantWidget } from "@/components/assistant-widget";
+import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { TravelSearchDialog, type SearchKind } from "@/components/travel-search-dialog";
 import {
   fetchTravelPlan,
@@ -345,6 +347,8 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
   const [error, setError] = useState<string | null>(null);
   const [activeDay, setActiveDay] = useState(0);
   const [shared, setShared] = useState(false);
+  const [viewMode, setViewMode] = useState<"interactive" | "text">("interactive");
+  const [copied, setCopied] = useState(false);
   const [searchKind, setSearchKind] = useState<SearchKind | null>(null);
 
   useEffect(() => {
@@ -377,6 +381,29 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
       window.setTimeout(() => setShared(false), 1800);
     } catch {
       // The user may cancel the native share sheet; no error state is needed.
+    }
+  };
+
+  const copyMarkdown = async () => {
+    if (!plan?.rendered_markdown) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(plan.rendered_markdown);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = plan.rendered_markdown;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) throw new Error("Clipboard copy failed");
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard access may be unavailable outside a secure browser context.
     }
   };
 
@@ -482,40 +509,90 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
               </button>
             ))}
           </div>
+          <div className="mt-6 flex flex-wrap items-center gap-2">
+            <div className="flex rounded-xl bg-white/75 p-1 text-xs shadow-sm">
+              <button
+                className={`rounded-lg px-3 py-2 font-medium transition-colors ${
+                  viewMode === "interactive"
+                    ? "bg-[#0f766e] text-white shadow-sm"
+                    : "text-[#52606d] hover:bg-white"
+                }`}
+                onClick={() => setViewMode("interactive")}
+                type="button"
+              >
+                交互式视图
+              </button>
+              <button
+                className={`rounded-lg px-3 py-2 font-medium transition-colors ${
+                  viewMode === "text"
+                    ? "bg-[#0f766e] text-white shadow-sm"
+                    : "text-[#52606d] hover:bg-white"
+                }`}
+                onClick={() => setViewMode("text")}
+                type="button"
+              >
+                文本版攻略
+              </button>
+            </div>
+            {viewMode === "text" && plan.rendered_markdown && (
+              <button
+                className="flex items-center gap-2 rounded-xl border border-black/[0.07] bg-white/85 px-3.5 py-2.5 text-xs font-semibold text-[#425466] shadow-sm hover:bg-white"
+                onClick={() => void copyMarkdown()}
+                type="button"
+              >
+                {copied ? <Check className="text-emerald-600" size={14} /> : <Copy size={14} />}
+                {copied ? "已复制" : "复制全文"}
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
-      <nav className="sticky top-16 z-40 border-b border-black/[0.06] bg-white/92 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1240px] gap-2 overflow-x-auto px-4 py-3 sm:px-6">
-          <DayTab active={activeDay === 0} label="总览" onClick={() => setActiveDay(0)} />
-          {snapshot.days.map((day) => (
-            <DayTab
-              key={day.day_id}
-              active={activeDay === day.day_index}
-              label={`D${day.day_index} · ${dayTheme(plan, day)}`}
-              onClick={() => setActiveDay(day.day_index)}
-            />
-          ))}
-        </div>
-      </nav>
+      {viewMode === "interactive" ? (
+        <>
+          <nav className="sticky top-16 z-40 border-b border-black/[0.06] bg-white/92 backdrop-blur-xl">
+            <div className="mx-auto flex max-w-[1240px] gap-2 overflow-x-auto px-4 py-3 sm:px-6">
+              <DayTab active={activeDay === 0} label="总览" onClick={() => setActiveDay(0)} />
+              {snapshot.days.map((day) => (
+                <DayTab
+                  key={day.day_id}
+                  active={activeDay === day.day_index}
+                  label={`D${day.day_index} · ${dayTheme(plan, day)}`}
+                  onClick={() => setActiveDay(day.day_index)}
+                />
+              ))}
+            </div>
+          </nav>
 
-      <div className="mx-auto grid max-w-[1240px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_430px] lg:items-start lg:py-8">
-        <div className="min-w-0 space-y-6">
-          {selectedDay ? (
-            <DayItinerary plan={plan} day={selectedDay} />
-          ) : (
-            <PlanOverview plan={plan} />
-          )}
-        </div>
-        <div className="order-first lg:sticky lg:top-[132px] lg:order-last">
-          <RouteMap
-            day={selectedDay}
-            key={selectedDay?.day_id ?? "trip-overview"}
-            places={mapPlaces}
-            restaurants={restaurants}
-          />
-        </div>
-      </div>
+          <div className="mx-auto grid max-w-[1240px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_430px] lg:items-start lg:py-8">
+            <div className="min-w-0 space-y-6">
+              {selectedDay ? (
+                <DayItinerary plan={plan} day={selectedDay} />
+              ) : (
+                <PlanOverview plan={plan} />
+              )}
+            </div>
+            <div className="order-first lg:sticky lg:top-[132px] lg:order-last">
+              <RouteMap
+                day={selectedDay}
+                key={selectedDay?.day_id ?? "trip-overview"}
+                places={mapPlaces}
+                restaurants={restaurants}
+              />
+            </div>
+          </div>
+        </>
+      ) : (
+        <section className="mx-auto max-w-[1240px] px-4 py-6 sm:px-6 sm:py-8">
+          <article className="markdown-body min-w-0 rounded-[30px] border border-black/[0.06] bg-white p-5 shadow-xl shadow-slate-900/[0.04] sm:p-8">
+            {plan.rendered_markdown ? (
+              <AssistantMarkdown content={plan.rendered_markdown} />
+            ) : (
+              <p className="text-sm text-[#697586]">当前版本暂未保存文本版攻略。</p>
+            )}
+          </article>
+        </section>
+      )}
       <TravelSearchDialog
         key={searchKind ?? "closed"}
         kind={searchKind}

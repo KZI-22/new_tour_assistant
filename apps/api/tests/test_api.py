@@ -257,6 +257,7 @@ def test_get_travel_plan_returns_owned_version(tmp_path: Path) -> None:
                     },
                 },
                 "narrative": None,
+                "rendered_markdown": "# 成都3日旅行方案",
             }
 
     client.app.state.trip_plan_persistence_service = FakeTravelPlanService()
@@ -266,6 +267,26 @@ def test_get_travel_plan_returns_owned_version(tmp_path: Path) -> None:
     assert response.headers["cache-control"] == "private, no-store"
     assert response.json()["plan_id"] == str(plan_id)
     assert response.json()["snapshot"]["request"]["core"]["destination_city"] == "成都"
+    assert response.json()["rendered_markdown"] == "# 成都3日旅行方案"
+
+
+def test_delete_travel_plan_deletes_only_the_plan(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    plan_id = uuid.uuid4()
+    deleted: tuple[uuid.UUID, uuid.UUID] | None = None
+
+    class FakeTravelPlanService:
+        async def delete_plan(self, user_id: uuid.UUID, requested_plan_id: uuid.UUID) -> None:
+            nonlocal deleted
+            assert user_id == _TEST_USER.id
+            deleted = (user_id, requested_plan_id)
+
+    client.app.state.trip_plan_persistence_service = FakeTravelPlanService()
+    response = client.delete(f"/api/v1/travel-plans/{plan_id}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert deleted == (_TEST_USER.id, plan_id)
 
 
 def test_stream_structured_travel_plan_uses_form_fields(tmp_path: Path) -> None:

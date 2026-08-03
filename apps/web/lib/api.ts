@@ -409,6 +409,7 @@ export type TravelPlanDetail = TravelPlanReference & {
   created_at: string;
   snapshot: TravelPlanSnapshot;
   narrative: TripNarrative | null;
+  rendered_markdown: string | null;
 };
 
 export type DirectTravelSearchResponse = {
@@ -656,6 +657,14 @@ export async function fetchTravelPlans(signal?: AbortSignal): Promise<TravelPlan
   });
   if (!response.ok) throw await responseError(response);
   return (await response.json()) as TravelPlanSummary[];
+}
+
+export async function deleteTravelPlan(planId: string): Promise<void> {
+  const response = await authenticatedFetch(
+    `${API_BASE_URL}/api/v1/travel-plans/${encodeURIComponent(planId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw await responseError(response);
 }
 
 function parseEventFrame(frame: string): { event: string; data: unknown } | null {

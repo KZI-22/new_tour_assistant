@@ -217,6 +217,23 @@ async def get_travel_plan(
     return plan
 
 
+@router.delete("/travel-plans/{plan_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_travel_plan(
+    plan_id: UUID,
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(require_current_user)],
+    _: Annotated[str, Depends(require_csrf_protection)],
+) -> Response:
+    try:
+        await _travel_plan_service(request).delete_plan(user.id, plan_id)
+    except TripPlanNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Travel plan not found.",
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/travel-plans", response_model=list[TravelPlanSummaryResponse])
 async def list_travel_plans(
     request: Request,
@@ -370,7 +387,7 @@ async def stream_chat(
                 detail="Active travel plan not found.",
             ) from exc
         plan_context = active_plan.model_dump_json(
-            exclude={"narrative"},
+            exclude={"narrative", "rendered_markdown"},
             exclude_none=True,
         )[:40_000]
 

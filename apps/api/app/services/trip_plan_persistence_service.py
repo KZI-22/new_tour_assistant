@@ -108,7 +108,18 @@ class TripPlanPersistenceService:
                     if plan_version.narrative_json is not None
                     else None
                 ),
+                rendered_markdown=plan_version.rendered_markdown,
             )
+
+    async def delete_plan(self, user_id: uuid.UUID, plan_id: uuid.UUID) -> None:
+        async with self._session_factory() as session, session.begin():
+            deleted = await self._repository.delete_owned_plan(
+                session,
+                user_id=user_id,
+                plan_id=plan_id,
+            )
+            if not deleted:
+                raise TripPlanNotFoundError(str(plan_id))
 
     async def list_plans(
         self,
