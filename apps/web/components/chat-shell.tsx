@@ -26,6 +26,7 @@ import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { useAuth } from "@/components/auth-gate";
 import { PlanningTracePanel } from "@/components/planning-trace-panel";
+import { WorkspaceModeSwitch } from "@/components/workspace-mode-switch";
 import {
   ApiChatMessage,
   ConversationSummary,
@@ -68,10 +69,10 @@ type SendMessageOptions = {
 const MAP_FALLBACK_MESSAGE = "跳过小红书登录，使用地图与天气继续生成。";
 
 const suggestions = [
-  "帮我规划一趟明天开始的 5 天东京美食之旅",
+  "杭州西湖周边适合一个下午的路线怎么安排？",
+  "北京故宫附近有什么值得去的景点？",
   "搜索成都 3 天游的小红书高赞原帖",
-  "设计一个明天开始、适合亲子的上海 2 天行程",
-  "如何控制欧洲自由行的整体预算？",
+  "欧洲自由行怎样控制整体预算？",
 ];
 
 function newId(): string {
@@ -508,6 +509,10 @@ export function ChatShell() {
           新对话
         </button>
 
+        <div className="mt-3 px-1">
+          <WorkspaceModeSwitch active="agent" />
+        </div>
+
         <div className="mt-6 px-2 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--muted)]">
           对话
         </div>
@@ -577,7 +582,7 @@ export function ChatShell() {
             当前阶段
           </div>
           <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
-            城市行程默认使用地图与天气；开启“小红书原帖”后，消息会直接用于搜索并返回原帖正文。
+            普通模式支持连续旅行问答与工具查询；开启“小红书原帖”后，消息会直接用于搜索并返回原帖正文。
           </p>
         </div>
       </aside>
@@ -669,10 +674,10 @@ export function ChatShell() {
                   <Compass size={27} />
                 </span>
                 <h1 className="mt-6 text-3xl font-semibold tracking-[-0.035em] md:text-4xl">
-                  下一站，去哪里？
+                  想去哪里，或者想了解什么？
                 </h1>
                 <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted)] md:text-base">
-                  告诉我目标城市、游玩天数和开始日期，我会结合地图、路线与天气整理分日攻略。
+                  直接说出你的旅行问题。我可以协助查询景点、路线、天气与出行建议；开启“小红书原帖”可直接检索原始内容。
                 </p>
                 <div className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {suggestions.map((suggestion) => (

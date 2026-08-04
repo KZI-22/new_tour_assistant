@@ -21,6 +21,7 @@ import { type FormEvent, type MouseEvent, useEffect, useMemo, useRef, useState }
 
 import { useAuth } from "@/components/auth-gate";
 import { TravelSearchDialog, type SearchKind } from "@/components/travel-search-dialog";
+import { WorkspaceModeSwitch } from "@/components/workspace-mode-switch";
 import {
   deleteTravelPlan,
   fetchModels,
@@ -164,7 +165,10 @@ export function TravelWorkspace() {
             <span className="grid size-11 place-items-center rounded-2xl bg-[#0f766e] text-white shadow-lg shadow-emerald-900/15"><Compass size={21} /></span>
             <div><p className="text-base font-semibold tracking-tight">远行 · 智能旅行规划</p><p className="mt-0.5 text-[11px] text-[#8090a0]">清晰填写，准确规划</p></div>
           </div>
-          <button className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-[#697586] hover:bg-black/[0.04]" onClick={() => void signOut()} type="button"><span className="hidden sm:inline">{user.display_name || "旅行者"}</span><LogOut size={15} /></button>
+          <div className="flex items-center gap-1.5 sm:gap-2.5">
+            <WorkspaceModeSwitch active="workspace" />
+            <button className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-[#697586] hover:bg-black/[0.04]" onClick={() => void signOut()} type="button"><span className="hidden sm:inline">{user.display_name || "旅行者"}</span><LogOut size={15} /></button>
+          </div>
         </div>
       </header>
 
