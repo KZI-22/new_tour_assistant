@@ -44,6 +44,8 @@ import {
 
 type AmapMapInstance = {
   add: (overlays: object[]) => void;
+  remove: (overlays: object[]) => void;
+  getAllOverlays: () => object[];
   setFitView: (overlays?: object[], immediately?: boolean, padding?: number[]) => void;
   on: (event: "complete", handler: () => void) => void;
   destroy: () => void;
@@ -714,8 +716,8 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
             </div>
             <div className="order-first lg:sticky lg:top-[132px] lg:order-last">
               <RouteMap
+                cacheNamespace={plan.version_id}
                 day={selectedDay}
-                key={selectedDay?.day_id ?? "trip-overview"}
                 places={mapPlaces}
                 restaurants={restaurants}
               />
@@ -1180,6 +1182,24 @@ type RouteSearchResult = {
   status: "ready" | "failed";
   detail: string;
   transitPlans?: TransitPlanOption[];
+  routeOverlays?: object[];
+};
+
+type RouteSceneState = {
+  selectedPlaceIds: string[];
+  routeMode: InteractiveRouteMode;
+};
+
+type CachedMapScene = {
+  markers: Map<string, AmapMarkerInstance>;
+  placeOverlays: object[];
+  restaurantMarkers: Map<string, AmapMarkerInstance>;
+  restaurantOverlays: object[];
+};
+
+const EMPTY_ROUTE_SCENE_STATE: RouteSceneState = {
+  selectedPlaceIds: [],
+  routeMode: "walking",
 };
 
 function markerContent(index: number, role: SelectedRouteRole): string {
@@ -1198,10 +1218,12 @@ function routeMetric(value: number | string | undefined): number | null {
 }
 
 function RouteMap({
+  cacheNamespace,
   places,
   restaurants,
   day,
 }: {
+  cacheNamespace: string;
   places: TripPlanPlace[];
   restaurants: RestaurantRecommendation[];
   day: TripPlanDay | null;
@@ -1209,24 +1231,70 @@ function RouteMap({
   const hostRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<AmapMapInstance | null>(null);
   const amapRef = useRef<AmapApi | null>(null);
-  const markersRef = useRef<Map<string, AmapMarkerInstance>>(new Map());
-  const restaurantMarkersRef = useRef<Map<string, AmapMarkerInstance>>(new Map());
+  const sceneCacheRef = useRef<Map<string, CachedMapScene>>(new Map());
+  const activeSceneKeyRef = useRef<string | null>(null);
+  const activePlaceOverlaysRef = useRef<object[]>([]);
+  const activeRestaurantOverlaysRef = useRef<object[]>([]);
+  const activeRouteOverlaysRef = useRef<object[]>([]);
   const routeServiceRef = useRef<AmapRouteService | null>(null);
+  const routeResultsRef = useRef<Map<string, RouteSearchResult>>(new Map());
   const [mapStatus, setMapStatus] = useState<MapLoadStatus>("idle");
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapAttempt, setMapAttempt] = useState(0);
-  const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([]);
-  const [routeMode, setRouteMode] = useState<InteractiveRouteMode>("walking");
-  const [routeResult, setRouteResult] = useState<RouteSearchResult | null>(null);
+  const [routeScenes, setRouteScenes] = useState<Record<string, RouteSceneState>>({});
+  const [routeResults, setRouteResults] = useState<Map<string, RouteSearchResult>>(
+    () => new Map(),
+  );
   const [showRestaurants, setShowRestaurants] = useState(true);
   const key = process.env.NEXT_PUBLIC_AMAP_JS_KEY?.trim();
   const securityCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE?.trim();
+  const sceneKey = `${cacheNamespace}:${day?.day_id ?? "trip-overview"}`;
+  const routeScene = routeScenes[sceneKey] ?? EMPTY_ROUTE_SCENE_STATE;
+  const { selectedPlaceIds, routeMode } = routeScene;
 
-  const selectPlace = useCallback((placeId: string) => {
-    setSelectedPlaceIds((current) => {
-      if (current.includes(placeId)) return current.filter((item) => item !== placeId);
-      if (current.length >= 2) return [placeId];
-      return [...current, placeId];
+  const selectPlaceForScene = useCallback((targetSceneKey: string, placeId: string) => {
+    setRouteScenes((current) => {
+      const scene = current[targetSceneKey] ?? EMPTY_ROUTE_SCENE_STATE;
+      const selectedPlaceIds = scene.selectedPlaceIds.includes(placeId)
+        ? scene.selectedPlaceIds.filter((item) => item !== placeId)
+        : scene.selectedPlaceIds.length >= 2
+          ? [placeId]
+          : [...scene.selectedPlaceIds, placeId];
+      return {
+        ...current,
+        [targetSceneKey]: { ...scene, selectedPlaceIds },
+      };
+    });
+  }, []);
+
+  const selectPlace = useCallback(
+    (placeId: string) => selectPlaceForScene(sceneKey, placeId),
+    [sceneKey, selectPlaceForScene],
+  );
+
+  const setActiveRouteMode = useCallback(
+    (mode: InteractiveRouteMode) => {
+      setRouteScenes((current) => {
+        const scene = current[sceneKey] ?? EMPTY_ROUTE_SCENE_STATE;
+        return { ...current, [sceneKey]: { ...scene, routeMode: mode } };
+      });
+    },
+    [sceneKey],
+  );
+
+  const clearActiveSelection = useCallback(() => {
+    setRouteScenes((current) => {
+      const scene = current[sceneKey] ?? EMPTY_ROUTE_SCENE_STATE;
+      return { ...current, [sceneKey]: { ...scene, selectedPlaceIds: [] } };
+    });
+  }, [sceneKey]);
+
+  const cacheRouteResult = useCallback((result: RouteSearchResult) => {
+    routeResultsRef.current.set(result.requestKey, result);
+    setRouteResults((current) => {
+      const next = new Map(current);
+      next.set(result.requestKey, result);
+      return next;
     });
   }, []);
 
@@ -1237,15 +1305,20 @@ function RouteMap({
         .filter((place): place is TripPlanPlace => Boolean(place)),
     [places, selectedPlaceIds],
   );
+  const routeRequestKey =
+    selectedPlaces.length === 2
+      ? `${sceneKey}:${selectedPlaces[0].plan_item_id}:${selectedPlaces[1].plan_item_id}:${routeMode}`
+      : null;
 
   useEffect(() => {
-    if (!key || !hostRef.current || places.length === 0) {
+    if (!key || !hostRef.current) {
       setMapStatus("idle");
       return;
     }
     let active = true;
     let map: AmapMapInstance | null = null;
     let mapReadyTimeoutId: number | null = null;
+    const sceneCache = sceneCacheRef.current;
     setMapStatus("loading");
     setMapError(null);
 
@@ -1274,50 +1347,6 @@ function RouteMap({
           setMapError("高德底图响应超时，请检查 Web端（JS API）Key、安全密钥和域名白名单。");
           setMapStatus("failed");
         }, 12_000);
-
-        const markerEntries = places.map((place, index) => {
-          const marker = new AMap.Marker({
-            position: [place.location.longitude, place.location.latitude],
-            anchor: "center",
-            content: markerContent(index, null),
-            title: `${place.name}（点击选择路线起终点）`,
-          });
-          marker.on("click", () => selectPlace(place.plan_item_id));
-          return [place.plan_item_id, marker] as const;
-        });
-        const markers = markerEntries.map(([, marker]) => marker);
-        markersRef.current = new Map(markerEntries);
-        const restaurantEntries = showRestaurants
-          ? restaurants.map((restaurant) => {
-              const marker = new AMap.Marker({
-                position: [restaurant.location.longitude, restaurant.location.latitude],
-                anchor: "center",
-                content: restaurantMarkerContent(),
-                title: `${restaurant.name}（餐饮推荐）`,
-              });
-              return [restaurant.provider_place_id, marker] as const;
-            })
-          : [];
-        const restaurantMarkers = restaurantEntries.map(([, marker]) => marker);
-        restaurantMarkersRef.current = new Map(restaurantEntries);
-        const overlays: object[] = [...markers, ...restaurantMarkers];
-        if (places.length > 1) {
-          overlays.push(
-            new AMap.Polyline({
-              path: places.map((place) => [
-                place.location.longitude,
-                place.location.latitude,
-              ]),
-              strokeColor: "#0f766e",
-              strokeWeight: 3,
-              strokeOpacity: 0.38,
-              strokeStyle: "dashed",
-              lineJoin: "round",
-            }),
-          );
-        }
-        map.add(overlays);
-        map.setFitView([...markers, ...restaurantMarkers], false, [72, 52, 72, 52]);
       })
       .catch((reason: unknown) => {
         if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
@@ -1325,8 +1354,11 @@ function RouteMap({
         map = null;
         mapRef.current = null;
         amapRef.current = null;
-        markersRef.current.clear();
-        restaurantMarkersRef.current.clear();
+        sceneCache.clear();
+        activeSceneKeyRef.current = null;
+        activePlaceOverlaysRef.current = [];
+        activeRestaurantOverlaysRef.current = [];
+        activeRouteOverlaysRef.current = [];
         if (!active) return;
         setMapError(reason instanceof Error ? reason.message : "高德地图加载失败。");
         setMapStatus("failed");
@@ -1337,22 +1369,127 @@ function RouteMap({
       if (mapReadyTimeoutId !== null) window.clearTimeout(mapReadyTimeoutId);
       routeServiceRef.current?.clear();
       routeServiceRef.current = null;
-      markersRef.current.clear();
-      restaurantMarkersRef.current.clear();
+      sceneCache.clear();
+      activeSceneKeyRef.current = null;
+      activePlaceOverlaysRef.current = [];
+      activeRestaurantOverlaysRef.current = [];
+      activeRouteOverlaysRef.current = [];
       if (mapRef.current === map) mapRef.current = null;
       amapRef.current = null;
       map?.destroy();
     };
-  }, [key, mapAttempt, places, restaurants, securityCode, selectPlace, showRestaurants]);
+  }, [key, mapAttempt, securityCode]);
 
   useEffect(() => {
+    const map = mapRef.current;
+    const AMap = amapRef.current;
+    if (mapStatus !== "ready" || !map || !AMap) return;
+
+    routeServiceRef.current?.clear();
+    routeServiceRef.current = null;
+    if (activeRouteOverlaysRef.current.length > 0) {
+      map.remove(activeRouteOverlaysRef.current);
+      activeRouteOverlaysRef.current = [];
+    }
+    if (activePlaceOverlaysRef.current.length > 0) {
+      map.remove(activePlaceOverlaysRef.current);
+    }
+    if (activeRestaurantOverlaysRef.current.length > 0) {
+      map.remove(activeRestaurantOverlaysRef.current);
+    }
+
+    let scene = sceneCacheRef.current.get(sceneKey);
+    if (!scene) {
+      const markerEntries = places.map((place, index) => {
+        const marker = new AMap.Marker({
+          position: [place.location.longitude, place.location.latitude],
+          anchor: "center",
+          content: markerContent(index, null),
+          title: `${place.name}（点击选择路线起终点）`,
+        });
+        marker.on("click", () => selectPlaceForScene(sceneKey, place.plan_item_id));
+        return [place.plan_item_id, marker] as const;
+      });
+      const markers = new Map(markerEntries);
+      const placeOverlays: object[] = [...markers.values()];
+      if (places.length > 1) {
+        placeOverlays.push(
+          new AMap.Polyline({
+            path: places.map((place) => [
+              place.location.longitude,
+              place.location.latitude,
+            ]),
+            strokeColor: "#0f766e",
+            strokeWeight: 3,
+            strokeOpacity: 0.38,
+            strokeStyle: "dashed",
+            lineJoin: "round",
+          }),
+        );
+      }
+
+      const restaurantEntries = restaurants.map((restaurant) => {
+        const marker = new AMap.Marker({
+          position: [restaurant.location.longitude, restaurant.location.latitude],
+          anchor: "center",
+          content: restaurantMarkerContent(),
+          title: `${restaurant.name}（餐饮推荐）`,
+        });
+        return [restaurant.provider_place_id, marker] as const;
+      });
+      const restaurantMarkers = new Map(restaurantEntries);
+      scene = {
+        markers,
+        placeOverlays,
+        restaurantMarkers,
+        restaurantOverlays: [...restaurantMarkers.values()],
+      };
+      sceneCacheRef.current.set(sceneKey, scene);
+    }
+
+    map.add(scene.placeOverlays);
+    activeSceneKeyRef.current = sceneKey;
+    activePlaceOverlaysRef.current = scene.placeOverlays;
+    activeRestaurantOverlaysRef.current = [];
+  }, [mapStatus, places, restaurants, sceneKey, selectPlaceForScene]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const scene = sceneCacheRef.current.get(sceneKey);
+    if (
+      mapStatus !== "ready" ||
+      !map ||
+      !scene ||
+      activeSceneKeyRef.current !== sceneKey
+    ) {
+      return;
+    }
+
+    if (activeRestaurantOverlaysRef.current.length > 0) {
+      map.remove(activeRestaurantOverlaysRef.current);
+      activeRestaurantOverlaysRef.current = [];
+    }
+    if (showRestaurants && scene.restaurantOverlays.length > 0) {
+      map.add(scene.restaurantOverlays);
+      activeRestaurantOverlaysRef.current = scene.restaurantOverlays;
+    }
+    const fitMarkers = [
+      ...scene.markers.values(),
+      ...(showRestaurants ? scene.restaurantMarkers.values() : []),
+    ];
+    if (fitMarkers.length > 0) map.setFitView(fitMarkers, false, [72, 52, 72, 52]);
+  }, [mapStatus, sceneKey, showRestaurants]);
+
+  useEffect(() => {
+    const scene = sceneCacheRef.current.get(sceneKey);
+    if (!scene) return;
     places.forEach((place, index) => {
       const selectedIndex = selectedPlaceIds.indexOf(place.plan_item_id);
       const role: SelectedRouteRole =
         selectedIndex === 0 ? "origin" : selectedIndex === 1 ? "destination" : null;
-      markersRef.current.get(place.plan_item_id)?.setContent(markerContent(index, role));
+      scene.markers.get(place.plan_item_id)?.setContent(markerContent(index, role));
     });
-  }, [mapStatus, places, selectedPlaceIds]);
+  }, [mapStatus, places, sceneKey, selectedPlaceIds]);
 
   useEffect(() => {
     routeServiceRef.current?.clear();
@@ -1361,12 +1498,38 @@ function RouteMap({
     const map = mapRef.current;
     const AMap = amapRef.current;
     if (mapStatus !== "ready" || !map || !AMap) return;
-    if (selectedPlaces.length !== 2) {
-      const markers = [
-        ...markersRef.current.values(),
-        ...restaurantMarkersRef.current.values(),
-      ];
+    if (activeRouteOverlaysRef.current.length > 0) {
+      map.remove(activeRouteOverlaysRef.current);
+      activeRouteOverlaysRef.current = [];
+    }
+    const scene = sceneCacheRef.current.get(sceneKey);
+    if (selectedPlaces.length !== 2 || !routeRequestKey) {
+      const markers = scene
+        ? [
+            ...scene.markers.values(),
+            ...(activeRestaurantOverlaysRef.current.length > 0
+              ? scene.restaurantMarkers.values()
+              : []),
+          ]
+        : [];
       if (markers.length > 0) map.setFitView(markers, false, [72, 52, 72, 52]);
+      return;
+    }
+
+    const cachedRoute = routeResultsRef.current.get(routeRequestKey);
+    if (cachedRoute) {
+      if (cachedRoute.routeOverlays && cachedRoute.routeOverlays.length > 0) {
+        map.add(cachedRoute.routeOverlays);
+        activeRouteOverlaysRef.current = cachedRoute.routeOverlays;
+        map.setFitView(cachedRoute.routeOverlays, false, [72, 52, 72, 52]);
+        return;
+      }
+      const selectedMarkers = selectedPlaces
+        .map((place) => scene?.markers.get(place.plan_item_id))
+        .filter((marker): marker is AmapMarkerInstance => Boolean(marker));
+      if (selectedMarkers.length > 0) {
+        map.setFitView(selectedMarkers, false, [72, 52, 72, 52]);
+      }
       return;
     }
 
@@ -1378,12 +1541,12 @@ function RouteMap({
         : routeMode === "transit"
           ? "AMap.Transfer"
           : "AMap.Driving";
-    const requestKey = `${origin.plan_item_id}:${destination.plan_item_id}:${routeMode}`;
+    const requestKey = routeRequestKey;
     const transitCity = origin.city?.trim() || destination.city?.trim();
     if (routeMode === "transit" && !transitCity) {
       window.queueMicrotask(() => {
         if (!active) return;
-        setRouteResult({
+        cacheRouteResult({
           requestKey,
           status: "failed",
           detail: "景点缺少城市信息，暂时无法查询公交地铁方案。",
@@ -1395,7 +1558,7 @@ function RouteMap({
     }
     const timeoutId = window.setTimeout(() => {
       if (!active) return;
-      setRouteResult({
+      cacheRouteResult({
         requestKey,
         status: "failed",
         detail: "路线计算超时，可点击下方按钮前往高德继续查看。",
@@ -1437,6 +1600,7 @@ function RouteMap({
             routeMode === "transit"
               ? new AMap.LngLat(destination.location.longitude, destination.location.latitude)
               : [destination.location.longitude, destination.location.latitude];
+          const overlaysBeforeSearch = new Set(mapRef.current.getAllOverlays());
           service.search(
             originPoint,
             destinationPoint,
@@ -1444,17 +1608,20 @@ function RouteMap({
               if (!active) return;
               window.clearTimeout(timeoutId);
               if (status !== "complete" || typeof result === "string") {
-                setRouteResult({
+                cacheRouteResult({
                   requestKey,
                   status: "failed",
                   detail: "暂时无法取得这两个景点的路线，可前往高德继续规划。",
                 });
                 return;
               }
+              const routeOverlays = (mapRef.current?.getAllOverlays() ?? []).filter(
+                (overlay) => !overlaysBeforeSearch.has(overlay),
+              );
               if (routeMode === "transit") {
                 const transitPlans = normalizeTransitPlans(result);
                 if (transitPlans.length === 0) {
-                  setRouteResult({
+                  cacheRouteResult({
                     requestKey,
                     status: "failed",
                     detail: "高德暂未返回可用的公交地铁方案，可前往高德继续规划。",
@@ -1471,13 +1638,15 @@ function RouteMap({
                     : `步行 ${formatDistance(primaryPlan.walkingDistanceMeters)}`,
                   primaryPlan.transfers === 0 ? "直达" : `换乘 ${primaryPlan.transfers} 次`,
                 ].filter(Boolean);
-                setRouteResult({
+                activeRouteOverlaysRef.current = routeOverlays;
+                cacheRouteResult({
                   requestKey,
                   status: "ready",
                   detail: ["公交地铁", ...primaryFacts, `共 ${transitPlans.length} 个方案`].join(
                     " · ",
                   ),
                   transitPlans,
+                  routeOverlays,
                 });
                 return;
               }
@@ -1490,20 +1659,22 @@ function RouteMap({
                   ? null
                   : formatDuration(Math.max(1, Math.round(durationSeconds / 60))),
               ].filter(Boolean);
-              setRouteResult({
+              activeRouteOverlaysRef.current = routeOverlays;
+              cacheRouteResult({
                 requestKey,
                 status: "ready",
                 detail:
                   facts.length > 0
                     ? `${interactiveRouteModeLabel(routeMode)} · ${facts.join(" · ")}`
                     : "路线已绘制在地图上。",
+                routeOverlays,
               });
             },
           );
         } catch {
           window.clearTimeout(timeoutId);
           if (!active) return;
-          setRouteResult({
+          cacheRouteResult({
             requestKey,
             status: "failed",
             detail: "路线规划插件加载失败，可前往高德继续规划。",
@@ -1514,7 +1685,7 @@ function RouteMap({
       window.clearTimeout(timeoutId);
       window.queueMicrotask(() => {
         if (!active) return;
-        setRouteResult({
+        cacheRouteResult({
           requestKey,
           status: "failed",
           detail: "路线规划插件加载失败，可前往高德继续规划。",
@@ -1528,18 +1699,13 @@ function RouteMap({
       routeServiceRef.current?.clear();
       routeServiceRef.current = null;
     };
-  }, [mapStatus, routeMode, selectedPlaces]);
+  }, [cacheRouteResult, mapStatus, routeMode, routeRequestKey, sceneKey, selectedPlaces]);
 
   const routeUrl =
     selectedPlaces.length === 2
       ? amapRouteUrl(selectedPlaces[0], selectedPlaces[1], routeMode)
       : null;
-  const routeRequestKey =
-    selectedPlaces.length === 2
-      ? `${selectedPlaces[0].plan_item_id}:${selectedPlaces[1].plan_item_id}:${routeMode}`
-      : null;
-  const currentRouteResult =
-    routeRequestKey && routeResult?.requestKey === routeRequestKey ? routeResult : null;
+  const currentRouteResult = routeRequestKey ? routeResults.get(routeRequestKey) ?? null : null;
   const routeStatus: RouteSearchStatus = !routeRequestKey
     ? "idle"
     : currentRouteResult?.status ?? "loading";
@@ -1615,7 +1781,7 @@ function RouteMap({
                   routeMode === mode ? "bg-white text-[#0f766e] shadow-sm" : "text-[#697586]"
                 }`}
                 key={mode}
-                onClick={() => setRouteMode(mode)}
+                onClick={() => setActiveRouteMode(mode)}
                 type="button"
               >
                 {interactiveRouteModeLabel(mode)}
@@ -1774,7 +1940,7 @@ function RouteMap({
         {selectedPlaceIds.length > 0 && (
           <button
             className="mt-3 text-[10px] font-medium text-[#697586] underline underline-offset-4"
-            onClick={() => setSelectedPlaceIds([])}
+            onClick={clearActiveSelection}
             type="button"
           >
             清除选择
