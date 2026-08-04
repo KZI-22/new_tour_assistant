@@ -33,7 +33,7 @@ from app.services.tool_call_log_service import ToolCallLogService
 from app.services.trip_plan_persistence_service import TripPlanPersistenceService
 from app.services.weather_evidence_service import WeatherEvidenceService
 from app.services.xhs_research_service import XhsResearchService
-from app.tools import build_travel_tools
+from app.tools import build_travel_assistant_tools, build_travel_tools
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -154,6 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         presentation_timeout_seconds=current_settings.direct_search_presentation_timeout_seconds,
     )
     travel_tools = build_travel_tools(flyai_client, amap_client)
+    travel_assistant_tools = build_travel_assistant_tools(flyai_client, amap_client)
     structured_trip_planner = None
     if current_settings.trip_planner_enabled and amap_client is not None:
         map_service = MapTripCollectionService(
@@ -205,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.chat_service = ChatService(
         registry,
         travel_tools,
+        plan_tools=travel_assistant_tools,
         max_tool_rounds=current_settings.max_tool_rounds,
         tool_timeout_seconds=current_settings.tool_execution_timeout_seconds,
         tool_call_log_writer=tool_call_log_service,
@@ -224,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.flyai_client = flyai_client
     application.state.amap_client = amap_client
     application.state.travel_tools = travel_tools
+    application.state.travel_assistant_tools = travel_assistant_tools
     application.include_router(auth_router)
     application.include_router(router)
     return application

@@ -419,7 +419,7 @@ def _direct_search_fixture(kind: str, tool_name: str) -> dict[str, object]:
     }
 
 
-def test_chat_receives_active_plan_as_read_only_context(tmp_path: Path) -> None:
+def test_chat_receives_active_plan_markdown_for_the_requested_version(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     plan_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -435,8 +435,12 @@ def test_chat_receives_active_plan_as_read_only_context(tmp_path: Path) -> None:
         ) -> object:
             assert user_id == _TEST_USER.id
             assert requested_plan_id == plan_id
-            assert version is None
-            return SimpleNamespace(model_dump_json=lambda **_: '{"title":"成都3日旅行方案"}')
+            assert version == 2
+            return SimpleNamespace(
+                title="成都3日旅行方案",
+                version=2,
+                rendered_markdown="# 成都3日旅行方案\n\n第二天游览熊猫基地。",
+            )
 
     class FakeChatService:
         async def stream(
@@ -450,7 +454,8 @@ def test_chat_receives_active_plan_as_read_only_context(tmp_path: Path) -> None:
         ) -> AsyncIterator[MessageDeltaEvent]:
             del messages, planning_source, execution_context
             assert model_id == "test-model"
-            assert "成都3日旅行方案" in plan_context
+            assert "第二天游览熊猫基地" in plan_context
+            assert "方案版本：v2" in plan_context
             yield MessageDeltaEvent(delta="已参考当前规划。")
 
     class FakeConversationService:
@@ -474,6 +479,7 @@ def test_chat_receives_active_plan_as_read_only_context(tmp_path: Path) -> None:
             "model_id": "test-model",
             "message": "第二天有什么？",
             "active_plan_id": str(plan_id),
+            "active_plan_version": 2,
         },
     )
 

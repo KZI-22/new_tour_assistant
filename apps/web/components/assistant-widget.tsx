@@ -20,17 +20,29 @@ type AssistantMessage = {
   tools?: Array<{ id: string; label: string; state: "running" | "success" | "failed" }>;
 };
 
+const GUIDE_MESSAGE: AssistantMessage = {
+  id: "travel-assistant-guide",
+  role: "assistant",
+  content:
+    "我是你的旅行小助手，已经阅读这份旅行攻略。你可以问我攻略中的安排、让我搜索具体景点信息或规划景点之间的路线。如果想调整行程，也可以告诉我你的想法，我会先给出修改建议供你确认。",
+};
+
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 }
 
-export function AssistantWidget({ activePlanId = null }: { activePlanId?: string | null }) {
+export function AssistantWidget({
+  activePlanId,
+  activePlanVersion,
+}: {
+  activePlanId: string;
+  activePlanVersion: number;
+}) {
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelId, setModelId] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [planningSource, setPlanningSource] = useState<"standard" | "xhs">("standard");
-  const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const [messages, setMessages] = useState<AssistantMessage[]>([GUIDE_MESSAGE]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,8 +82,7 @@ export function AssistantWidget({ activePlanId = null }: { activePlanId?: string
   const clear = () => {
     abortRef.current?.abort();
     setConversationId(null);
-    setPlanningSource("standard");
-    setMessages([]);
+    setMessages([GUIDE_MESSAGE]);
     setInput("");
     setLoading(false);
     setError(null);
@@ -141,8 +152,9 @@ export function AssistantWidget({ activePlanId = null }: { activePlanId?: string
             ),
         },
         controller.signal,
-        planningSource,
+        "standard",
         activePlanId,
+        activePlanVersion,
       );
     } catch (reason: unknown) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) {
@@ -178,7 +190,7 @@ export function AssistantWidget({ activePlanId = null }: { activePlanId?: string
                 <Sparkles size={16} className="text-[#0f766e]" /> 旅行智能助手
               </div>
               <p className="mt-1 text-[11px] text-[#697586]">
-                {activePlanId ? "可阅读当前计划，不会修改计划" : "问天气、路线、美食或旅行常识"}
+                已阅读当前文本攻略 · 可查询景点与规划路线
               </p>
             </div>
             <button className="icon-button" onClick={clear} title="新对话" type="button">
@@ -187,11 +199,6 @@ export function AssistantWidget({ activePlanId = null }: { activePlanId?: string
           </header>
 
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[#f8faf9] p-4" ref={scrollRef}>
-            {messages.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-[#0f766e]/25 bg-white p-5 text-sm leading-6 text-[#52606d]">
-                你好，我是你的旅行助手。规划相关问题、实时查询和目的地灵感，都可以在这里聊。
-              </div>
-            )}
             {messages.map((message) => (
               <article
                 className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${
@@ -234,29 +241,11 @@ export function AssistantWidget({ activePlanId = null }: { activePlanId?: string
                   void send();
                 }
               }}
-              placeholder="问问旅行助手…"
+              placeholder="询问攻略、景点或路线…"
               value={input}
             />
             <div className="mt-2 flex items-center justify-between gap-3">
-              <div className="flex rounded-xl bg-[#f1f5f4] p-1 text-[10px]">
-                <button
-                  className={`rounded-lg px-2 py-1.5 ${planningSource === "standard" ? "bg-white text-[#0f766e] shadow-sm" : "text-[#8090a0]"}`}
-                  disabled={loading}
-                  onClick={() => setPlanningSource("standard")}
-                  type="button"
-                >
-                  智能助手
-                </button>
-                <button
-                  className={`rounded-lg px-2 py-1.5 ${planningSource === "xhs" ? "bg-white text-[#0f766e] shadow-sm" : "text-[#8090a0]"}`}
-                  disabled={loading}
-                  onClick={() => setPlanningSource("xhs")}
-                  title="独立检索小红书原帖"
-                  type="button"
-                >
-                  小红书原帖
-                </button>
-              </div>
+              <span className="px-1 text-[10px] text-[#8090a0]">基于当前攻略回答</span>
               <div className="flex items-center gap-2">
                 <select
                   aria-label="选择助手模型"

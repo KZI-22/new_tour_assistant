@@ -19,7 +19,6 @@ import {
 import Link from "next/link";
 import { type FormEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
-import { AssistantWidget } from "@/components/assistant-widget";
 import { useAuth } from "@/components/auth-gate";
 import { TravelSearchDialog, type SearchKind } from "@/components/travel-search-dialog";
 import {
@@ -159,9 +158,8 @@ export function TravelWorkspace() {
 
   return (
     <main className="min-h-dvh bg-[#f5f7f5] text-[#17202a]">
-      <AssistantWidget />
       <header className="border-b border-black/[0.06] bg-white/90 backdrop-blur-xl">
-        <div className="mx-auto flex h-20 max-w-[1180px] items-center justify-between px-4 pr-20 sm:px-6 sm:pr-24">
+        <div className="mx-auto flex h-20 max-w-[1180px] items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
             <span className="grid size-11 place-items-center rounded-2xl bg-[#0f766e] text-white shadow-lg shadow-emerald-900/15"><Compass size={21} /></span>
             <div><p className="text-base font-semibold tracking-tight">远行 · 智能旅行规划</p><p className="mt-0.5 text-[11px] text-[#8090a0]">清晰填写，准确规划</p></div>

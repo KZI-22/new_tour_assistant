@@ -380,15 +380,18 @@ async def stream_chat(
             active_plan = await _travel_plan_service(request).get_plan(
                 user.id,
                 payload.active_plan_id,
+                version=payload.active_plan_version,
             )
         except TripPlanNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Active travel plan not found.",
             ) from exc
-        plan_context = active_plan.model_dump_json(
-            exclude={"narrative", "rendered_markdown"},
-            exclude_none=True,
+        rendered_markdown = (active_plan.rendered_markdown or "").strip()
+        plan_context = (
+            f"方案标题：{active_plan.title}\n"
+            f"方案版本：v{active_plan.version}\n\n"
+            f"{rendered_markdown or '当前版本暂未保存文本版攻略。'}"
         )[:40_000]
 
     conversation_service = _conversation_service(request)

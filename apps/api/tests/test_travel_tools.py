@@ -10,7 +10,7 @@ from app.schemas.travel import (
     PoiSearchInput,
     TrainSearchInput,
 )
-from app.tools import build_travel_tools
+from app.tools import build_travel_assistant_tools, build_travel_tools
 
 
 class FakeFlyAIClient:
@@ -89,4 +89,18 @@ async def test_travel_tools_validate_structured_fields_and_delegate_to_client() 
         str,
         PoiSearchInput,
         str,
+    ]
+
+
+def test_travel_assistant_tools_are_limited_to_poi_keyword_and_route() -> None:
+    client = FakeFlyAIClient()
+
+    without_amap = build_travel_assistant_tools(client)  # type: ignore[arg-type]
+    with_amap = build_travel_assistant_tools(client, object())  # type: ignore[arg-type]
+
+    assert [tool.name for tool in without_amap] == ["search_poi", "keyword_search"]
+    assert [tool.name for tool in with_amap] == [
+        "search_poi",
+        "keyword_search",
+        "amap_plan_route",
     ]

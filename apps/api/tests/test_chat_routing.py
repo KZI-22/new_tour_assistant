@@ -36,13 +36,15 @@ class FakeHybridModel:
         self.structured = defaultdict(list, structured)
         self.answer = answer
         self.bind_calls = 0
+        self.bound_tool_names: list[list[str]] = []
         self.invoke_calls = 0
 
     def with_structured_output(self, schema: type[Any]) -> _Runnable:
         return _Runnable(self.structured[schema.__name__].pop(0))
 
-    def bind_tools(self, _: Any) -> FakeHybridModel:
+    def bind_tools(self, tools: Any) -> FakeHybridModel:
         self.bind_calls += 1
+        self.bound_tool_names.append([tool.name for tool in tools])
         return self
 
     async def ainvoke(self, _: Any) -> AIMessage:
@@ -160,16 +162,51 @@ def _service() -> tuple[ChatService, FakeRegistry, FakeHybridModel, FakeResearch
     return service, registry, model, research
 
 
-def test_active_plan_context_is_injected_as_read_only_system_data() -> None:
+def test_active_plan_markdown_is_injected_with_plan_assistant_instructions() -> None:
     messages = _to_langchain_messages(
         [ChatMessage(role="user", content="第二天有什么？")],
-        plan_context='{"title":"成都3日旅行方案"}',
+        plan_context="# 成都3日旅行方案\n\n第二天游览熊猫基地。",
     )
 
     system_prompt = str(messages[0].content)
     assert "成都3日旅行方案" in system_prompt
-    assert "只读参考数据" in system_prompt
-    assert "不能声称已经修改" in system_prompt
+    assert "文本攻略" in system_prompt
+    assert "search_poi" in system_prompt
+    assert "keyword_search" in system_prompt
+    assert "amap_plan_route" in system_prompt
+    assert "不能声称已经保存" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_active_plan_uses_only_the_plan_assistant_tools() -> None:
+    model = FakeHybridModel({})
+    registry = FakeRegistry(
+        model,
+        _router_model(TripRouteDecision(route="general_agent")),
+    )
+    general_tools = [SimpleNamespace(name="search_hotel")]
+    plan_tools = [
+        SimpleNamespace(name="search_poi"),
+        SimpleNamespace(name="keyword_search"),
+        SimpleNamespace(name="amap_plan_route"),
+    ]
+    service = ChatService(
+        registry,  # type: ignore[arg-type]
+        general_tools,  # type: ignore[arg-type]
+        plan_tools=plan_tools,  # type: ignore[arg-type]
+    )
+
+    events = [
+        event
+        async for event in service.stream(
+            "test",
+            [ChatMessage(role="user", content="西湖到灵隐寺怎么走？")],
+            plan_context="# 杭州旅行攻略",
+        )
+    ]
+
+    assert [event.delta for event in events if isinstance(event, MessageDeltaEvent)] == ["单项查询"]
+    assert model.bound_tool_names == [["search_poi", "keyword_search", "amap_plan_route"]]
 
 
 @pytest.mark.asyncio

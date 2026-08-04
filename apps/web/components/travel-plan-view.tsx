@@ -589,7 +589,7 @@ export function TravelPlanView({ planId, version }: { planId: string; version?: 
 
   return (
     <main className="min-h-dvh bg-[#f4f6f8] text-[#17202a]">
-      <AssistantWidget activePlanId={planId} />
+      <AssistantWidget activePlanId={planId} activePlanVersion={plan.version} />
       <header className="sticky top-0 z-50 border-b border-black/[0.06] bg-white/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1240px] items-center justify-between px-4 sm:px-6">
           <Link className="flex items-center gap-2 text-sm font-medium" href="/">

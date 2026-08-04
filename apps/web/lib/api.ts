@@ -693,6 +693,7 @@ export async function streamChat(
   signal: AbortSignal,
   planningSource: PlanningSource = "standard",
   activePlanId: string | null = null,
+  activePlanVersion: number | null = null,
 ): Promise<void> {
   const response = await authenticatedFetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
@@ -703,6 +704,7 @@ export async function streamChat(
       conversation_id: conversationId,
       planning_source: planningSource,
       active_plan_id: activePlanId,
+      active_plan_version: activePlanVersion,
     }),
     signal,
   });

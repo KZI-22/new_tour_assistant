@@ -57,6 +57,10 @@ def test_missing_amap_key_keeps_all_flyai_specialist_tools(tmp_path: Path) -> No
         "search_train",
         "search_hotel",
     }
+    assert {tool.name for tool in application.state.travel_assistant_tools} == {
+        "search_poi",
+        "keyword_search",
+    }
 
 
 def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: Path) -> None:
@@ -78,6 +82,11 @@ def test_configured_amap_tools_are_registered_without_duplicate_names(tmp_path: 
         "amap_travel_time_matrix",
         "amap_get_weather",
     }
+    assert [tool.name for tool in application.state.travel_assistant_tools] == [
+        "search_poi",
+        "keyword_search",
+        "amap_plan_route",
+    ]
 
 
 def test_stdio_xhs_settings_are_wired_into_the_app(tmp_path: Path) -> None:

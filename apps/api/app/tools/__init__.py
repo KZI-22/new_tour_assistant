@@ -4,7 +4,7 @@ from langchain_core.tools import BaseTool
 
 from app.clients.amap_client import AmapClient
 from app.clients.flyai_client import FlyAIClient
-from app.tools.amap_tools import build_amap_tools
+from app.tools.amap_tools import build_amap_tools, build_plan_route_tool
 from app.tools.flight_tool import build_flight_tool
 from app.tools.flyai_research_tools import build_ai_search_tool, build_keyword_search_tool
 from app.tools.hotel_tool import build_hotel_tool
@@ -34,6 +34,21 @@ def build_travel_tools(
     return tools
 
 
+def build_travel_assistant_tools(
+    client: FlyAIClient,
+    amap_client: AmapClient | None = None,
+) -> list[BaseTool]:
+    """Build the narrow tool set exposed inside a saved travel plan."""
+
+    tools: list[BaseTool] = [
+        build_poi_tool(client),
+        build_keyword_search_tool(client),
+    ]
+    if amap_client is not None:
+        tools.append(build_plan_route_tool(amap_client))
+    return tools
+
+
 __all__ = [
     "build_amap_tools",
     "build_ai_search_tool",
@@ -42,5 +57,6 @@ __all__ = [
     "build_keyword_search_tool",
     "build_poi_tool",
     "build_train_tool",
+    "build_travel_assistant_tools",
     "build_travel_tools",
 ]
